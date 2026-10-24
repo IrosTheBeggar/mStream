@@ -1,7 +1,9 @@
 // The Discover job rows' pure half: what a plug-in job looks like as a row
 // ("Get it", Keep a copy, the downloads strip), where a
 // download or a collection copy will land for the layout being typed (a
-// variable each song files by its own tag drawn as a slot), what
+// variable each song files by its own tag drawn as a slot), what a copy of
+// a connected server's folder takes and where it lands, which albums an
+// artist copy takes and leaves out, what
 // a download record looks like as a row (the Downloads view, the admin's
 // Downloads tab), and what has to leave the queue when a download is
 // removed. No DOM, no Vue, no fetch — vp.js and m.js wire it to the app;
@@ -253,12 +255,13 @@
   // {{GENRE}} are each song's, so the songs of one album can land in more
   // than one folder — a compilation's under each track artist. {{ALBUM}},
   // {{ALBUMARTIST}} (the album's credit) and {{PEER}} are the same for every
-  // song of an album. {{SERVERFOLDER}} is each song's too: where its file
-  // sits on the server (federation-copy serverFolderOf). Where this client
-  // cannot promise the one value every song files under, the path draws a
-  // SLOT in its place ("‹artist›", inside its folder's own text), never one
-  // folder that will not exist.
-  const SLOT_VARS = ['ARTIST', 'YEAR', 'GENRE', 'SERVERFOLDER'];
+  // song of an album — not of a folder, whose songs may sit in albums of
+  // different credits ({{ALBUMARTIST}} each song's album's). {{SERVERFOLDER}}
+  // is each song's too: where its file sits on the server (federation-copy
+  // serverFolderOf). Where this client cannot promise the one value every
+  // song files under, the path draws a SLOT in its place ("‹artist›",
+  // inside its folder's own text), never one folder that will not exist.
+  const SLOT_VARS = ['ARTIST', 'YEAR', 'GENRE', 'SERVERFOLDER', 'ALBUMARTIST'];
 
   // A value every song shares: { agree, value } — the same folder name for
   // each (as sanitizeSegment writes it; none is a value too: the folder
@@ -315,6 +318,22 @@
   //   artist-missing  no album: scopeTarget cuts at the album's folder);
   //                   {{GENRE}} and {{SERVERFOLDER}} slots (the one missing
   //                   album scopeTarget names has a folder of its own there)
+  //   folder          "By your layout": no tags of its own — `songs` are the
+  //                   folder's (each as folderSongTags reads the peer's
+  //                   metadata batch). {{ARTIST}}, {{YEAR}}, {{GENRE}} (known
+  //                   for every song) and {{SERVERFOLDER}} the value every
+  //                   song agrees on, else a slot; {{ALBUM}} the album every
+  //                   song agrees on, else ALBUM among the slots — scopeTarget
+  //                   draws "one folder per album" from the folder that names
+  //                   it; {{ALBUMARTIST}} the songs' album credit when every
+  //                   one names it and they agree; when none names one (a
+  //                   peer before 2026-10-23) none: scopeTarget draws it as
+  //                   {{ARTIST}} (each song's credit falls back to its
+  //                   artist); else — credits that disagree, or only some
+  //                   named — a slot: the copy files each song under its own
+  //                   album's credit (federation-copy copyOne), the rest
+  //                   under their artist. No songs (none read: past 100, no
+  //                   answer): every one a slot, ALBUM too
   // → { tags, slots }
   function scopeTags({ scope, tags, songs, compilation }) {
     const t = Object.assign({}, tags || {});
@@ -336,6 +355,26 @@
       t.genre = null;
       t.serverfolder = null;
       slots.push('GENRE', 'SERVERFOLDER');
+    } else if (scope === 'folder') {
+      const listed = Array.isArray(songs) && songs.length > 0 ? songs.map((x) => x || {}) : null;
+      for (const key of ['artist', 'year', 'album']) {
+        const shared = listed ? sharedTag(listed.map((x) => x[key])) : { agree: false };
+        t[key] = shared.agree ? shared.value : null;
+        if (!shared.agree) { slots.push(key.toUpperCase()); }
+      }
+      const known = (key) => listed && listed.every((x) => sanitizeSegment(x[key]) !== '');
+      const genre = known('genre') ? sharedTag(listed.map((x) => x.genre)) : { agree: false };
+      t.genre = genre.agree ? genre.value : null;
+      if (!genre.agree) { slots.push('GENRE'); }
+      // folders compared whole, as the album's
+      const folders = (listed || []).map((x) => sanitizeFolders(x.serverfolder));
+      const oneFolder = !!listed && folders.every((f) => f === folders[0]);
+      t.serverfolder = oneFolder ? folders[0] : null;
+      if (!oneFolder) { slots.push('SERVERFOLDER'); }
+      const named = listed ? listed.filter((x) => sanitizeSegment(x.albumartist) !== '').length : 0;
+      const credit = named && known('albumartist') ? sharedTag(listed.map((x) => x.albumartist)) : { agree: false };
+      t.albumartist = credit.agree ? credit.value : null;
+      if (named && !credit.agree) { slots.push('ALBUMARTIST'); }
     } else if (sanitizeSegment(t.genre) === '') {
       slots.push('GENRE');
     }
@@ -358,6 +397,12 @@
   //                   nothing (every album shares that folder)
   //   artist-missing  the same — or, when exactly one album is missing
   //                   (`oneAlbum`: its { name, year }), that album's folder
+  //   folder          a folder from a connected server, by its `landing`
+  //                   (folderTarget): "By your layout" ({ tags: true }) is
+  //                   the layout with scopeTags' folder rule — ALBUM among
+  //                   the slots cuts as the artist's does, and {{ALBUMARTIST}}
+  //                   with no credit of the songs' own is drawn as {{ARTIST}}
+  //                   is, its slot too (the engine's own fallback)
   // `slots` names the variables drawn as slots (SLOT_VARS; any other is
   // ignored): a folder that names one keeps its own text around it, and
   // never drops out. The answer is previewTarget's (valid, error, field,
@@ -395,15 +440,18 @@
     return { text: slotToken(folder), kind: 'rendered', parts };
   }
 
-  function scopeTarget({ vpath, base, layout, scope, tags, peerName, fileName, oneAlbum, slots }) {
+  function scopeTarget({ vpath, base, layout, scope, tags, peerName, fileName, oneAlbum, slots, landing, folder, songs }) {
     const s = JOB_SCOPES.indexOf(scope) !== -1 ? scope : 'song';
+    if (s === 'folder' && landingMode(landing) !== 'tags') { return folderTarget({ vpath, base, layout, landing, folder, songs }); }
     const t = Object.assign({}, tags || {});
     const one = s === 'artist-missing' && oneAlbum && oneAlbum.name ? oneAlbum : null;
     if (one) { t.album = one.name; t.year = one.year || null; }
-    const wide = (s === 'artist' || s === 'artist-missing') && !one;
+    const byAlbum = s === 'folder' && Array.isArray(slots) && slots.indexOf('ALBUM') !== -1;
+    const wide = ((s === 'artist' || s === 'artist-missing') && !one) || byAlbum;
     const per = SLOT_VARS.filter((v) => Array.isArray(slots) && slots.indexOf(v) !== -1);
     const target = previewTarget({ vpath, base, layout, tags: t, peerName, fileName });
     const out = Object.assign({}, target, { scope: s, perAlbum: false, slots: [], crumbs: [], file: s === 'song' ? target.file : null, title: target.library });
+    if (s === 'folder') { Object.assign(out, { landing: 'tags', files: null, straightIn: null }); }
     if (!target.valid) { return out; }
     let shown = String(layout);
     if (wide) {
@@ -431,6 +479,203 @@
     }
     if (out.perAlbum) { out.crumbs.push({ key: 'discover.modal.dest.perAlbum', kind: 'note' }); }
     out.title = [out.library, out.base, out.rendered].filter(Boolean).join('/');
+    // a folder has no one file; where the path is one folder, every song
+    // lands in it: its files by name
+    if (s === 'folder') { out.relPath = out.relDir; out.files = out.perAlbum || out.slots.length ? null : folderFiles(songs, { flat: true }); }
+    return out;
+  }
+
+  // ── a folder from a connected server ───────────────────────────────────
+  // federation-copy's folder half, mirrored: what a folder copy takes
+  // (planFolder) and where it lands (landingFor), so the window counts,
+  // lists and places the folder the way the copy will. Any change to the
+  // rules there has to be made here too — the unit test holds the two
+  // together.
+
+  // src/discovery-plugins/recommendation.js normalizePeerPath: either
+  // separator, names trimmed, the empty ones and '.' dropped.
+  function normalizePeerPath(p) {
+    return String(p == null ? '' : p).replace(/\\/g, '/').split('/').map((s) => s.trim()).filter((s) => s && s !== '.').join('/');
+  }
+
+  // A folder's path inside the peer's library: its first segment (the
+  // library's own name) dropped, each folder made safe, the empty ones
+  // gone — what a mirrored folder lands as (federation-copy
+  // insidePeerLibrary; serverFolderOf is a song's: its file's folder).
+  function insidePeerLibrary(folder) {
+    return sanitizeFolders(normalizePeerPath(folder).split('/').slice(1).join('/'));
+  }
+
+  // src/db/scan-ignore.js isIgnoredRelPath (the scanner's defaults): a
+  // path through a folder the scanner never walks — a recycle bin, a
+  // snapshot, VCS or OS litter, a dot folder — or to a dot file. A dot
+  // entry is ONE leading dot ("...Trilogy" is a name).
+  const IGNORED_DIR_NAMES = ['$recycle.bin', '#recycle', '@recycle', '@recently-snapshot', '#snapshot', '.git', 'lost+found', '.stfolder', '.stversions', 'system volume information'];
+  const isDotEntry = (name) => name.startsWith('.') && !name.startsWith('..');
+  function isIgnoredRelPath(relPath) {
+    const segs = relPath.split('/');
+    return segs.some((seg, i) => seg !== '' && (i === segs.length - 1
+      ? isDotEntry(seg)
+      : IGNORED_DIR_NAMES.indexOf(seg.toLowerCase()) !== -1 || isDotEntry(seg)));
+  }
+
+  // destination.js isSupportedAudioFile, by the ping's supportedAudioFiles
+  // ({ mp3: true, … }): the file's extension, any case.
+  function isSupportedAudioFile(fileName, supported) {
+    const ext = String(fileName || '').split('/').pop().split('.').slice(1).pop();
+    return !!ext && !!supported && supported[ext.toLowerCase()] === true;
+  }
+
+  // What a folder copy takes (federation-copy planFolder): every file the
+  // peer's recursive listing names under `folderPath` (its library first),
+  // in path order, each with the folder it sits in relative to the pressed
+  // one (`relDir`, each folder made safe), and what it leaves out, with
+  // why — 'outside' (not under the folder, or climbing), 'ignored' (the
+  // scanner's rules), 'unsupported' (a file this server does not play:
+  // `supported` is the ping's supportedAudioFiles; without it every file
+  // the listing names is taken). The window's count and its file list.
+  // → { songs: [{ filepath, relDir }], skipped: [{ from, why }] }
+  function planFolder(listing, folderPath, { supported = null } = {}) {
+    const dir = normalizePeerPath(folderPath);
+    const prefix = dir ? `${dir}/` : '';
+    const songs = [];
+    const skipped = [];
+    const seen = new Set();
+    for (const raw of (Array.isArray(listing) ? listing : [])) {
+      if (typeof raw !== 'string') { continue; }
+      const p = normalizePeerPath(raw);
+      if (!p || seen.has(p)) { continue; }
+      seen.add(p);
+      if (prefix && !p.startsWith(prefix)) { skipped.push({ from: raw, why: 'outside' }); continue; }
+      const rel = prefix ? p.slice(prefix.length) : p;
+      const segs = rel.split('/');
+      if (segs.some((x) => x === '..')) { skipped.push({ from: raw, why: 'outside' }); continue; }
+      if (isIgnoredRelPath(rel)) { skipped.push({ from: raw, why: 'ignored' }); continue; }
+      if (supported && !isSupportedAudioFile(segs[segs.length - 1], supported)) { skipped.push({ from: raw, why: 'unsupported' }); continue; }
+      songs.push({ filepath: p, relDir: segs.slice(0, -1).map((x) => sanitizeSegment(x)).filter(Boolean).join('/') });
+    }
+    songs.sort((a, b) => a.filepath.localeCompare(b.filepath, undefined, { numeric: true, sensitivity: 'base' }));
+    return { songs, skipped };
+  }
+
+  // A planned folder's numbers for the window's header ("9 songs · 3
+  // subfolders"): its songs, and the subfolders that hold any — every
+  // folder on a song's way down from the pressed one, counted once.
+  function folderCounts(songs) {
+    const list = Array.isArray(songs) ? songs.filter((x) => x && typeof x.filepath === 'string') : [];
+    const folders = new Set();
+    for (const song of list) {
+      const segs = String(song.relDir || '').split('/').filter(Boolean);
+      for (let i = 1; i <= segs.length; i++) { folders.add(segs.slice(0, i).join('/')); }
+    }
+    return { songs: list.length, subfolders: folders.size };
+  }
+
+  // One song of a folder (an entry of the peer's metadata batch:
+  // { filepath, metadata }) as "By your layout" files it — listedSongTags'
+  // artist, year, genre and folder on the server, plus its album and the
+  // album's credit ('album-artist': the album's own, else its primary
+  // artist — a server that sends it; none for a song in no album).
+  // → { artist, year, genre, serverfolder, album, albumartist }
+  function folderSongTags(song) {
+    const md = song && song.metadata && typeof song.metadata === 'object' ? song.metadata : {};
+    return Object.assign(listedSongTags(song, null), { album: md.album || null, albumartist: md['album-artist'] || null });
+  }
+
+  // A folder job's landing as the wire carries it (the window's choice, a
+  // job's params.landing — destination.js validateLanding), by its mode:
+  // none (as on the peer: 'mirror'), { vpath?, path } ('folder'), or
+  // { tags: true } ('tags').
+  function landingMode(landing) {
+    if (landing && landing.tags === true) { return 'tags'; }
+    if (landing && (typeof landing.path === 'string' || landing.vpath)) { return 'folder'; }
+    return 'mirror';
+  }
+
+  // The other way: the landing a start sends for a mode — null for
+  // 'mirror' (sent as none), { vpath, path } for 'folder' (`into`, the
+  // chosen library and folder; '' the library's root), { tags: true }.
+  function folderLanding(mode, into) {
+    if (mode === 'tags') { return { tags: true }; }
+    if (mode === 'folder') { return { vpath: (into && into.vpath) || null, path: (into && typeof into.path === 'string') ? into.path : '' }; }
+    return null;
+  }
+
+  // "Into a folder…"'s first place: a new folder in the saved library
+  // named as the pressed one, its name made safe as a mirror makes it
+  // ("copies › Borrowed Tapes"), so the folder keeps its name unless the
+  // user goes elsewhere. → { vpath, path }
+  function folderIntoDefault(destination, folder) {
+    return { vpath: (destination && destination.vpath) || null, path: sanitizeSegment(normalizePeerPath(folder).split('/').pop() || '') };
+  }
+
+  // At most FOLDER_FILE_LINES of a folder's songs (planFolder's, in path
+  // order) as where each lands below the path drawn: its folder relative
+  // to the pressed one first ("Harbour Lights/01 - Tide.mp3"), or — `flat`,
+  // "By your layout", where every song files by the layout — its file
+  // name alone; `more` the songs past those. null without songs.
+  const FOLDER_FILE_LINES = 3;
+  function folderFiles(songs, { flat = false } = {}) {
+    if (!Array.isArray(songs)) { return null; }
+    const list = songs.filter((x) => x && typeof x.filepath === 'string');
+    const lines = list.slice(0, FOLDER_FILE_LINES).map((x) => (flat ? safeFileName(x.filepath) : [x.relDir, safeFileName(x.filepath)].filter(Boolean).join('/')));
+    return { lines, more: list.length - lines.length };
+  }
+
+  // Where a folder copy lands as on the peer ('mirror') or into a folder
+  // ('folder') — scopeTarget's, for a landing other than "By your layout"
+  // (federation-copy landingFor):
+  //   mirror  the destination's library, its base folder, the layout's
+  //           leading folders that name no variable (layoutLead: "From
+  //           friends/{{ALBUMARTIST}}/{{ALBUM}}" → "From friends"), then
+  //           the folder's path inside the peer's library, the library's
+  //           own name dropped — never through the rest of the layout
+  //   folder  the chosen library (`landing.vpath`, else the destination's)
+  //           and folder (`landing.path`, under the base folder's rules;
+  //           '' its root): the pressed folder's files go straight in,
+  //           its subfolders beneath — `straightIn` ({ key, params }) says
+  //           so when that folder is not named as the pressed one
+  // `folder` is the pressed folder's path on the peer, `songs` what the
+  // copy takes (planFolder). → scopeTarget's answer — `field` 'base' or
+  // 'landing' for a place the copy would refuse, the fixed folders as
+  // crumbs of kind 'base', the peer's as 'rendered' — plus `landing` (the
+  // mode), `files` (folderFiles: { lines, more }, or null) and `straightIn`.
+  function folderTarget({ vpath, base, layout, landing, folder, songs }) {
+    const mode = landingMode(landing);
+    const out = {
+      valid: true, error: null, field: null, variable: null, scope: 'folder', landing: mode, library: vpath || '', base: '', rendered: '',
+      relDir: '', relPath: '', missingVars: [], perAlbum: false, slots: [], crumbs: [], file: null, title: vpath || '', files: null, straightIn: null,
+    };
+    let fixed;
+    let peerPath = '';
+    if (mode === 'folder') {
+      out.library = landing.vpath || vpath || '';
+      const chosen = normalizeBase(landing.path);
+      if (!chosen.valid) { return Object.assign(out, { valid: false, error: chosen.error, field: 'landing', title: out.library }); }
+      fixed = normalizePeerPath(chosen.base);
+      const name = normalizePeerPath(folder).split('/').pop() || '';
+      const into = fixed.split('/').pop() || '';
+      if (sanitizeSegment(into).toLowerCase() !== sanitizeSegment(name).toLowerCase()) {
+        out.straightIn = { key: 'discover.keep.landing.straightIn', params: { folder: into || out.library, name } };
+      }
+    } else {
+      const b = normalizeBase(base);
+      if (!b.valid) { return Object.assign(out, { valid: false, error: b.error, field: 'base' }); }
+      out.base = b.base;
+      fixed = [b.base, layoutLead(layout).folders].filter(Boolean).join('/');
+      peerPath = insidePeerLibrary(folder);
+    }
+    const dir = [fixed, peerPath].filter(Boolean).join('/');
+    if (dir) {
+      const check = validateResolvedPath(dir);
+      if (!check.valid) { return Object.assign(out, { valid: false, error: check.error, field: 'landing', straightIn: null }); }
+    }
+    out.rendered = out.base ? dir.slice(out.base.length + 1) : dir;
+    out.relDir = dir;
+    out.relPath = dir;
+    out.crumbs = pathCrumbs(fixed).map((text) => ({ text, kind: 'base' })).concat(pathCrumbs(peerPath).map((text) => ({ text, kind: 'rendered' })));
+    out.title = [out.library, dir].filter(Boolean).join('/');
+    out.files = folderFiles(songs);
     return out;
   }
 
@@ -676,10 +921,11 @@
 
   // ── scopes ───────────────────────────────────────────────────────────────
   // What a job acts on (the server's JOB_SCOPES): the song, its album, its
-  // artist's albums, or only the ones the library lacks. The window keeps
+  // artist's albums, only the ones the library lacks, or a folder of a
+  // connected server's (only from its file explorer). The window keeps
   // one job per plug-in AND scope, under a slot: the plug-in's name for a
   // song job (as it always was), "<plugin>@<scope>" for the others.
-  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing'];
+  const JOB_SCOPES = ['song', 'album', 'artist', 'artist-missing', 'folder'];
 
   function jobScope(job) {
     return (job && job.params && job.params.scope) || 'song';
@@ -706,6 +952,7 @@
     if (scope === 'album') { return 'discover.tray.kindAlbum'; }
     if (scope === 'artist') { return 'discover.tray.kindArtist'; }
     if (scope === 'artist-missing') { return 'discover.tray.kindMissing'; }
+    if (scope === 'folder') { return 'discover.tray.kindFolder'; }
     return null;
   }
 
@@ -721,6 +968,80 @@
       if (jobScope === scope) { out[job.plugin] = job; }
     }
     return out;
+  }
+
+  // The most songs one folder copy takes on this server (the plug-in
+  // listing's jobs.maxFolderSongs — the admin's discoveryJobs
+  // .maxFolderSongs): a whole number, or null when the listing does not
+  // say (an older server: no cap is known, and a job past it fails in the
+  // server's own words).
+  function maxFolderSongs(listing) {
+    const jobs = listing && listing.jobs && typeof listing.jobs === 'object' ? listing.jobs : null;
+    const n = jobs && jobs.maxFolderSongs != null ? Number(jobs.maxFolderSongs) : NaN;
+    return Number.isFinite(n) && n >= 1 ? Math.floor(n) : null;
+  }
+
+  // ── an artist copy's albums ────────────────────────────────────────────
+  // src/db/name-key.js nameKey, mirrored: how the copy matches artist and
+  // album names — whitespace runs collapsed, quote and dash variants
+  // folded, lowercased.
+  function nameKey(raw) {
+    if (raw == null) { return ''; }
+    return String(raw).replace(/\s+/g, ' ').trim()
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+      .replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]/g, '-')
+      .toLowerCase();
+  }
+
+  // Which of the peer's albums an artist copy takes (federation-copy
+  // planArtistAlbums, mirrored): the ones whose album artist IS the artist
+  // — its credit, or one of its artists outside a compilation. An album
+  // they merely appear on is left out ('appearance'); with `onlyMissing`,
+  // so is one this library has by name (`localKeys`: a Set of nameKeys).
+  // The singles bucket (no album name) is no album: `singles` says the
+  // listing (the peer's artists-albums answer) has one — its songs stay
+  // out too. A planned album carries its own credit (`albumArtist`, null
+  // when its rows disagree).
+  // → { plan: [{ name, year, trackCount, albumArtist }],
+  //     skipped: [{ name, year, trackCount, why }], singles }
+  function planArtistAlbums(listing, artist, { localKeys = new Set(), onlyMissing = false } = {}) {
+    const key = nameKey(artist);
+    const rows = Array.isArray(listing && listing.albums) ? listing.albums : [];
+    const plan = [];
+    const skipped = [];
+    let singles = false;
+    for (const al of rows) {
+      if (!al || typeof al !== 'object') { continue; }
+      if (al.name == null || (typeof al.name === 'string' && !al.name.trim())) { singles = true; continue; }
+      if (typeof al.name !== 'string') { continue; }
+      const year = al.year == null || !Number.isFinite(Number(al.year)) ? null : Number(al.year);
+      const entry = { name: al.name, year, trackCount: Number.isFinite(Number(al.track_count)) && al.track_count !== null ? Number(al.track_count) : null };
+      const credited = Array.isArray(al.artists) && al.artists.some((n) => nameKey(n) === key);
+      const theirs = nameKey(al.album_artist) === key || (credited && al.compilation !== true);
+      if (!theirs) { skipped.push(Object.assign({}, entry, { why: 'appearance' })); continue; }
+      if (onlyMissing && localKeys.has(nameKey(al.name))) { skipped.push(Object.assign({}, entry, { why: 'owned' })); continue; }
+      plan.push(Object.assign({}, entry, { albumArtist: typeof al.album_artist === 'string' && al.album_artist.trim() ? al.album_artist : null }));
+    }
+    return { plan, skipped, singles };
+  }
+
+  // The artist copy's "left out" line (the window's, under Artist): the
+  // albums the listing names that the artist only appears on — one by
+  // name, several counted — then, when the listing has a singles bucket,
+  // that songs outside an album stay out too. `parts` for the caller to
+  // translate and join with a space; `albums` their names. null when the
+  // copy leaves nothing out, or the listing is unknown.
+  // → { albums, singles, parts: [{ key, params? }] } | null
+  function artistLeftOut(listing, artist) {
+    if (!listing || !Array.isArray(listing.albums)) { return null; }
+    const { skipped, singles } = planArtistAlbums(listing, artist);
+    const guest = skipped.filter((a) => a.why === 'appearance');
+    const parts = [];
+    if (guest.length === 1) { parts.push({ key: 'discover.keep.leftOutOne', params: { album: guest[0].name, artist } }); }
+    if (guest.length > 1) { parts.push({ key: 'discover.keep.leftOutMany', params: { count: guest.length, artist } }); }
+    if (singles) { parts.push({ key: 'discover.keep.leftOutSingles' }); }
+    return parts.length ? { albums: guest.map((a) => a.name), singles, parts } : null;
   }
 
   // ── the downloads strip ────────────────────────────────────────────────
@@ -773,7 +1094,8 @@
   // "Album — Artist" for an album — the album's own credit when the
   // recommendation carries one (a compilation's "Various Artists": the
   // copy took it whole, every track artist on it), else the track artist —
-  // the artist's name for the artist scopes.
+  // the artist's name for the artist scopes, the folder's for a folder (the
+  // title the start sent, else its path's last folder).
   function jobTitle(job) {
     const rec = (job && job.recommendation) || {};
     const scope = jobScope(job);
@@ -782,6 +1104,7 @@
       return [rec.album, credit].filter(Boolean).join(' — ') || '';
     }
     if (scope === 'artist' || scope === 'artist-missing') { return rec.artist || ''; }
+    if (scope === 'folder') { return rec.title || normalizePeerPath(rec.filepath).split('/').pop() || ''; }
     return [rec.title, rec.artist].filter(Boolean).join(' — ') || '';
   }
 
@@ -848,6 +1171,20 @@
     return !!plugin && Array.isArray(plugin.capabilities) && plugin.capabilities.indexOf(LOOKUP_CAPABILITY) !== -1;
   }
 
+  // 1240 → "1,240": a count as the app's language groups its digits
+  // (i18n.js's, I18N.getLanguage()) — else as the runtime's own does, when
+  // there is no app around it (a test) or its language is not one the
+  // runtime knows.
+  function fmtCount(n) {
+    const num = Number(n) || 0;
+    try {
+      const lang = typeof I18N !== 'undefined' && I18N && typeof I18N.getLanguage === 'function' ? I18N.getLanguage() : undefined;
+      return num.toLocaleString(lang || undefined);
+    } catch (_) {
+      return num.toLocaleString();
+    }
+  }
+
   // 253 → "4:13"; 3725 → "1:02:05"; '' for an unknown length.
   function fmtSeconds(sec) {
     if (sec == null || sec === '') { return ''; }
@@ -890,10 +1227,13 @@
     sanitizeSegment, sanitizeFolders, serverFolderOf, resolveLayout, validateLayout, validateResolvedPath, normalizeBase, foldBase, bracedFolder, layoutLead, startLayoutAt,
     safeFileName, previewTarget, pathCrumbs,
     SLOT_VARS, songGenre, listedSongTags, scopeTags, scopeTarget, sameDestination, landedPath,
-    isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin,
+    FOLDER_FILE_LINES, normalizePeerPath, insidePeerLibrary, isSupportedAudioFile, planFolder, folderCounts, folderSongTags,
+    landingMode, folderLanding, folderIntoDefault, folderFiles, folderTarget,
+    isLive, fmtBytes, jobRowState, manyCounts, manyParts, jobsByPlugin, maxFolderSongs,
+    nameKey, planArtistAlbums, artistLeftOut,
     JOB_SCOPES, jobScope, jobSlot, jobsBySlot, jobKind,
     inTray, trayRows, traySummary, jobTitle, finishedSince,
     downloadRow, downloadsTotals, queueIndexesFor,
-    hasLookup, fmtSeconds, lookupCard,
+    hasLookup, fmtCount, fmtSeconds, lookupCard,
   };
 }));

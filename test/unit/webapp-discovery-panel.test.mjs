@@ -112,6 +112,16 @@ const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 's
   'discoveryRestoreSeed', 'discoveryQueueAll', 'discoveryPick', 'discoveryRefocus', 'onDiscoveryKey',
   'discoveryFocusFallbacks'];
 
+// Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
+// browseHead* …): renderAlbum and setBrowserRootPanel call it; on this
+// server's own page it draws nothing and asks nothing.
+const KEEP_FNS = [...SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote)\(/gm)].map((m) => m[1]);
+const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    let keepGatePending = null;
+    let keepGateAsk = 0;
+    let browseKeepQueued = null;
+    ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
+
 const KNOWN_IDS = ['filelist', 'dpage-head', 'localSearchBar', 'directoryName', 'directory_bar',
   'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover'];
 
@@ -308,6 +318,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     ${sliceConst('discoveryView')}
     ${sliceConst('DPAGE_ICONS')}
     ${sliceConst('DPAGE_NOTE_CARD')}
+    ${keepState()}
     discoveryView.flags = ${JSON.stringify(flags)};
     ${FNS.map(sliceFn).join('\n\n')}
     return {
@@ -690,12 +701,13 @@ describe('Discover page: opening it', () => {
     assert.equal(opened.length, 1);
     assert.match(html, /aria-label="dpage\.verb\.albumMore">⋯<\/button>/);
     // shown as the play button is: on hover, on keyboard focus inside the
-    // card (never a mouse click's focus), always on touch
+    // card (never a mouse click's focus), always on touch — on any album
+    // card (a connected server's browse cards carry the same ⋯)
     const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
-    assert.match(css, /\.dpage \.album-grid-card:hover \.dpage-album-more, \.dpage \.album-grid-card:has\(:focus-visible\) \.dpage-album-more \{ opacity: 1; \}/);
+    assert.match(css, /\n\.album-grid-card:hover \.dpage-album-more, \.album-grid-card:has\(:focus-visible\) \.dpage-album-more \{ opacity: 1; \}/);
     assert.match(css, /\.dpage-album-more:focus-visible \{ outline: 2px solid #fa832b;/);
     const touch = css.slice(css.indexOf('@media (hover: none) {', css.indexOf('/* ── The Discover page')));
-    assert.match(touch.slice(0, touch.indexOf('\n}')), /\.dpage \.dpage-album-more \{ opacity: 1;/);
+    assert.match(touch.slice(0, touch.indexOf('\n}')), /\n {2}\.dpage-album-more \{ opacity: 1;/);
     assert.ok(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8').includes('"dpage.verb.albumMore": "More for this album"'));
   });
 

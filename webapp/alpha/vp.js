@@ -189,6 +189,9 @@ const VUEPLAYERCORE = (() => {
       available: false,
       list: null,             // null = not fetched yet
       jobsAllowed: false,     // the listing's jobs.allowed — may this account start jobs
+      // the listing's jobs.maxFolderSongs — the most songs one folder copy
+      // takes here; null = not said (an older server: no cap is known)
+      maxFolderSongs: null,
     },
     // The collection destination — where Keep a copy copies and "Get it"
     // downloads land (GET /api/v1/discovery/collection/destination).
@@ -239,10 +242,39 @@ const VUEPLAYERCORE = (() => {
       matchSeed: null,
       matchPlain: null,
       // 'album' = the window reads as the row's album (a Discover album
-      // card's ⋯, or an album job reopened from the strip): the album is
-      // the title, Listen plays the album, Keep offers Album and Artist
-      // with Album chosen. null = the song.
+      // card's ⋯, a connected server's album page or card, or an album job
+      // reopened from the strip): the album is the title, Listen plays the
+      // album, Keep offers Album and Artist with Album chosen. 'artist' = a
+      // connected server's artist page: the artist is the title, no Listen
+      // and no Find elsewhere, Keep offers Artist alone. 'folder' = a folder
+      // of its file explorer: the folder is the title, Listen plays it, Keep
+      // offers Folder alone, with where it lands. null = the song.
       focus: null,
+      // Where the window was opened from: 'browse' = a connected server's
+      // own pages (m.js), whose songs may come without tags or an album
+      // credit (dmLoadPeerFacts reads them); null = Discover, the
+      // now-playing panel, the strip.
+      from: null,
+      // The fact links the page behind the window already is ('viewAlbum',
+      // 'viewArtist'): hidden (dmHidden).
+      hide: [],
+      // A song of a file explorer's: the folder it sits in, { path, name }
+      // (the peer's path, library first) — Keep's Folder choice. null
+      // elsewhere, and for a song at its library's root.
+      folder: null,
+      // A song from an album page whose songs name different album artists
+      // (the page's own word): no Album — whatever its tags or the peer's
+      // album list would say.
+      creditsDisagree: false,
+      // The folder copy's count (dmLoadFolderScan): { state: 'counting' |
+      // 'done' | 'failed', songs, subfolders, paths } — paths what the copy
+      // takes, in path order (DISCOVERJOBS.planFolder). null = not asked.
+      folderScan: null,
+      // The folder's songs' tags, read once for "By your layout"
+      // (dmLoadFolderTags): { state: 'loading' | 'done' | 'failed' |
+      // 'skipped' (past FOLDER_TAGS_MAX songs), songs } — songs as
+      // DISCOVERJOBS.folderSongTags reads them. null = not asked.
+      folderTags: null,
       loading: false,
       links: [],
       error: false,
@@ -275,10 +307,22 @@ const VUEPLAYERCORE = (() => {
       destRead: false,
       destLost: false,
       // Keep a copy's card in a connected server's window: which scope the
-      // one Add acts on (song · album · artist), and whether an artist copy
-      // takes only the albums the library lacks.
-      keep: { scope: 'song', onlyMissing: true },
+      // one Add acts on (song · album · artist · folder), and whether an
+      // artist copy takes only the albums the library lacks. A folder's
+      // `landing`: 'mirror' (as on the peer) · 'folder' (into the folder
+      // `into`, { vpath, path }: null = the first place, a new folder named
+      // as the pressed one — dmFolderInto) · 'tags' (by the layout); `tree`
+      // the folder list "Into a folder…" shows, { loading, dirs, failed,
+      // naming, newName, braced } (dmIntoLoad).
+      keep: { scope: 'song', onlyMissing: true, landing: 'mirror', into: null, tree: null },
     }, over || {});
+  }
+  // "By your layout" reads a folder's tags only up to this many songs
+  // (one metadata batch); past it every tag variable is a slot.
+  const FOLDER_TAGS_MAX = 100;
+  // An attribute value inside a [name="…"] selector.
+  function dmAttrValue(value) {
+    return String(value).replace(/["\\]/g, '\\$&');
   }
   // An artist or album name as the server compares them (src/db/name-key.js
   // nameKey): whitespace runs collapsed, quote and dash variants folded,
@@ -313,6 +357,9 @@ const VUEPLAYERCORE = (() => {
   // a poll that lands meanwhile leaves the keyboard to the press, which
   // hands it to the button now in the pressed one's place (dmKeepHold).
   let discoverKeepPresses = 0;
+  // Who reads the ways-in gate again when the window learns it changed
+  // (mstreamModule.watchKeepGate, dmKeepGateChanged).
+  const discoverGateWatchers = [];
   function onDiscoverModalKey(e) {
     if (e.key === 'Tab') {
       // aria-modal holds the keyboard: Tab from the window's last control
@@ -323,11 +370,16 @@ const VUEPLAYERCORE = (() => {
     }
     if (e.key !== 'Escape') { return; }
     // Esc closes the innermost thing first: the folder tree, the
-    // destination form, then the window. Through their own methods, which
-    // say where the keyboard goes next; if it fell out, Close takes it.
+    // destination form, a new folder being named under "Into a folder…",
+    // then the window. Through their own methods, which say where the
+    // keyboard goes next; if it fell out, Close takes it.
     const picker = discoverState.modal.picker;
     if (picker && picker.browse) { playlistVue.dmBrowseToggle(); playlistVue.dmHoldFocus(); return; }
     if (picker) { playlistVue.dmClosePicker(); playlistVue.dmHoldFocus(); return; }
+    // (the name field only while it is on screen: under "Into a folder…",
+    // the landings shown)
+    const tree = discoverState.modal.keep && discoverState.modal.keep.tree;
+    if (tree && tree.naming && discoverState.modal.keep.landing === 'folder' && playlistVue.dmLandShown()) { playlistVue.dmIntoNaming(false); playlistVue.dmHoldFocus(); return; }
     playlistVue.closeDiscoverModal();
   }
   // The window's controls in tab order (nothing in it sets a positive
@@ -360,9 +412,12 @@ const VUEPLAYERCORE = (() => {
     return null;
   }
   // The control a window was opened from — a Discover row's ⋯, an album
-  // card's ⋯, a now-playing peer row, a Downloads strip row — where the
+  // card's ⋯, a now-playing peer row, a Downloads strip row, a connected
+  // server's page header button or row ⋯, a queue row's ⋮ — where the
   // keyboard goes back on close. For one of the Discover page's data-dp
-  // controls also a selector that finds it again after the page redrew.
+  // controls also a selector that finds it again after the page redrew;
+  // for a browse or queue control its data-keep-key (`key`: m.js draws
+  // "{peerId}|{kind}|{what}", a queue row's ⋮ "{peerId}|queue|{file}").
   // Nothing for <body> (nothing had focus) or a control inside the window.
   function dmOpenerOf(el) {
     if (!el || typeof el.focus !== 'function' || typeof el.getAttribute !== 'function') { return null; }
@@ -377,19 +432,40 @@ const VUEPLAYERCORE = (() => {
         if (val != null) { sel += `[${a}="${val}"]`; }
       }
     }
-    return { el, sel };
+    return { el, sel, key: el.getAttribute('data-keep-key') || null };
   }
   // Focus back on the opener; on the control in its place when the page
   // redrew it (a button first: a lead's row and its ⋯ carry the same
   // data-dp, the row first in the page); when it is gone, on the Discover
-  // page's first heading. A row or a heading is no control: it takes focus
-  // as tabindex -1, out of the tab order. → the element focused, or null.
+  // page's first heading. A browse or queue control is found again by its
+  // key — the filter and a poll redraw rows, and a queue row the list
+  // reuses for another song carries another key — in the page's header,
+  // its list or the queue; gone, a queue row's ⋮ hands over to the queue,
+  // a page's control to the header's Keep a copy… button, else the panel's
+  // title (the phone's tab where the title is hidden): never <body>. A row
+  // or a heading is no control: it takes focus as tabindex -1, out of the
+  // tab order. → the element focused, or null.
   function dmFocusBack(opener, doc) {
+    const key = (opener && opener.key) || null;
     let el = opener && opener.el && opener.el.isConnected !== false ? opener.el : null;
+    if (el && key && typeof el.getAttribute === 'function' && el.getAttribute('data-keep-key') !== key) { el = null; }
     if (!el && opener && opener.sel) {
       for (const at of ['#dpage-head .dpage', '#filelist .dpage']) {
         el = doc.querySelector(`${at} button${opener.sel}`) || doc.querySelector(`${at} ${opener.sel}`);
         if (el) { break; }
+      }
+    }
+    if (!el && key) {
+      const sel = `[data-keep-key="${dmAttrValue(key)}"]`;
+      for (const at of ['#browse-head', '#filelist', '#playlist']) {
+        el = doc.querySelector(`${at} ${sel}`);
+        if (el) { break; }
+      }
+      const shown = (x) => !!x && (typeof x.getClientRects !== 'function' || x.getClientRects().length > 0);
+      const fallback = key.split('|')[1] === 'queue' ? ['#playlist ul.collection'] : ['#browse-head .browse-keep', 'h5.panel_one_name', '.m-tab.panel_one_name'];
+      for (const at of el ? [] : fallback) {
+        const found = doc.querySelector(at);
+        if (shown(found)) { el = found; break; }
       }
     }
     if (!el) { el = doc.querySelector('#filelist .dpage h3'); }
@@ -581,6 +657,22 @@ const VUEPLAYERCORE = (() => {
       </div>`,
   });
 
+  // A folder copy's files under where it lands (SPEC-fed §6.5.4): at most
+  // DISCOVERJOBS.FOLDER_FILE_LINES of them, in path order — a song in a
+  // subfolder with its folder first — then how many more; never the whole
+  // folder. `files` is a folder path's { lines, more } (scopeTarget).
+  Vue.component('dm-land-files', {
+    props: { files: Object },
+    methods: {
+      tt: function (key, params) { return (typeof t === 'function') ? t(key, params) : key; },
+    },
+    template: `
+      <div class="dm-land-files">
+        <div v-for="(line, i) in files.lines" :key="i" class="dm-land-file">{{ line }}</div>
+        <div v-if="files.more > 0" class="dm-land-more">{{ tt('discover.keep.moreFiles', { count: files.more }) }}</div>
+      </div>`,
+  });
+
   // The collection destination — where "Keep a copy" copies and "Get it"
   // downloads land ("Where files land"). Idle it is the path bar: where a
   // copy of the chosen scope would land under the saved destination
@@ -751,6 +843,7 @@ const VUEPLAYERCORE = (() => {
           <dm-icon name="folder" :size="14"></dm-icon>
           <dm-dest-path :path="path" :prefix="tt('discover.modal.dest.goTo')" variant="bar" :file="fileLine"></dm-dest-path>
         </div>
+        <dm-land-files v-if="path.files" :files="path.files"></dm-land-files>
         <div class="dm-dest-foot">
           <span class="dm-dest-source">{{ tt(dest.source === 'user' ? 'discover.modal.dest.savedFor' : 'discover.modal.dest.libraryDefault') }}</span>
           <span class="dm-dest-acts">
@@ -767,7 +860,10 @@ const VUEPLAYERCORE = (() => {
   // muted lines, the bar, where the files go or went) — then a refused
   // start's line, then the action row, the primary last (none while the
   // editor is open: one primary at a time; a refused start's line goes
-  // with it). `view` is the playlist Vue's dmKeepView; a button only names
+  // with it). A folder (SPEC-fed §6.5.4): the path bar only "By your
+  // layout" — as on the peer and into a folder draw their own place under
+  // the landings (index.html) — and a folder past the cap holds its line
+  // alone. `view` is the playlist Vue's dmKeepView; a button only names
   // its action (dmKeepAct, data-dm-act). What changed is said by the
   // section's one live region, there before the card first changes
   // (index.html, dmKeepAnnounce) — nothing in here is a live region. The
@@ -782,8 +878,9 @@ const VUEPLAYERCORE = (() => {
     },
     template: `
       <div class="dm-keep-body">
-        <dm-dest v-if="view.kind !== 'state' || $root.dmDestEditing()" :scope="view.scope"></dm-dest>
-        <div v-else class="dm-out">
+        <dm-dest v-if="view.bar || $root.dmDestEditing()" :scope="view.scope"></dm-dest>
+        <div v-else-if="view.kind === 'cap'" class="dm-keep-cap"><dm-icon name="info" :size="16"></dm-icon><span>{{ view.line }}</span></div>
+        <div v-else-if="view.kind === 'state'" class="dm-out">
           <div class="dm-out-tile" :class="'dm-out-tile-' + view.tile.tint" aria-hidden="true"><dm-icon :name="view.tile.icon" :size="16"></dm-icon></div>
           <div class="dm-out-text">
             <div class="dm-out-head">
@@ -795,12 +892,12 @@ const VUEPLAYERCORE = (() => {
             <div v-if="view.progress !== null" class="dm-progress" :class="{ 'dm-progress-indet': view.progress === 'indeterminate', 'dm-progress-other': !!view.other }"
                  role="progressbar" aria-labelledby="dm-out-h" aria-valuemin="0" aria-valuemax="100" :aria-valuenow="view.progress === 'indeterminate' ? null : view.progress" :aria-valuetext="view.progressText || null"><i :style="view.progress === 'indeterminate' ? null : { width: view.progress + '%' }"></i></div>
             <dm-dest-path v-if="view.path" variant="state" :prefix="view.path.prefix" :path="view.path.path"></dm-dest-path>
-            <dm-dest-path v-if="view.retryPath" variant="state" :prefix="view.retryPath.prefix" :suffix="tt('discover.modal.dest.savedNow')" :path="view.retryPath.path" :file="false"></dm-dest-path>
+            <dm-dest-path v-if="view.retryPath" variant="state" :prefix="view.retryPath.prefix" :suffix="view.retryPath.suffix" :path="view.retryPath.path" :file="false"></dm-dest-path>
           </div>
         </div>
-        <div v-if="view.line && !$root.dmDestEditing()" class="dm-keep-line"><dm-icon name="info" :size="14"></dm-icon><span>{{ view.line }}</span></div>
+        <div v-if="view.line && view.kind !== 'cap' && !$root.dmDestEditing()" class="dm-keep-line"><dm-icon name="info" :size="14"></dm-icon><span>{{ view.line }}</span></div>
         <div v-if="view.actions.length && !$root.dmDestEditing()" class="dm-keep-acts">
-          <button v-for="a in view.actions" :key="a.id" type="button" class="dm-btn" :class="btnClass(a)" :aria-disabled="a.busy ? 'true' : null" :data-dm-act="a.id" :data-dm-change="a.id === 'change' ? '' : null" v-on:click="$root.dmKeepAct(a.id)"><dm-icon v-if="a.icon" :name="a.icon" :size="14"></dm-icon>{{ a.label }}</button>
+          <button v-for="a in view.actions" :key="a.id" type="button" class="dm-btn" :class="btnClass(a)" :aria-disabled="a.busy || a.disabled ? 'true' : null" :data-dm-act="a.id" :data-dm-change="a.id === 'change' ? '' : null" v-on:click="$root.dmKeepAct(a.id)"><dm-icon v-if="a.icon" :name="a.icon" :size="14"></dm-icon>{{ a.label }}</button>
         </div>
       </div>`,
   });
@@ -1038,16 +1135,40 @@ const VUEPLAYERCORE = (() => {
       dmAlbumFocus: function () {
         return this.discover.modal.focus === 'album';
       },
-      // The header's first line: the song's title, or the album's name.
+      // Artist focus (a connected server's artist page) and folder focus
+      // (a folder of its file explorer).
+      dmArtistFocus: function () {
+        return this.discover.modal.focus === 'artist';
+      },
+      dmFolderFocus: function () {
+        return this.discover.modal.focus === 'folder';
+      },
+      // A fact link the page behind the window already is: View album from
+      // its album page, View artist from its artist page.
+      dmHidden: function (link) {
+        return (this.discover.modal.hide || []).indexOf(link) !== -1;
+      },
+      // Listen: there for a song, an album and a folder — an artist's page
+      // is behind the window.
+      dmListenShown: function () {
+        return !this.dmArtistFocus();
+      },
+      // The header's first line: the song's title, or the album's, the
+      // artist's or the folder's name.
       dmHeadTitle: function () {
         const tr = this.discover.modal.track || {};
         if (this.dmAlbumFocus()) { return tr.album || ''; }
+        if (this.dmArtistFocus()) { return tr.artist || ''; }
+        if (this.dmFolderFocus()) { return (this.dmFolder() || {}).name || ''; }
         return tr.title || '(untitled)';
       },
       // The header's second line: artist · album · year · length; for the
       // album, its credit · year · how many songs (once the peer said) —
       // the album's own credit when the row carries one ('Various Artists'
-      // on a compilation, whose Album copies it whole), else the artist.
+      // on a compilation, whose Album copies it whole), else the artist;
+      // for an artist, how many albums the peer lists them on ("Artist · 4
+      // albums on Stage Peer B"); for a folder, where it is on the peer
+      // ("Folder · music › Boukmanflow › Borrowed Tapes").
       dmSubtitle: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
@@ -1055,7 +1176,24 @@ const VUEPLAYERCORE = (() => {
           const a = m.album;
           return [DISCOVERYPAGE.albumCreditOf(tr), tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
         }
+        if (this.dmArtistFocus()) {
+          const named = m.artist && m.artist.named;
+          if (named == null) { return this.tt('discover.modal.artist'); }
+          return this.tt('discover.modal.artistSub', { albums: this.tt('discover.modal.albumCount', { count: named }), peer: (m.peer && m.peer.name) || (tr.peer && tr.peer.name) || '' });
+        }
+        if (this.dmFolderFocus()) {
+          const f = this.dmFolder();
+          return f ? this.tt('discover.modal.folderSub', { path: DISCOVERJOBS.normalizePeerPath(f.path).split('/').join(' › ') }) : '';
+        }
         return [tr.artist, tr.album, tr.year, tr.duration ? this.dmDuration(tr.duration) : ''].filter(Boolean).join(' · ');
+      },
+      // A count in words, its number as the reader's locale writes it
+      // ("1,240 songs"): the plural form by the number, the digits
+      // grouped after.
+      dmCount: function (key, count, params) {
+        const n = Number(count) || 0;
+        const text = this.tt(key, Object.assign({}, params || {}, { count: n }));
+        return n >= 1000 ? text.replace(String(n), DISCOVERJOBS.fmtCount(n)) : text;
       },
       dmDuration: function (seconds) {
         const s = Math.round(Number(seconds) || 0);
@@ -1099,7 +1237,9 @@ const VUEPLAYERCORE = (() => {
           const status = this.dmPeerStatus();
           if (status) { parts.push({ kind: 'status', dot: status.dot, text: status.text }); }
           if (status && status.seen) { parts.push({ kind: 'text', text: status.seen }); }
-          if (!this.dmAlbumFocus() && m.file && m.file.format) { parts.push({ kind: 'text', text: m.file.format }); }
+          if (!m.focus && m.file && m.file.format) { parts.push({ kind: 'text', text: m.file.format }); }
+          // a folder's size, once counted: "3 songs · no subfolders"
+          if (this.dmFolderFocus()) { this.dmFolderCountParts().forEach((text) => parts.push({ kind: 'text', text })); }
         } else if (tr.isrc) {
           parts.push({ kind: 'isrc', text: tr.isrc });
         }
@@ -1110,11 +1250,12 @@ const VUEPLAYERCORE = (() => {
       },
       // The connected server's status, its dot and its words from the same
       // answer: "<peer> online" (ok) when one of this window's own reads
-      // came back; "<peer> not answering" (off) when none did, with `seen`
-      // "last seen 4 min ago" — the admin's last health check, all the
-      // server knows — when the peers listing names it. Before the reads
-      // answer: the name alone and a grey dot (wait), so the line holds its
-      // height. → { dot, text, seen } or null.
+      // came back — a folder's count among them; "<peer> not answering"
+      // (off) when none did, with `seen` "last seen 4 min ago" — the
+      // admin's last health check, all the server knows — when the peers
+      // listing names it. Before the reads answer: the name alone and a grey
+      // dot (wait), so the line holds its height. → { dot, text, seen } or
+      // null.
       dmPeerStatus: function () {
         const m = this.discover.modal;
         const p = m.peer;
@@ -1122,7 +1263,10 @@ const VUEPLAYERCORE = (() => {
           const name = m.source === 'federation' && m.track && m.track.peer ? m.track.peer.name : '';
           return name ? { dot: 'wait', text: name } : null;
         }
-        if (p.answered === true) { return { dot: 'ok', text: `${p.name} ${this.tt('discover.modal.online')}` }; }
+        const scanned = !!(m.folderScan && m.folderScan.state === 'done');
+        if (p.answered === true || scanned) { return { dot: 'ok', text: `${p.name} ${this.tt('discover.modal.online')}` }; }
+        // a folder still being counted: not "not answering" yet
+        if (m.folderScan && m.folderScan.state === 'counting') { return { dot: 'wait', text: p.name }; }
         const words = `${p.name} ${this.tt('discover.modal.offline')}`;
         if (!p.listed) { return { dot: 'off', text: words }; }
         const seen = p.lastSeen ? this.dmAgo(p.lastSeen) : this.tt('discover.modal.never');
@@ -1149,46 +1293,122 @@ const VUEPLAYERCORE = (() => {
         return (this.discover.modal.previews && this.discover.modal.previews[name]) || { status: 'idle', preview: null };
       },
       // The row as the similar route returned it, plus provenance; the
-      // server strips what it doesn't know.
+      // server strips what it doesn't know. In folder focus, the folder's.
       dmRecommendation: function () {
         const m = this.discover.modal;
+        if (this.dmFolderFocus()) { return this.dmFolderRecommendation(); }
         return { ...m.track, source: m.source, filepath: m.source === 'federation' ? m.track.filepath : null };
+      },
+      // A folder copy's recommendation (SPEC-fed §6.5.5): the folder's path
+      // on the peer, library first, and its name — what the strip names the
+      // job by. null without a folder.
+      dmFolderRecommendation: function () {
+        const m = this.discover.modal;
+        const f = this.dmFolder();
+        if (!f || !m.track) { return null; }
+        return { source: 'federation', peer: m.track.peer, filepath: DISCOVERJOBS.normalizePeerPath(f.path), title: f.name };
+      },
+      // The folder Keep's Folder choice copies: the window's own in folder
+      // focus, a file row's folder in its song's window. → { path, name }
+      // (the peer's path, library first) or null.
+      dmFolder: function () {
+        const m = this.discover.modal;
+        const tr = m.track || {};
+        if (m.focus !== 'folder') { return m.folder || null; }
+        const path = typeof tr.filepath === 'string' ? tr.filepath : '';
+        return path ? { path, name: tr.title || DISCOVERJOBS.normalizePeerPath(path).split('/').pop() || '' } : null;
       },
       dmLive: function (gen) {
         return this.discover.modal.open && this.discover.modal.gen === gen;
       },
-      // Open the window for one row. A network row with neither plug-ins
-      // nor an admin's invite row keeps the old behaviour: copy the title.
-      // opts (the Discover page's rows): { seedTitle } the seed the row was
-      // matched against, or { seedPlain } a phrase for the seeds' centroid;
-      // { focus: 'album' } the row's album (a peer row with an album): Keep
-      // on Album; { scope } the Keep card's choice to start on (song · album
-      // · artist · artist-missing — a reopened job's own); { opener } the
-      // control it was opened from, where the keyboard goes back on close
-      // (else whatever had focus).
+      // Open the window for one row (VUEPLAYERCORE.openDiscoverModal is the
+      // way in from m.js). A network row with neither plug-ins nor an
+      // admin's invite row keeps the old behaviour: copy the title.
+      //   track  the row: a taste row (Discover, the now-playing panel), a
+      //          job's recommendation (the strip), or what a connected
+      //          server's page names (SPEC-fed §6.1) — always its `peer`
+      //          ({ id, name }: the row's own server)
+      //   opts:
+      //   { seedTitle } the seed the row was matched against, or
+      //   { seedPlain } a phrase for the seeds' centroid (the match line;
+      //     a browsed item has no similarity, so none)
+      //   { focus } what the window reads as — 'album' (needs track.album:
+      //     an album card's ⋯, an album page's header), 'artist' (needs
+      //     track.artist: an artist page's header — no Listen, no Find
+      //     elsewhere, Keep offers Artist alone, "only the albums you don't
+      //     have" ticked), 'folder' (needs track.filepath, the folder's path
+      //     on the peer, library first, and track.title its name: the file
+      //     explorer's folder header or a folder row's ⋯ — Listen plays the
+      //     folder, Keep offers Folder alone with where it lands); none =
+      //     the song (needs track.filepath)
+      //   { scope } the Keep card's choice to start on (song · album ·
+      //     artist · artist-missing — a reopened job's own; 'folder' comes
+      //     with focus 'folder')
+      //   { from: 'browse' } opened from a connected server's own pages:
+      //     a song's Album choice needs a credit the window knows
+      //     (track.albumArtist: the album page's, the song's own
+      //     'album-artist', else found in the peer's album listing — never
+      //     one track's artist), its tags are read when the row has none
+      //     (an explorer file row: track.title its file name), and Artist
+      //     says what an artist copy leaves out. An album's track there: {
+      //     album, albumArtist, year, albumArt, compilation, artist } —
+      //     artist the credit, null for a compilation (left out: the credit
+      //     unless `compilation`)
+      //   { hide } the fact links the page behind it already is:
+      //     ['viewAlbum'] from an album page, ['viewArtist'] from an artist
+      //     page
+      //   { folder: { path, name } } a song's folder, from an explorer file
+      //     row (with from 'browse'): Keep's Folder choice, after Artist.
+      //     Left out for a song at its library's root
+      //   { creditsDisagree: true } a song of an album page whose songs
+      //     name different album artists (with from 'browse'): no Album
+      //   { opener } the control it was opened from, where the keyboard
+      //     goes back on close (else whatever had focus); a browse or queue
+      //     control's data-keep-key finds it again after a redraw
+      //     (dmFocusBack)
       openDiscoverModal: async function (track, source, opts) {
         if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
         const gen = ++discoverModalGen;
         const o = opts || {};
         const peerRow = source === 'federation';
-        const focus = peerRow && o.focus === 'album' && track && track.album ? 'album' : null;
-        const scope = focus ? 'album' : (['album', 'artist', 'artist-missing'].indexOf(o.scope) !== -1 ? o.scope : 'song');
+        const t = track || {};
+        const needs = { album: !!t.album, artist: !!t.artist, folder: typeof t.filepath === 'string' && t.filepath !== '' };
+        const focus = peerRow && needs[o.focus] === true ? o.focus : null;
+        const scope = focus === 'album' || focus === 'folder' ? focus
+          : focus === 'artist' ? (o.scope === 'artist' ? 'artist' : 'artist-missing')
+            : (['album', 'artist', 'artist-missing'].indexOf(o.scope) !== -1 ? o.scope : 'song');
+        const browse = peerRow && o.from === 'browse';
+        // a browsed album names its credit: the Artist choice is that credit,
+        // unless the album is a compilation ("Various Artists" is nobody's
+        // artist copy)
+        const shown = browse && focus === 'album' && !('artist' in t) ? Object.assign({}, t, { artist: t.compilation === true ? null : (t.albumArtist || null) }) : track;
+        // a file row's folder below its library (the library is no folder)
+        const dir = browse && !focus && o.folder && typeof o.folder.path === 'string' ? DISCOVERJOBS.normalizePeerPath(o.folder.path) : '';
+        const folder = dir.indexOf('/') !== -1 ? { path: o.folder.path, name: (typeof o.folder.name === 'string' && o.folder.name) || dir.split('/').pop() } : null;
+        // a file row's song has no tags yet: Find elsewhere asks once they
+        // are read (dmLoadPeerFacts)
+        const linksAfterTags = browse && !focus && !t.artist;
         // a window that replaces an open one goes back where that came from
         if (!this.discover.modal.open || !discoverModalOpener) { discoverModalOpener = dmOpenerOf(o.opener || document.activeElement); }
         this.discover.modal = blankDiscoverModal({
-          open: true, gen, source, track, focus,
+          open: true, gen, source, track: shown, focus, from: browse ? 'browse' : null, folder, creditsDisagree: browse && !focus && o.creditsDisagree === true,
+          hide: Array.isArray(o.hide) ? o.hide.filter((h) => h === 'viewAlbum' || h === 'viewArtist') : [],
           matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
           matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
+          loading: linksAfterTags && this.discover.plugins.available,
           // artist-missing is the Artist choice with "only the albums you
           // don't have" ticked; a plain artist job leaves it unticked
-          keep: { scope: scope === 'artist-missing' ? 'artist' : scope, onlyMissing: scope !== 'artist' },
+          keep: { scope: scope === 'artist-missing' ? 'artist' : scope, onlyMissing: scope !== 'artist', landing: 'mirror', into: null, tree: null },
         });
         document.addEventListener('keydown', onDiscoverModalKey);
         this.$nextTick(() => { const el = this.$refs.dmodalClose; if (el && el.focus) { el.focus(); } });
         const jobs = [];
-        if (this.discover.plugins.available) { jobs.push(this.dmLoadLinks(gen)); jobs.push(this.dmLoadJobs(gen)); }
+        // an artist's and a folder's windows have no Find elsewhere
+        const links = focus !== 'artist' && focus !== 'folder' && !linksAfterTags;
+        if (this.discover.plugins.available) { if (links) { jobs.push(this.dmLoadLinks(gen)); } jobs.push(this.dmLoadJobs(gen)); }
         if (source === 'federation') { jobs.push(this.dmLoadPeerFacts(gen)); }
+        if (focus === 'folder') { jobs.push(this.dmLoadFolderScan(gen)); }
         if (source === 'p2p' && this.discover.admin) { jobs.push(this.dmLoadFederate(gen)); }
         await Promise.all(jobs);
       },
@@ -1262,9 +1482,11 @@ const VUEPLAYERCORE = (() => {
       // links plug-in's answer for the album itself: while it is asked, when
       // it failed (Copy title still works), or with links that name it —
       // absent where the server has no links plug-in, or one that only
-      // searches songs (dmLoadLinks).
+      // searches songs (dmLoadLinks). An artist's and a folder's windows
+      // have none: the plug-in has no phrase for either.
       dmFindVisible: function () {
         const m = this.discover.modal;
+        if (this.dmArtistFocus() || this.dmFolderFocus()) { return false; }
         return !this.dmAlbumFocus() || m.loading || m.error || m.links.length > 0;
       },
       // The links of one tier: 'canonical' (the exact page: recording,
@@ -1295,20 +1517,72 @@ const VUEPLAYERCORE = (() => {
       // what Album copies, and each song's own artist, year and genres in
       // it are what the album's path draws by (dmScopeTags: one folder only
       // where every song agrees); the artist's facts stay the track
-      // artist's.
+      // artist's. An artist's window reads no file and no album; a folder's
+      // only the peers listing (its count is dmLoadFolderScan's). A song
+      // opened from a connected server's pages reads in turn
+      // (dmLoadBrowsedFacts).
       dmLoadPeerFacts: async function (gen) {
-        const track = this.discover.modal.track;
+        const m = this.discover.modal;
+        const track = m.track;
         const peerId = track.peer && track.peer.id;
         if (!peerId) { return; }
+        if (m.from === 'browse' && !m.focus) { return this.dmLoadBrowsedFacts(gen); }
         const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
         const [peers, meta, albumSongs, peerAlbums, localAlbums] = await Promise.all([
           settle(MSTREAMAPI.federationPeers()),
-          settle(MSTREAMAPI.peer.metadata(peerId, track.filepath)),
+          track.filepath && m.focus !== 'folder' ? settle(MSTREAMAPI.peer.metadata(peerId, track.filepath)) : Promise.resolve(null),
           track.album ? settle(MSTREAMAPI.peer.albumSongs(peerId, this.dmAlbumQuery())) : Promise.resolve(null),
           track.artist ? settle(MSTREAMAPI.peer.artistAlbums(peerId, { artist: track.artist })) : Promise.resolve(null),
           track.artist ? settle(MSTREAMAPI.artistAlbums({ artist: track.artist })) : Promise.resolve(null),
         ]);
         if (!this.dmLive(gen)) { return; }
+        this.dmTakePeerFacts({ peers, meta, albumSongs, peerAlbums, localAlbums });
+      },
+      // A song from a connected server's pages (SPEC-fed §6.1, §6.3): the
+      // row may name no tags (an explorer file row: its file name) and no
+      // album credit (a genre, Recently Added or search row). So in turn:
+      // the file's metadata — merged into the song (dmMergeFileTags: the
+      // header, Album and Artist appear once known; Find elsewhere asks
+      // then) — the artist's album listings, the album's credit found in
+      // the peer's (dmCreditFrom), then the album as that credit lists it.
+      // A row that named its artist starts the artist's listings with the
+      // file's read. Once the song reads otherwise than it opened, what
+      // this account did with it is looked up again: the keys are its tags'.
+      dmLoadBrowsedFacts: async function (gen) {
+        const m = this.discover.modal;
+        const opened = m.track;
+        const peerId = opened.peer.id;
+        const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
+        const listings = (artist) => Promise.all([
+          settle(MSTREAMAPI.peer.artistAlbums(peerId, { artist })),
+          settle(MSTREAMAPI.artistAlbums({ artist })),
+        ]);
+        const early = opened.artist ? listings(opened.artist) : null;
+        const [peers, meta] = await Promise.all([
+          settle(MSTREAMAPI.federationPeers()),
+          opened.filepath ? settle(MSTREAMAPI.peer.metadata(peerId, opened.filepath)) : Promise.resolve(null),
+        ]);
+        if (!this.dmLive(gen)) { return; }
+        this.dmTakePeerFacts({ peers, meta });
+        this.dmMergeFileTags();
+        const links = !opened.artist && this.discover.plugins.available ? this.dmLoadLinks(gen) : null;
+        const tagged = m.track;
+        const [peerAlbums, localAlbums] = early ? await early : (tagged.artist ? await listings(tagged.artist) : [null, null]);
+        if (!this.dmLive(gen)) { return; }
+        this.dmCreditFrom(peerAlbums && Array.isArray(peerAlbums.albums) ? peerAlbums.albums : null);
+        const albumSongs = m.track.album ? await settle(MSTREAMAPI.peer.albumSongs(peerId, this.dmAlbumQuery())) : null;
+        if (!this.dmLive(gen)) { return; }
+        this.dmTakePeerFacts({ peers, meta, albumSongs, peerAlbums, localAlbums });
+        const jobs = m.track !== opened && this.discover.plugins.available ? this.dmLoadJobs(gen) : null;
+        await Promise.all([links, jobs]);
+      },
+      // What the reads said, into the window: the peer's status (`peers`,
+      // and whether a read of its own answered), the file's facts (`meta`),
+      // the album's (`albumSongs`) and the artist's (`peerAlbums`, this
+      // library's `localAlbums`); a read not made is null.
+      dmTakePeerFacts: function ({ peers, meta, albumSongs = null, peerAlbums = null, localAlbums = null }) {
+        const track = this.discover.modal.track;
+        const peerId = track.peer.id;
         const peer = peers && Array.isArray(peers.peers) ? peers.peers.find((p) => p.id === peerId) : null;
         // The listing's last_seen is the admin's last health check; the three
         // proxied reads above are this very minute. One that answered means
@@ -1350,7 +1624,64 @@ const VUEPLAYERCORE = (() => {
           missing: mine.missing,
           missingOne: mine.missingOne,
           local: localList ? localList.length : null,
+          // every album the peer lists them on, theirs or not (the artist
+          // window's "4 albums on Stage Peer B"), and the listing itself
+          // (what an artist copy leaves out: dmKeepLeftOut)
+          named: remote ? remote.filter((al) => al && typeof al.name === 'string' && al.name.trim()).length : null,
+          listing: remote,
         } : null;
+      },
+      // A browsed song's file read answered: its tags into the song where
+      // the row named none — the title the tags' over a file row's file
+      // name — so the header, Album and Artist read as the song. Its
+      // album's credit is dmCreditFrom's, once the peer's album list can
+      // bear it out. The song is a new object: what read the old one sees
+      // it changed.
+      dmMergeFileTags: function () {
+        const m = this.discover.modal;
+        const md = m.file && m.file.metadata;
+        if (!md) { return; }
+        const t = m.track;
+        const tagged = Object.assign({}, t, {
+          title: md.title || t.title,
+          artist: t.artist || md.artist || undefined,
+          album: t.album || md.album || undefined,
+          year: t.year || md.year || undefined,
+          duration: t.duration || md.duration || undefined,
+          albumArt: t.albumArt || md['album-art'] || undefined,
+        });
+        if (['title', 'artist', 'album', 'year', 'duration', 'albumArt'].some((k) => (tagged[k] || null) !== (t[k] || null))) { m.track = tagged; }
+      },
+      // The album's credit, when the song's window knows none (the page
+      // behind it named none): the song's own 'album-artist' (its file
+      // read, a server since S2), as the peer's album listing for the
+      // song's artist bears it out (SPEC-fed §4.2 step 3) — the one album
+      // of the song's album's name (as names compare) whose years hold the
+      // song's year. One with a credit of its own gives it; one whose songs
+      // name different album artists leaves the credit out, whatever the
+      // song names (each half of a split album names its own artist: an
+      // album copy by it would take that half). None or several matching,
+      // or no listing, the song's own stands; without one the credit stays
+      // unknown — and Album out (never one track's artist: a compilation
+      // would copy a third of itself). An album page that said its songs
+      // disagree gives none (creditsDisagree).
+      dmCreditFrom: function (remote) {
+        const m = this.discover.modal;
+        const t = m.track;
+        if (!t.album || m.creditsDisagree || (typeof t.albumArtist === 'string' && t.albumArtist.trim())) { return; }
+        const md = m.file && m.file.metadata;
+        let credit = md && typeof md['album-artist'] === 'string' && md['album-artist'].trim() ? md['album-artist'] : null;
+        if (Array.isArray(remote)) {
+          const year = Number(t.year) || null;
+          const holds = (al) => {
+            const lo = Number(al.year_min || al.year) || null;
+            const hi = Number(al.year_max || al.year) || null;
+            return !year || ((!lo || year >= lo) && (!hi || year <= hi));
+          };
+          const hits = remote.filter((al) => al && typeof al.name === 'string' && dmNameKey(al.name) === dmNameKey(t.album) && holds(al));
+          if (hits.length === 1) { credit = typeof hits[0].album_artist === 'string' && hits[0].album_artist.trim() ? hits[0].album_artist : null; }
+        }
+        if (credit) { m.track = Object.assign({}, t, { albumArtist: credit }); }
       },
       // "What you're missing" by NAME, as the copy itself reckons it
       // (federation-copy's planArtistAlbums over owned.js ownedAlbumKeys),
@@ -1435,6 +1766,8 @@ const VUEPLAYERCORE = (() => {
         if (q.artist) { el.setAttribute('data-artist', q.artist); }
         if (q.album_artist) { el.setAttribute('data-album-artist', q.album_artist); }
         if (m.track.year) { el.setAttribute('data-year', String(m.track.year)); }
+        // a compilation card's: its page keeps no Artist in its own window
+        if (m.track.compilation === true) { el.setAttribute('data-compilation', 'true'); }
         el.setAttribute('data-peer', m.track.peer.id);
         this.closeDiscoverModal();
         getAlbumsOnClick(el);
@@ -1470,6 +1803,92 @@ const VUEPLAYERCORE = (() => {
         });
         if (play) { this.closeDiscoverModal(); return; }
         iziToast.success({ title: this.tt('discover.modal.albumQueued', { count: songs.length }), position: 'topCenter', timeout: 2000 });
+      },
+      // ── A folder's window (SPEC-fed §6.5) ──────────────────────────────
+      // The count: one recursive listing of the folder on the peer, when
+      // the window opens on the folder or its Folder choice is first
+      // chosen — never on a page view — planned as the copy plans it
+      // (DISCOVERJOBS.planFolder over the ping's supported formats: the
+      // server may still leave out a hidden or ignored file, and its result
+      // says so). A failed or unanswered listing is "Couldn't count its
+      // songs", and nothing asks again. Once counted, "By your layout"
+      // reads the songs' tags if it is the landing chosen.
+      dmLoadFolderScan: async function (gen) {
+        const m = this.discover.modal;
+        const f = this.dmFolder();
+        if (!f || m.folderScan || !m.track.peer) { return; }
+        const scan = { state: 'counting', songs: null, subfolders: null, paths: null };
+        m.folderScan = scan;
+        let listing = null;
+        try { listing = await MSTREAMAPI.peer.recursiveScan(m.track.peer.id, f.path); } catch (_) { listing = null; }
+        if (!this.dmLive(gen) || m.folderScan !== scan) { return; }
+        if (!Array.isArray(listing)) {
+          m.folderScan = { state: 'failed', songs: null, subfolders: null, paths: null };
+          return;
+        }
+        const supported = (MSTREAMAPI.currentServer && MSTREAMAPI.currentServer.supportedAudioFiles) || null;
+        const plan = DISCOVERJOBS.planFolder(listing, f.path, { supported });
+        const n = DISCOVERJOBS.folderCounts(plan.songs);
+        m.folderScan = { state: 'done', songs: n.songs, subfolders: n.subfolders, paths: plan.songs };
+        // past the cap the card holds its line alone: the landings and Add
+        // the keyboard may have reached meanwhile are gone
+        this.dmHoldFocus();
+        if (m.keep.landing === 'tags') { await this.dmLoadFolderTags(gen); }
+      },
+      // "By your layout"'s tags: each song's, read once — the first time
+      // that landing is chosen, once the folder is counted — in one
+      // metadata batch, and only for a folder of FOLDER_TAGS_MAX songs or
+      // fewer. Past that, or with no answer, the window has no tags: every
+      // tag variable is a slot.
+      dmLoadFolderTags: async function (gen) {
+        const m = this.discover.modal;
+        const scan = m.folderScan;
+        if (m.folderTags || !scan || scan.state !== 'done' || !m.track.peer) { return; }
+        if (scan.songs === 0 || scan.songs > FOLDER_TAGS_MAX) { m.folderTags = { state: 'skipped', songs: null }; return; }
+        const read = { state: 'loading', songs: null };
+        m.folderTags = read;
+        let res = null;
+        try { res = await MSTREAMAPI.peer.metadataBatch(m.track.peer.id, scan.paths.map((p) => p.filepath)); } catch (_) { res = null; }
+        if (!this.dmLive(gen) || m.folderTags !== read) { return; }
+        m.folderTags = res && typeof res === 'object'
+          ? { state: 'done', songs: scan.paths.map((p) => DISCOVERJOBS.folderSongTags(res[p.filepath] || { filepath: p.filepath, metadata: null })) }
+          : { state: 'failed', songs: null };
+      },
+      // Whether the folder is counted: Listen plays and queues what the
+      // copy takes, and waits for it (aria-disabled until then).
+      dmFolderReady: function () {
+        const scan = this.discover.modal.folderScan;
+        return !!(scan && scan.state === 'done' && scan.paths && scan.paths.length);
+      },
+      // The meta line's count: "Counting…", "3 songs · no subfolders",
+      // "Couldn't count its songs". → its parts.
+      dmFolderCountParts: function () {
+        const scan = this.discover.modal.folderScan;
+        if (!scan || scan.state === 'counting') { return [this.tt('discover.modal.counting')]; }
+        if (scan.state === 'failed') { return [this.tt('discover.modal.countFailed')]; }
+        return [
+          this.dmCount('discover.modal.songCount', scan.songs),
+          scan.subfolders ? this.dmCount('discover.modal.subfolders', scan.subfolders) : this.tt('discover.modal.noSubfolders'),
+        ];
+      },
+      // The play row's second line: how many songs, blank until counted.
+      dmFolderPlaySub: function () {
+        const scan = this.discover.modal.folderScan;
+        return scan && scan.state === 'done' ? this.dmCount('discover.modal.songCount', scan.songs) : '';
+      },
+      // Play folder plays its first song in place of the queue, the rest
+      // after it, and closes the window (as Play album does); Add to queue
+      // appends them all and says so. In path order, as counted — nothing
+      // before the count.
+      dmQueueFolder: function (play) {
+        const m = this.discover.modal;
+        if (!this.dmFolderReady()) { return; }
+        if (play) { mstreamModule.clearQueue(); }
+        m.folderScan.paths.forEach((song, i) => {
+          mstreamModule.addFederationSongWizard(m.track.peer, song.filepath, {}, !(play && i === 0));
+        });
+        if (play) { this.closeDiscoverModal(); return; }
+        iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
       },
       // ── Federate row (network rows, admins) ────────────────────────────
       // Paired already (the peers listing exposes each peer's endpoint id)
@@ -1583,10 +2002,13 @@ const VUEPLAYERCORE = (() => {
         if (!discoverPluginsPromise) {
           const host = MSTREAMAPI.currentServer.host;
           const pending = MSTREAMAPI.discoveryPlugins().then((res) => {
-            if (discoverPluginsPromise === pending) { discoverPluginsPromise = null; }
+            // a fresher listing came in meanwhile (mstreamModule.takeDiscoverPlugins): it stands
+            if (discoverPluginsPromise !== pending) { return this.discover.plugins.list || []; }
+            discoverPluginsPromise = null;
             if (host !== MSTREAMAPI.currentServer.host) { return []; }   // the app moved to another server meanwhile
             this.discover.plugins.list = (res && res.plugins) || [];
             this.discover.plugins.jobsAllowed = !!(res && res.jobs && res.jobs.allowed === true);
+            this.discover.plugins.maxFolderSongs = DISCOVERJOBS.maxFolderSongs(res);
             return this.discover.plugins.list;
           });
           discoverPluginsPromise = pending;
@@ -1607,14 +2029,15 @@ const VUEPLAYERCORE = (() => {
       },
       // "Get it": every acquire plug-in but the peer copy, which is Keep a
       // copy's. One { plugin, row } per plug-in; none without a destination
-      // to land in, and none in album focus (a download is one song's; the
-      // album's window never starts a song job). A connected server's window
-      // offers them only in Keep a copy's place — the copy's gate failed:
-      // while Keep shows, the exact file is one press away. A download this
-      // song already has a job for still shows there, in whatever state (a
-      // strip row reopens the window on it): only the offers go.
+      // to land in, and none in album, artist or folder focus (a download is
+      // one song's; those windows never start a song job). A connected
+      // server's window offers them only in Keep a copy's place — the
+      // copy's gate failed: while Keep shows, the exact file is one press
+      // away. A download this song already has a job for still shows there,
+      // in whatever state (a strip row reopens the window on it): only the
+      // offers go.
       dmGetItRows: function () {
-        if (!this.dmHasDestination() || this.dmAlbumFocus()) { return []; }
+        if (!this.dmHasDestination() || this.discover.modal.focus) { return []; }
         const keep = this.discover.modal.source === 'federation' && this.dmKeepChoices().length > 0;
         return this.discoverAcquirePlugins()
           .filter((p) => p.name !== DISCOVERJOBS.COPY_PLUGIN && (!keep || !!this.discover.modal.jobs[p.name]))
@@ -1714,10 +2137,15 @@ const VUEPLAYERCORE = (() => {
       // narrows the album's songs by it, and without one every album of
       // that name comes back, whoever made it (the jobs route's 400,
       // recommendation.js scopeMissing). The artist copies need the artist.
+      // Opened from a connected server's pages, a song names its album's
+      // credit or not at all (SPEC-fed §6.1): Album waits for the credit —
+      // never the track artist in its place. The folder copy needs a folder
+      // (an explorer's: dmFolder) — never on Discover.
       dmScopeRows: function (scope) {
         const m = this.discover.modal;
         if (m.source !== 'federation' || !this.dmHasDestination() || !m.track) { return []; }
-        const has = scope === 'album' ? !!(m.track.album && DISCOVERYPAGE.albumCreditOf(m.track)) : !!m.track.artist;
+        const credit = m.from === 'browse' ? (typeof m.track.albumArtist === 'string' ? m.track.albumArtist.trim() : '') : DISCOVERYPAGE.albumCreditOf(m.track);
+        const has = scope === 'album' ? !!(m.track.album && credit) : (scope === 'folder' ? !!this.dmFolder() : !!m.track.artist);
         if (!has) { return []; }
         return this.discoverAcquirePlugins()
           .filter((p) => p.name === DISCOVERJOBS.COPY_PLUGIN && Array.isArray(p.scopes) && p.scopes.indexOf(scope) !== -1)
@@ -1783,13 +2211,17 @@ const VUEPLAYERCORE = (() => {
       // compilation too) — blank until the peer said. `aria` is the radio's
       // name: what the choice copies ("Every album by Boukmanflow, 3
       // albums"). The album's window has no "This song": it reads as the
-      // album, and one of its songs is not. The section's gate.
+      // album, and one of its songs is not; nor have an artist's and a
+      // folder's (their one choice is theirs). Last, a file row's song's
+      // folder (SPEC-fed §6.3): "Folder", its name until it is counted, then
+      // how many songs ("Folder: Borrowed Tapes, 3 songs"). The section's
+      // gate.
       dmKeepChoices: function () {
         const m = this.discover.modal;
         const tr = m.track;
         if (!tr) { return []; }
         const out = [];
-        if (!this.dmAlbumFocus() && this.dmCopyRows().length) {
+        if (!m.focus && this.dmCopyRows().length) {
           const bits = [tr.duration ? this.dmDuration(tr.duration) : '', m.file && m.file.format ? m.file.format : ''];
           out.push({ scope: 'song', label: this.tt('discover.modal.song'), sub: bits.filter(Boolean).join(' · '),
             aria: this.tt('discover.keep.songAria', { title: tr.title || '' }) });
@@ -1808,6 +2240,13 @@ const VUEPLAYERCORE = (() => {
           out.push({ scope: 'artist', label: this.tt('discover.modal.artist'), sub: count ? `${tr.artist} · ${count}` : '',
             aria: [this.tt('discover.keep.artistAria', { artist: tr.artist }), count].filter(Boolean).join(', ') });
         }
+        if (this.dmScopeRows('folder').length) {
+          const f = this.dmFolder();
+          const scan = m.folderScan;
+          const n = scan && scan.state === 'done' ? scan.songs : null;
+          out.push({ scope: 'folder', label: this.tt('discover.keep.folder'), sub: n !== null ? this.dmCount('discover.modal.songCount', n) : f.name,
+            aria: n !== null ? this.dmCount('discover.keep.folderAriaCount', n, { name: f.name }) : this.tt('discover.keep.folderAria', { name: f.name }) });
+        }
         return out;
       },
       // A compilation: the row's album has a credit of its own that is not
@@ -1816,8 +2255,16 @@ const VUEPLAYERCORE = (() => {
         const tr = this.discover.modal.track || {};
         return typeof tr.albumArtist === 'string' && tr.albumArtist.trim() !== '' && dmNameKey(tr.albumArtist) !== dmNameKey(tr.artist);
       },
+      // A choice in the strip. Folder, chosen the first time, counts the
+      // folder (and reads its tags under "By your layout").
       dmKeepChoose: function (scope) {
-        this.discover.modal.keep.scope = scope;
+        const m = this.discover.modal;
+        m.keep.scope = scope;
+        // a new folder being named goes with the landings that showed it
+        if (scope !== 'folder' && m.keep.tree) { Object.assign(m.keep.tree, { naming: false, newName: '' }); }
+        if (scope === 'folder') {
+          if (!m.folderScan) { this.dmLoadFolderScan(m.gen); } else if (m.keep.landing === 'tags') { this.dmLoadFolderTags(m.gen); }
+        }
       },
       // The chosen scope — the first offered one when the choice is gone.
       dmKeepChosen: function () {
@@ -1900,10 +2347,16 @@ const VUEPLAYERCORE = (() => {
       // album · 3 songs" ("Add the songs you lack" when the library has the
       // album by name — the copy decides by file — "Add album" before the
       // peer said); "Add 3 albums" ("Add every album"); only the missing
-      // ones, "Add 1 album" ("Add the missing albums").
+      // ones, "Add 1 album" ("Add the missing albums"); a folder, "Add
+      // folder · 3 songs" ("Add folder" while it is counted, or when it
+      // could not be — Add never waits on the count).
       dmKeepStartLabel: function (scope) {
         const s = scope || this.dmKeepScope();
         const m = this.discover.modal;
+        if (s === 'folder') {
+          const scan = m.folderScan;
+          return scan && scan.state === 'done' && scan.songs ? this.dmCount('discover.keep.addFolder', scan.songs) : this.tt('discover.keep.addFolderUncounted');
+        }
         if (s === 'album') {
           const a = m.album;
           if (a && a.owned) { return this.tt('discover.keep.addLacking'); }
@@ -1921,14 +2374,24 @@ const VUEPLAYERCORE = (() => {
       },
       // Add — and Retry, Add again, Try again: a copy of `scope` (the
       // card's own unless given), sent with the destination the window
-      // shows (dmJobStart). Once the server answered, the keyboard goes to
-      // the button now in the pressed one's place (dmKeepHold).
-      dmKeepStart: async function (scope) {
+      // shows (dmJobStart). A folder lands where the landings say — or,
+      // for a Retry or an Add again of `job`, where that copy was asked to
+      // (its params.landing: none = as on the peer). Once the server
+      // answered, the keyboard goes to the button now in the pressed one's
+      // place (dmKeepHold).
+      dmKeepStart: async function (scope, job) {
         const k = this.dmKeepRow(scope);
         if (!k) { return; }
         discoverKeepPresses += 1;
         try {
-          if (k.scope) { await this.dmJobStart(k.plugin, null, k.scope); } else { await this.dmJobStart(k.plugin); }
+          if (k.scope === 'folder') {
+            const landing = job ? ((job.params && job.params.landing) || null) : this.dmFolderLandingSent();
+            await this.dmJobStart(k.plugin, null, k.scope, landing);
+            // the copy under way: the landings go, a new folder being named
+            // there with them
+            const m = this.discover.modal;
+            if (m.keep.tree && m.jobs[k.slot]) { Object.assign(m.keep.tree, { naming: false, newName: '' }); }
+          } else if (k.scope) { await this.dmJobStart(k.plugin, null, k.scope); } else { await this.dmJobStart(k.plugin); }
         } finally { discoverKeepPresses -= 1; }
         this.dmKeepHold();
       },
@@ -1940,20 +2403,29 @@ const VUEPLAYERCORE = (() => {
       //   kind      'idle' (the path bar and Add) · 'state' (a job: the
       //             outcome block) · 'refused' (a start the server did not
       //             take: the bar, `line`, Try again) · 'lost' (a right gone
-      //             while the window was open: `line`, alone in the card)
+      //             while the window was open: `line`, alone in the card) ·
+      //             'cap' (a folder past the songs one copy takes here:
+      //             `line`, alone in the card)
       //   state     idle · queued · copying · stopping · kept · yours ·
       //             skipped · stopped · refused · failed · cancelled ·
-      //             nothing · done · refusedStart · lost
+      //             nothing · done · refusedStart · lost · cap
+      //   bar       whether the path bar draws under the choices (idle, a
+      //             refused start) — a folder's only "By your layout": as on
+      //             the peer and into a folder draw their own place
+      //   landing   a folder's: the one chosen while idle, the job's own
+      //             once there is one ('mirror' · 'folder' · 'tags')
       //   tile      { icon, tint: gold · ok · warn · err · grey }
       //   headline  with its tone (n · ok · warn · err) and the % beside it
       //   sub, muted, progress (a %, 'indeterminate' or null) and
       //   progressText (what the bar says aloud), path (dmJobPath: Into
       //   while it runs, In once it landed), retryPath ({ prefix, path }:
-      //   where Retry or Add again adds now the saved place moved), files
-      //   (what Play your copy plays), folder (where Show in your library
-      //   opens: [library, folder…])
+      //   where Retry or Add again adds now the saved place moved — or, for
+      //   a folder copy into a folder of its own, where it adds: its
+      //   `suffix` the words after it), files (what Play your copy plays),
+      //   folder (where Show in your library opens: [library, folder…])
       //   actions   [{ id, kind: primary · secondary · ghost, label, icon,
-      //             busy }], left to right — the primary last
+      //             busy, disabled }], left to right — the primary last;
+      //             `disabled` a folder's Add where it cannot land
       //   status    what the headline says as a live region: the headline
       //             while it runs (the % is the bar's), headline and sub
       //             once it is over
@@ -1965,7 +2437,7 @@ const VUEPLAYERCORE = (() => {
         const m = this.discover.modal;
         const tt = (key, params) => this.tt(key, params);
         const v = {
-          scope: null, slot: null, kind: 'state', state: 'idle', job: null, other: null, borrowed: null, live: false,
+          scope: null, slot: null, kind: 'state', state: 'idle', job: null, other: null, borrowed: null, live: false, bar: false, landing: null,
           tile: null, headline: '', tone: 'n', pct: null, sub: '', muted: '', progress: null, progressText: '',
           path: null, retryPath: null, line: '', files: [], folder: null, actions: [], status: '',
         };
@@ -1980,8 +2452,15 @@ const VUEPLAYERCORE = (() => {
         const here = (m.track && m.track.peer && m.track.peer.name) || 'peer';
         // a start in flight dims the button that asked for it ("Adding…")
         const act = (id, kind, label, icon) => ({ id, kind, label, icon: icon || null, busy: busy && ['add', 'retry', 'addAgain', 'tryAgain'].indexOf(id) !== -1 });
-        const add = () => act('add', 'primary', busy ? tt('discover.keep.adding') : this.dmKeepStartLabel(s), 'folder');
-        Object.assign(v, { scope: s, slot: k.slot, job, other, borrowed: k.borrowed, live: !!k.row.live });
+        // a folder's Add waits for a place it can land in (a name the
+        // folder list refuses, a path too long): dimmed, never gone
+        const folder = s === 'folder';
+        const add = () => Object.assign(act('add', 'primary', busy ? tt('discover.keep.adding') : this.dmKeepStartLabel(s), 'folder'),
+          folder && !busy ? { disabled: !this.dmFolderPlaceOk() } : {});
+        // idle, the landings say where a folder goes; with a job, the job's
+        // own landing does (a second Add of a live copy only returns it)
+        const landing = folder ? (job ? DISCOVERJOBS.landingMode(job.params && job.params.landing) : m.keep.landing) : null;
+        Object.assign(v, { scope: s, slot: k.slot, job, other, borrowed: k.borrowed, live: !!k.row.live, landing, bar: !folder || landing === 'tags' });
 
         // A start the server refused (SPEC §8.1): the choices and the bar
         // stay; the line says why, and Try again takes Add's place — Add
@@ -1994,7 +2473,14 @@ const VUEPLAYERCORE = (() => {
           return Object.assign(v, { kind: 'refused', state: 'refusedStart', line: tt(why),
             actions: [moved ? add() : act('tryAgain', 'ghost', tt('discover.keep.tryAgain'), 'retry')] });
         }
-        if (!job) { return Object.assign(v, { kind: 'idle', actions: [add()] }); }
+        if (!job) {
+          // a folder past the cap (SPEC-fed §6.5.4): its line alone — no
+          // landings, no place, no Add
+          const cap = folder ? this.dmFolderCap() : null;
+          if (cap) { return Object.assign(v, { kind: 'cap', state: 'cap', bar: false, line: cap }); }
+          return Object.assign(v, { kind: 'idle', actions: [add()] });
+        }
+        v.bar = false;
 
         // Queued, copying, stopping: where it is going (Into), Cancel. The
         // server's line under the headline, its % beside it; another
@@ -2041,7 +2527,7 @@ const VUEPLAYERCORE = (() => {
         const peer = (res.peer && res.peer.name) || (other && other.name) || here;
         const words = (list) => list.filter(Boolean).join(' · ');
         const parts = (leave) => DISCOVERJOBS.manyParts(res).filter((p) => (leave || []).indexOf(p.key) === -1).map((p) => tt(p.key, p.params));
-        const landed = DISCOVERJOBS.landedPath(res);
+        const landed = this.dmJobLanded(job);
         // whose copy this is when it is not the choice's own: the wider
         // copy that settled it — or, said only of what it copied, the
         // only-missing copy the Artist choice keeps once the checkbox went
@@ -2070,6 +2556,10 @@ const VUEPLAYERCORE = (() => {
             Object.assign(v, { state: 'kept', tile: { icon: 'check', tint: 'ok' }, headline: tt('discover.keep.kept'), tone: 'ok' });
             v.sub = n ? words(parts().concat(whose || record)) : dmCapital(words([other ? tt('discover.keep.copiedFrom', { peer: other.name }) : '', whose]));
             if (gaps) { v.muted = tt('discover.keep.gaps'); }
+            // a folder's files the copy left out — not music this server
+            // plays, or hidden (its gaps say more: they win)
+            const outFiles = folder && Array.isArray(res.skippedFiles) ? res.skippedFiles.length : 0;
+            if (!gaps && outFiles) { v.muted = this.dmCount('discover.keep.filesLeftOut', outFiles); }
             // an artist's copy is many albums: no Play, its folder to show
             if (s === 'song') { v.actions = [queue(), play('primary')]; } else if (wide) { v.actions = [show(), gaps ? retry() : null]; } else { v.actions = gaps ? [play('secondary'), retry()] : [show(), play('primary')]; }
             break;
@@ -2097,11 +2587,11 @@ const VUEPLAYERCORE = (() => {
               Object.assign(v, { state: 'refused', headline: tt('discover.keep.refused', { peer }), sub: tt('discover.job.stoppedRefused', { peer }),
                 muted: n && n.copied ? tt('discover.keep.refusedSome', { count: n.copied, peer }) : tt('discover.keep.refusedNone', { peer }) });
             } else {
-              // what an album's copy left behind ("2 not copied": its
-              // failures with the songs it never reached); a walk of many
-              // albums knows only what it reached
+              // what an album's or a folder's copy left behind ("2 not
+              // copied": its failures with the songs it never reached); a
+              // walk of many albums knows only what it reached
               const total = res.counts && typeof res.counts.total === 'number' ? res.counts.total : (Number(res.songs && res.songs.total) || 0);
-              const left = s === 'album' ? Math.max(0, total - n.copied - n.skipped) : 0;
+              const left = s === 'album' || folder ? Math.max(0, total - n.copied - n.skipped) : 0;
               const tail = { quota: 'discover.keep.tryLater', busy: 'discover.keep.tryMoment' }[res.stopped];
               Object.assign(v, { state: 'stopped', headline: tt('discover.keep.stopped.' + res.stopped, { peer }), muted: tt('discover.keep.gaps'),
                 sub: words(parts(['discover.job.failedCount']).concat(left ? tt('discover.keep.notCopied', { count: left }) : '', tail ? tt(tail) : '')) });
@@ -2118,7 +2608,10 @@ const VUEPLAYERCORE = (() => {
             } else {
               v.sub = words([tt('discover.keep.nothingCopied')].concat(parts(['discover.job.copiedCount'])));
             }
-            v.actions = [retry()];
+            // a folder past the server's cap (F15: a server that does not
+            // say its cap up front): a Retry would fail the same way — the
+            // server's words name the limit
+            v.actions = folder && this.dmFolderCapFailed(job) ? [] : [retry()];
             break;
           case 'cancelled':
             Object.assign(v, { state: 'cancelled', tile: { icon: 'close', tint: 'grey' }, headline: tt('discover.keep.cancelled') });
@@ -2142,11 +2635,18 @@ const VUEPLAYERCORE = (() => {
         if (other && s === 'song' && v.state !== 'kept' && v.state !== 'refused') { v.sub = words([tt('discover.keep.fromPeer', { peer: other.name }), v.sub]); }
         // Retry and Add again land at the saved place now: when that is not
         // where this copy went, the card says where — Skipped says it in its
-        // muted line already (S11b)
+        // muted line already (S11b). A folder's land by its own landing: one
+        // into a folder of its own says where, always (the landings are not
+        // there to say it), and its In line goes when it names the same
+        // place; one as on the peer or by the layout, once the saved place
+        // moved, where it lands now.
         const again = v.actions.find((a) => a.id === 'retry' || a.id === 'addAgain');
-        const now = again && v.state !== 'skipped' && this.dmDestMoved(job) ? this.dmDestPath(s) : null;
+        const own = folder && landing === 'folder';
+        const now = again && v.state !== 'skipped' && (own || this.dmDestMoved(job))
+          ? this.dmDestPath(s, null, null, folder ? (job.params && job.params.landing) || null : undefined) : null;
+        if (now && own && v.path && v.path.path.title === now.title) { v.path = null; }
         if (now) {
-          v.retryPath = { prefix: tt(again.id === 'retry' ? 'discover.modal.dest.retryAddsTo' : 'discover.modal.dest.addAgainAddsTo'), path: now };
+          v.retryPath = { prefix: tt(again.id === 'retry' ? 'discover.modal.dest.retryAddsTo' : 'discover.modal.dest.addAgainAddsTo'), path: now, suffix: own ? '' : tt('discover.modal.dest.savedNow') };
           // one note on a card: an In line drawn from the place the copy ran
           // with (its result named no files) says its slots with the Retry
           // line's, under the last path
@@ -2232,6 +2732,258 @@ const VUEPLAYERCORE = (() => {
       dmKeepShown: function () {
         return this.dmKeepChoices().length > 0 || this.dmKeepLost() !== '';
       },
+      // Under Artist, what an artist copy leaves out (SPEC-fed §6.4), by the
+      // copy's own rule (DISCOVERJOBS.artistLeftOut over the peer's listing
+      // the window read): "Leaves out Night Market Sampler: Boukmanflow
+      // only appears on it." — several counted — and "Songs outside an
+      // album stay out too." for a listing with songs in no album. From a
+      // connected server's pages and in an artist's window only (Discover's
+      // windows say what they always said). '' for nothing left out.
+      dmKeepLeftOut: function () {
+        const m = this.discover.modal;
+        if ((m.from !== 'browse' && !this.dmArtistFocus()) || this.dmKeepChosen() !== 'artist' || !m.artist || !m.artist.listing) { return ''; }
+        const out = DISCOVERJOBS.artistLeftOut({ albums: m.artist.listing }, m.track.artist);
+        return out ? out.parts.map((p) => this.tt(p.key, p.params)).join(' ') : '';
+      },
+      // ── Keep a copy: where a folder lands (SPEC-fed §6.5.4) ────────────
+      // The landings, idle under the Folder choice — a copy (live or over)
+      // shows its own, in its state: one folder, one job (G20). Not past
+      // the cap, not while the card is a right lost.
+      dmLandShown: function () {
+        const v = this.dmKeepView();
+        return !!v && v.scope === 'folder' && (v.kind === 'idle' || v.kind === 'refused');
+      },
+      // The three, each { mode, label, sub, on }: as on the peer (the
+      // first: its own folders, as they are there), into a folder (one
+      // picked for this copy only), by the layout (each song by its tags).
+      dmLandings: function () {
+        const m = this.discover.modal;
+        const peer = (m.peer && m.peer.name) || (m.track && m.track.peer && m.track.peer.name) || '';
+        return [
+          { mode: 'mirror', label: this.tt('discover.keep.landing.mirror', { peer }), sub: this.tt('discover.keep.landing.mirrorSub') },
+          { mode: 'folder', label: this.tt('discover.keep.landing.folder'), sub: this.tt('discover.keep.landing.folderSub') },
+          { mode: 'tags', label: this.tt('discover.keep.landing.tags'), sub: this.tt('discover.keep.landing.tagsSub') },
+        ].map((l) => Object.assign(l, { on: l.mode === m.keep.landing }));
+      },
+      // A landing chosen: into a folder lists its first place's folders,
+      // by the layout reads the songs' tags (once); the destination editor
+      // is the layout's, and goes with it. When the switch took the
+      // control the keyboard was on, the landings take it.
+      dmLandChoose: function (mode) {
+        const m = this.discover.modal;
+        if (['mirror', 'folder', 'tags'].indexOf(mode) === -1) { return; }
+        m.keep.landing = mode;
+        if (mode !== 'tags' && m.picker) { m.picker = null; }
+        // a new folder being named goes with "Into a folder…"
+        if (mode !== 'folder' && m.keep.tree) { Object.assign(m.keep.tree, { naming: false, newName: '' }); }
+        if (mode === 'folder' && !m.keep.tree) {
+          m.keep.into = this.dmFolderInto();
+          m.keep.tree = { loading: false, dirs: [], failed: false, naming: false, newName: '', braced: '' };
+          this.dmIntoLoad();
+        }
+        if (mode === 'tags') { this.dmLoadFolderTags(m.gen); }
+        this.dmLandHold();
+      },
+      dmLandHold: function () {
+        this.$nextTick(() => {
+          const root = this.$refs.dmodal;
+          const at = document.activeElement;
+          if (!root || typeof root.querySelector !== 'function' || (at && at !== document.body && root.contains(at))) { return; }
+          const radio = root.querySelector('.dm-land-radio:checked');
+          if (radio && radio.focus) { radio.focus(); }
+        });
+      },
+      // The landing a start sends (DISCOVERJOBS.folderLanding): none as on
+      // the peer, { vpath, path } into a folder, { tags: true }.
+      dmFolderLandingSent: function () {
+        const m = this.discover.modal;
+        return DISCOVERJOBS.folderLanding(m.keep.landing, m.keep.landing === 'folder' ? this.dmFolderInto() : null);
+      },
+      // "Into a folder…"'s place: the one chosen, else the first — a new
+      // folder named as the pressed one in the saved library ("copies ›
+      // Borrowed Tapes"), so the folder keeps its name unless the user goes
+      // elsewhere. → { vpath, path }
+      dmFolderInto: function () {
+        const m = this.discover.modal;
+        if (m.keep.into) { return m.keep.into; }
+        const v = this.discover.dest.view;
+        const f = this.dmFolder();
+        return DISCOVERJOBS.folderIntoDefault((v && v.destination) || null, f ? f.path : '');
+      },
+      // Whether the chosen landing has a place the copy can take: a folder
+      // name a layout would read as a variable is refused here as the
+      // editor refuses it (the place's own — a name being typed is not the
+      // place yet), and so is a path the server would not place.
+      dmFolderPlaceOk: function () {
+        const m = this.discover.modal;
+        if (m.keep.landing === 'folder' && DISCOVERJOBS.bracedFolder(this.dmFolderInto().path) !== null) { return false; }
+        const p = this.dmDestPath('folder');
+        return !!p && p.valid !== false;
+      },
+      // The cap line (SPEC-fed §6.5.4): once counted, a folder of more songs
+      // than one copy takes here (the plug-in listing's maxFolderSongs; an
+      // older server says none, and its job's failure says it). '' else.
+      dmFolderCap: function () {
+        const scan = this.discover.modal.folderScan;
+        const cap = this.discover.plugins.maxFolderSongs;
+        const f = this.dmFolder();
+        if (!f || !cap || !scan || scan.state !== 'done' || scan.songs <= cap) { return ''; }
+        return this.tt('discover.keep.folderCap', { name: f.name, count: DISCOVERJOBS.fmtCount(scan.songs), cap: DISCOVERJOBS.fmtCount(cap) });
+      },
+      // A folder copy that failed for the cap (the server's words name the
+      // limit): starting it again would fail the same way.
+      dmFolderCapFailed: function (job) {
+        return !!job && job.state === 'failed' && /\(the limit is \d+/.test(String(job.error || ''));
+      },
+      // Where a finished copy's files are (the In line, Show in your
+      // library): a folder copy's landing as its result names it, once a
+      // song landed there — else, as for every copy, the folder its files
+      // share (DISCOVERJOBS.landedPath: by the layout, or all already
+      // yours, elsewhere). → { vpath, dirs, file } or null
+      dmJobLanded: function (job) {
+        const res = (job && job.result && typeof job.result === 'object') ? job.result : null;
+        const at = res && res.folder && typeof res.folder.landed === 'string' ? DISCOVERJOBS.pathCrumbs(res.folder.landed) : [];
+        const copied = res && (res.songs || res.counts) ? DISCOVERJOBS.manyCounts(res).copied : 0;
+        if (DISCOVERJOBS.jobScope(job) === 'folder' && at.length && copied > 0) { return { vpath: at[0], dirs: at.slice(1), file: null }; }
+        return DISCOVERJOBS.landedPath(res);
+      },
+      // ── "Into a folder…": the libraries and this server's folders ──────
+      // The chosen place's folders, one level (the file explorer's own
+      // listing): a row goes in and chooses it, Up chooses the folder
+      // above, "New folder…" names one under it (nothing is made on disk:
+      // the first file makes it). A place not there yet lists nothing and
+      // says so. A name with a brace is refused as the editor refuses it.
+      dmIntoLoad: async function () {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        const into = this.dmFolderInto();
+        if (!tree || !into.vpath) { return; }
+        const asked = `${into.vpath}/${into.path}`;
+        tree.loading = true;
+        let dirs = [];
+        let failed = false;
+        try {
+          const res = await MSTREAMAPI.dirparser('/' + into.vpath + (into.path ? '/' + into.path : ''));
+          dirs = ((res && res.directories) || []).map((d) => d.name).filter(Boolean);
+        } catch (_) { failed = true; }
+        const now = this.dmFolderInto();
+        if (this.discover.modal !== m || m.keep.tree !== tree || `${now.vpath}/${now.path}` !== asked) { return; }   // moved on meanwhile
+        tree.loading = false;
+        tree.dirs = dirs;
+        tree.failed = failed;
+      },
+      // The list's head: the chosen place as crumbs, the library first.
+      dmIntoCrumbs: function () {
+        const into = this.dmFolderInto();
+        return [into.vpath || ''].concat(DISCOVERJOBS.pathCrumbs(into.path));
+      },
+      // The libraries the account may add files to (the destination view's),
+      // each its own chip; the chosen one when the server no longer lists it.
+      dmIntoLibraries: function () {
+        const names = this.dmPickerLibraries().map((l) => l.vpath);
+        const into = this.dmFolderInto();
+        return into.vpath && names.indexOf(into.vpath) === -1 ? names.concat(into.vpath) : names;
+      },
+      // A library chip: the list moves into it, the place the first one
+      // there — the pressed folder's name at its root.
+      dmIntoLibrary: function (vpath) {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        if (!tree) { return; }
+        const f = this.dmFolder();
+        m.keep.into = DISCOVERJOBS.folderIntoDefault({ vpath }, f ? f.path : '');
+        Object.assign(tree, { naming: false, newName: '', braced: '' });
+        this.dmIntoLoad();
+      },
+      dmIntoInto: function (name, fresh) {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        if (!tree) { return; }
+        const folder = DISCOVERJOBS.sanitizeSegment(name);
+        if (DISCOVERJOBS.bracedFolder(folder) !== null) { tree.braced = folder; return; }
+        const into = this.dmFolderInto();
+        m.keep.into = { vpath: into.vpath, path: [into.path, folder].filter(Boolean).join('/') };
+        Object.assign(tree, { naming: false, newName: '', braced: '' });
+        this.dmDestFocus('tree');
+        // a folder the user just named is known not to exist: nothing to list
+        if (fresh) { Object.assign(tree, { loading: false, dirs: [], failed: true }); return; }
+        this.dmIntoLoad();
+      },
+      dmIntoUp: function () {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        if (!tree) { return; }
+        const into = this.dmFolderInto();
+        const parts = DISCOVERJOBS.pathCrumbs(into.path);
+        parts.pop();
+        m.keep.into = { vpath: into.vpath, path: parts.join('/') };
+        tree.braced = '';
+        this.dmDestFocus('tree');
+        this.dmIntoLoad();
+      },
+      // "New folder…": a name field, the pressed folder's name in it, all of
+      // it selected; Add (or Enter) goes into it. A name with a brace keeps
+      // Add dimmed, and says why.
+      dmIntoNewFolder: function () {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        if (!tree) { return; }
+        if (!tree.naming) {
+          const f = this.dmFolder();
+          Object.assign(tree, { naming: true, newName: f ? f.name : '', braced: '' });
+          this.$nextTick(() => {
+            const el = this.$refs.dmIntoName;
+            if (el && el.focus) { el.focus(); if (el.select) { el.select(); } }
+          });
+          return;
+        }
+        const name = DISCOVERJOBS.sanitizeSegment(tree.newName);
+        if (!name || DISCOVERJOBS.bracedFolder(name) !== null) { return; }
+        this.dmIntoInto(name, tree.dirs.indexOf(name) === -1);
+      },
+      // Esc in the name field: no new folder; the keyboard back on "New
+      // folder…".
+      dmIntoNaming: function (on) {
+        const tree = this.discover.modal.keep.tree;
+        if (!tree || on) { return; }
+        Object.assign(tree, { naming: false, newName: '' });
+        this.$nextTick(() => {
+          const win = this.$refs.dmodal;
+          const el = win && typeof win.querySelector === 'function' ? win.querySelector('[data-dm-newfolder]') : null;
+          if (el && el.focus) { el.focus(); }
+        });
+      },
+      // The folder name with a brace in it the list says so of: one being
+      // typed, one pressed, else the chosen place's own (the first place
+      // keeps the pressed folder's name as it is). null for none.
+      dmIntoBraced: function () {
+        const m = this.discover.modal;
+        const tree = m.keep.tree;
+        if (tree && tree.naming) { return DISCOVERJOBS.bracedFolder(DISCOVERJOBS.sanitizeSegment(tree.newName)); }
+        if (tree && tree.braced) { return tree.braced; }
+        return DISCOVERJOBS.bracedFolder(this.dmFolderInto().path);
+      },
+      // The chosen place does not exist yet (its listing found nothing
+      // there): the first file creates it. Never the library itself.
+      dmIntoMissing: function () {
+        const tree = this.discover.modal.keep.tree;
+        return !!(tree && !tree.loading && tree.failed && this.dmFolderInto().path);
+      },
+      // The foot of the mirror's place: "Its path inside "music" on Stage
+      // Peer B" — the peer's library, the folder's first segment.
+      dmMirrorFoot: function () {
+        const m = this.discover.modal;
+        const f = this.dmFolder();
+        const library = f ? DISCOVERJOBS.normalizePeerPath(f.path).split('/')[0] : '';
+        const peer = (m.peer && m.peer.name) || (m.track && m.track.peer && m.track.peer.name) || '';
+        return this.tt('discover.keep.landing.mirrorFoot', { library, peer });
+      },
+      // "Its files go straight into From Sam, with no "Borrowed Tapes"
+      // folder of their own." — into a folder not named as the pressed one.
+      dmIntoStraight: function () {
+        const p = this.dmDestPath('folder');
+        return p && p.straightIn ? this.tt(p.straightIn.key, p.straightIn.params) : '';
+      },
       // What Keep a copy's one live region says (SPEC §7.5). The region is
       // in the section from the moment it shows, before anything happened,
       // so the first change is heard too (a region that comes in with its
@@ -2267,12 +3019,15 @@ const VUEPLAYERCORE = (() => {
         return m.destLost && this.discoverAcquirePlugins().some((p) => p.name === copy) ? 'upload' : '';
       },
       // A Keep card's button, by its action's id (dmKeepView). A dimmed one
-      // (a start in flight) does nothing.
+      // (a start in flight, a folder's Add with nowhere to land) does
+      // nothing. Retry and Add again start the copy again as it was asked
+      // for (a folder: where that one was to land).
       dmKeepAct: function (id) {
         const v = this.dmKeepView();
         const a = v && v.actions.find((x) => x.id === id);
-        if (!a || a.busy) { return; }
-        if (id === 'add' || id === 'retry' || id === 'addAgain' || id === 'tryAgain') { return this.dmKeepStart(v.scope); }
+        if (!a || a.busy || a.disabled) { return; }
+        if (id === 'add' || id === 'tryAgain') { return this.dmKeepStart(v.scope); }
+        if (id === 'retry' || id === 'addAgain') { return this.dmKeepStart(v.scope, v.job); }
         if (id === 'cancel' || id === 'cancelOther') { return this.dmKeepCancel(v.job); }
         if (id === 'play') { return this.dmKeepPlay(v); }
         if (id === 'queue') { return this.queueDiscoverFile(v.files[0]); }
@@ -2322,8 +3077,8 @@ const VUEPLAYERCORE = (() => {
           const at = document.activeElement;
           if (at && at !== document.body && root.contains(at)) { return; }
           const order = polled
-            ? ['.dm-keep [data-dm-change]', '.dm-seg-input:checked', '.dm-keep-acts .dm-btn:not([data-dm-act="cancel"]):not([data-dm-act="cancelOther"]):not([data-dm-act="play"])']
-            : ['.dm-keep-acts .dm-btn:last-child', '.dm-keep [data-dm-change]', '.dm-seg-input:checked'];
+            ? ['.dm-keep [data-dm-change]', '.dm-seg-input:checked', '.dm-land-radio:checked', '.dm-keep-acts .dm-btn:not([data-dm-act="cancel"]):not([data-dm-act="cancelOther"]):not([data-dm-act="play"])']
+            : ['.dm-keep-acts .dm-btn:last-child', '.dm-keep [data-dm-change]', '.dm-seg-input:checked', '.dm-land-radio:checked'];
           for (const sel of order) {
             const el = root.querySelector(sel);
             if (el && typeof el.focus === 'function') { el.focus(); return; }
@@ -2349,27 +3104,47 @@ const VUEPLAYERCORE = (() => {
       },
       // What this account already did with the recommendation, and where
       // files go — both only when a row could use them; the destination
-      // read again with every window (dmLoadDestination).
+      // read again with every window (dmLoadDestination). A file row's song
+      // asks for its folder too: a folder copy is keyed by the folder (the
+      // song's own lookup names a folder key of the song's file, G27 — never
+      // a folder). An answer for the song as it read before its tags came
+      // (dmLoadBrowsedFacts asks again) is not this window's.
       dmLoadJobs: async function (gen) {
         await this.ensureDiscoverPlugins();
         if (!this.dmLive(gen) || this.discoverAcquirePlugins().length === 0) { return; }
+        const m = this.discover.modal;
+        const track = m.track;
         const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
-        const [found] = await Promise.all([
+        const folderRec = !m.focus && m.folder ? this.dmFolderRecommendation() : null;
+        const [found, foundFolder] = await Promise.all([
           settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
+          folderRec ? settle(MSTREAMAPI.discoveryJobLookup(folderRec)) : Promise.resolve(null),
           this.dmLoadDestination(gen),
         ]);
-        if (!this.dmLive(gen)) { return; }
+        if (!this.dmLive(gen) || m.track !== track) { return; }
         if (found) {
-          this.discover.modal.recKey = found.key || null;
-          this.discover.modal.recKeys = found.keys || null;
-          this.discover.modal.jobs = DISCOVERJOBS.jobsBySlot(found.jobs);
+          m.recKey = found.key || null;
+          m.recKeys = found.keys || null;
+          m.jobs = DISCOVERJOBS.jobsBySlot(found.jobs);
+        }
+        if (folderRec) {
+          const slot = DISCOVERJOBS.jobSlot(DISCOVERJOBS.COPY_PLUGIN, 'folder');
+          const keys = (foundFolder && foundFolder.keys) || {};
+          m.recKeys = Object.assign({}, m.recKeys || {}, { folder: keys.folder || null });
+          const jobs = Object.assign({}, m.jobs);
+          delete jobs[slot];
+          const own = foundFolder ? DISCOVERJOBS.jobsBySlot(foundFolder.jobs)[slot] : null;
+          if (own) { jobs[slot] = own; }
+          m.jobs = jobs;
         }
         this.scheduleDiscoverJobsPoll();
       },
       // `choice` = { url } picked from the plug-in's lookup; null = the plain
       // download (the plug-in searches); undefined (a Retry) = whatever the
-      // lookup chose, if it did. `scope` = album | artist | artist-missing
-      // for the rows that act on more than the song. The start sends the
+      // lookup chose, if it did. `scope` = album | artist | artist-missing |
+      // folder for the rows that act on more than the song; a folder's is
+      // the folder's own recommendation, sent with where it lands
+      // (`landing`, the wire shape: none = as on the peer). The start sends the
       // destination the window shows (dmDestShown): the job is pinned to
       // it, or — when it is no longer the saved one — refused with nothing
       // started, and the window reads the destination again and says so
@@ -2377,7 +3152,7 @@ const VUEPLAYERCORE = (() => {
       // Keep's Add. A refusal is kept as the server put it (jobRefusals: its
       // status, 0 = no answer, and its error) beside the line the window
       // shows (jobErrors).
-      dmJobStart: async function (plugin, choice, scope) {
+      dmJobStart: async function (plugin, choice, scope, landing) {
         const name = plugin.name;
         const slot = DISCOVERJOBS.jobSlot(name, scope);
         const gen = this.discover.modal.gen;
@@ -2390,7 +3165,8 @@ const VUEPLAYERCORE = (() => {
         this.$delete(this.discover.modal.jobErrors, slot);
         this.$delete(this.discover.modal.jobRefusals, slot);
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(name, this.dmRecommendation(), choice || undefined, scope, this.dmDestShown());
+          const rec = scope === 'folder' ? this.dmFolderRecommendation() : this.dmRecommendation();
+          const res = await MSTREAMAPI.discoveryJobStart(name, rec, choice || undefined, scope, this.dmDestShown(), scope === 'folder' ? landing || null : undefined);
           if (res && res.job) {
             this.noteDiscoverJob(res.job);
             if (this.dmLive(gen)) {
@@ -2403,6 +3179,9 @@ const VUEPLAYERCORE = (() => {
           if (this.dmLive(gen)) {
             const body = err && err.body;
             this.$set(this.discover.modal.jobRefusals, slot, { status: Number(err && err.status) || 0, error: (body && typeof body.error === 'string') ? body.error : '' });
+            // a right gone (403) or the plug-in gone (404): the pages' ways
+            // in read their gate again (watchKeepGate)
+            if (err && (err.status === 403 || err.status === 404)) { this.dmKeepGateChanged(); }
             const moved = this.dmDestRefused(err, gen) ? (name === DISCOVERJOBS.COPY_PLUGIN ? 'discover.modal.dest.changed' : 'discover.modal.dest.changedTryAgain') : '';
             this.$set(this.discover.modal.jobErrors, slot, moved ? this.tt(moved) : this.dmErrorText(err));
           }
@@ -2535,6 +3314,12 @@ const VUEPLAYERCORE = (() => {
       // → { tags, slots }
       dmScopeTags: function (scope, from) {
         const m = this.discover.modal;
+        // a folder's, "By your layout": its songs' own, as read (none past
+        // FOLDER_TAGS_MAX songs, or unread: every tag variable a slot)
+        if (scope === 'folder') {
+          const read = m.folderTags;
+          return DISCOVERJOBS.scopeTags({ scope, songs: read && read.state === 'done' ? read.songs : null });
+        }
         const tags = this.dmLayoutTags();
         if (scope === 'artist' || scope === 'artist-missing') {
           const artist = (m.track && m.track.artist) || tags.artist;
@@ -2584,19 +3369,30 @@ const VUEPLAYERCORE = (() => {
       // one line under a path with a slot in it, else ''), with the
       // engine's checks besides (valid, error, field, variable, missingVars;
       // `base`, the base folder as normalised; `slots`). A layout the engine
-      // refuses draws the base folder.
-      dmDestPath: function (scope, destination, from) {
+      // refuses draws the base folder. A folder lands by `landing` (the wire
+      // shape: a job's params.landing; undefined = the one the landings
+      // chose, dmFolderLandingSent): as on the peer — the library, the base
+      // folder, the layout's leading folders that name no variable, then
+      // the folder's own path inside the peer's library (server work S3) —
+      // into a folder, or by the layout; its path also says `files`, the
+      // first few of what lands there (DISCOVERJOBS.scopeTarget).
+      dmDestPath: function (scope, destination, from, landing) {
         const v = this.discover.dest.view;
         const d = destination || (v && v.destination) || null;
-        return d ? this.dmDestPathOf(d, scope, from) : null;
+        return d ? this.dmDestPathOf(d, scope, from, landing) : null;
       },
-      dmDestPathOf: function (d, scope, from) {
+      dmDestPathOf: function (d, scope, from, landing) {
         const s = scope || 'song';
         const { tags, slots } = this.dmScopeTags(s, from);
+        const f = s === 'folder' ? this.dmFolder() : null;
+        const scan = this.discover.modal.folderScan;
         const p = DISCOVERJOBS.scopeTarget({
           vpath: d.vpath, base: d.base, layout: d.layout, scope: s, tags, slots,
           peerName: from ? from.peer : this.dmLayoutPeer(), fileName: (from && from.filepath) || this.dmLayoutFile(),
           oneAlbum: s === 'artist-missing' ? this.dmMissingAlbum() : null,
+          landing: s === 'folder' ? (landing === undefined ? this.dmFolderLandingSent() : landing) : undefined,
+          folder: f ? f.path : undefined,
+          songs: s === 'folder' && scan && scan.state === 'done' ? scan.paths : null,
         });
         const crumbs = (p.valid ? p.crumbs : DISCOVERJOBS.pathCrumbs(DISCOVERJOBS.normalizeBase(d.base).base).map((text) => ({ text, kind: 'base' }))).map((c) => {
           if (c.key) { return { text: this.tt(c.key), kind: c.kind }; }
@@ -2604,10 +3400,12 @@ const VUEPLAYERCORE = (() => {
           const parts = c.parts.map((x) => (x.slot ? { text: this.tt(x.key), slot: true } : { text: x.text, slot: false }));
           return { text: parts.map((x) => x.text).join(''), kind: c.kind, parts };
         });
+        // into a folder: the library chosen for it, not the destination's
+        const library = (s === 'folder' && p.library) || d.vpath;
         return Object.assign({}, p, {
-          library: d.vpath,
+          library,
           crumbs,
-          title: [d.vpath].concat(crumbs.filter((c) => c.kind !== 'note').map((c) => c.text)).join('/'),
+          title: [library].concat(crumbs.filter((c) => c.kind !== 'note').map((c) => c.text)).join('/'),
           slotNote: this.dmSlotNote(s, p.valid ? p.slots : []),
         });
       },
@@ -2636,7 +3434,10 @@ const VUEPLAYERCORE = (() => {
       // destination it ran with, drawn the same way. Nothing landed (failed,
       // cancelled before a song, refused, nothing to copy): null. Another
       // server's copy (dmJobOtherPeer) is drawn from its own recommendation:
-      // that server's name, and its song's folder and file there.
+      // that server's name, and its song's folder and file there. A folder
+      // copy lands by its own landing (params.landing, whatever the
+      // landings now say: G20), and once it did, where its result says
+      // (dmJobLanded).
       // → { kind: 'into' | 'in', prefix: the words, path: as dmDestPath's }.
       dmJobPath: function (job) {
         if (!job) { return null; }
@@ -2644,14 +3445,15 @@ const VUEPLAYERCORE = (() => {
         const rec = job.recommendation || {};
         const from = this.dmJobOtherPeer(job) ? { peer: (rec.peer && rec.peer.name) || null, filepath: rec.filepath || null } : null;
         const line = (kind, path) => (path ? { kind, prefix: this.tt('discover.modal.dest.' + kind), path } : null);
+        const landing = scope === 'folder' ? (job.params && job.params.landing) || null : undefined;
         if (DISCOVERJOBS.isLive(job)) {
           const pinned = job.params && typeof job.params === 'object' && 'destination' in job.params;
           if (pinned && !job.params.destination) { return null; }
-          return line('into', this.dmDestPath(scope, pinned ? job.params.destination : null, from));
+          return line('into', this.dmDestPath(scope, pinned ? job.params.destination : null, from, landing));
         }
-        const landed = DISCOVERJOBS.landedPath(job.result);
+        const landed = this.dmJobLanded(job);
         if (!landed) { return null; }
-        if (!landed.vpath) { return line('in', job.result.destination ? this.dmDestPath(scope, job.result.destination, from) : null); }
+        if (!landed.vpath) { return line('in', job.result.destination ? this.dmDestPath(scope, job.result.destination, from, landing) : null); }
         return line('in', {
           library: landed.vpath, crumbs: landed.dirs.map((text) => ({ text, kind: 'landed' })), file: landed.file,
           title: [landed.vpath].concat(landed.dirs).join('/'),
@@ -2967,10 +3769,11 @@ const VUEPLAYERCORE = (() => {
         return { text: this.tt(key, { max: DISCOVERJOBS.MAX_RESOLVED_LEN }), warn: true };
       },
       // The preview's first line, what lands there: the song by its title,
-      // the album, every album of the artist, or the albums the library
-      // lacks (the one it lacks by name).
+      // the album, every album of the artist, the albums the library lacks
+      // (the one it lacks by name), or the folder.
       dmPickerLandsAt: function (scope) {
         const t = this.discover.modal.track || {};
+        if (scope === 'folder') { return this.tt('discover.modal.dest.landsAt', { title: (this.dmFolder() || {}).name || '' }); }
         if (scope === 'album') { return this.tt('discover.modal.dest.landsAt', { title: t.album || '' }); }
         if (scope === 'artist') { return this.tt('discover.modal.dest.landsAtArtist', { artist: t.artist || '' }); }
         if (scope === 'artist-missing') {
@@ -3215,6 +4018,7 @@ const VUEPLAYERCORE = (() => {
           const view = await MSTREAMAPI.discoverySaveDestination(destination);
           this.discover.dest.view = view;
           this.discover.dest.saves += 1;
+          this.dmKeepGateChanged();
           if (this.dmLive(gen) && m.picker === k) {
             m.picker = null;
             this.dmDestFocus('change');
@@ -3361,21 +4165,25 @@ const VUEPLAYERCORE = (() => {
         this.scheduleDiscoverJobsPoll();
       },
       // Again, as it was started: the same scope, the same chosen upload,
-      // and the place it ran with — its pin, else where its result says it
-      // landed, else the place known now. The strip shows no place, so a
-      // Retry goes where the copy went, and the server refuses it (409
-      // destination_changed) once that is no longer where files land: the
-      // toast sends the user to the window, which shows the new place.
+      // the same landing (a folder's), and the place it ran with — its pin,
+      // else where its result says it landed, else the place known now. The
+      // strip shows no place, so a Retry goes where the copy went, and the
+      // server refuses it (409 destination_changed) once that is no longer
+      // where files land: the toast sends the user to the window, which
+      // shows the new place.
       dtRetry: async function (job) {
         const params = job.params || {};
         const view = this.discover.dest.view;
         const ran = params.destination || (job.result && job.result.destination) || (view && view.destination) || undefined;
         try {
-          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation, params.choice, DISCOVERJOBS.jobScope(job), ran);
+          const res = await MSTREAMAPI.discoveryJobStart(job.plugin, job.recommendation, params.choice, DISCOVERJOBS.jobScope(job), ran, params.landing);
           if (res && res.job) { this.noteDiscoverJob(res.job); }
         } catch (err) {
           const moved = !!(err && err.status === 409 && err.body && err.body.error === 'destination_changed');
           if (moved) { this.dmLoadDestination(); }
+          // a right gone (403) or the copy plug-in gone (404): the pages'
+          // ways in read their gate again, as after the window's own start
+          if (err && (err.status === 403 || err.status === 404)) { this.dmKeepGateChanged(); }
           iziToast.error({ title: moved ? this.tt('discover.tray.destChanged') : this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
         }
         this.scheduleDiscoverJobsPoll();
@@ -3386,7 +4194,9 @@ const VUEPLAYERCORE = (() => {
       },
       // A strip row opens the window its job came from, on that job: a
       // copy on the Keep card at the job's own scope (an album's as the
-      // album; artist-missing = Artist, only the missing ticked); another
+      // album; artist-missing = Artist, only the missing ticked; a folder's
+      // as the folder, its own landing in its state — G17; an artist's from
+      // an artist page, which names no song, as the artist); another
       // plug-in's download on the song, its row under Get it — in a
       // connected server's window too, where Get it shows only the jobs it
       // has (dmGetItRows). `opener` = the row, where the keyboard goes back
@@ -3396,8 +4206,16 @@ const VUEPLAYERCORE = (() => {
         const source = rec.source === 'federation' ? 'federation' : 'p2p';
         const scope = DISCOVERJOBS.jobScope(job);
         const opts = { scope, opener: opener || null };
-        if (source === 'federation' && job.plugin === DISCOVERJOBS.COPY_PLUGIN && scope === 'album') { opts.focus = 'album'; }
+        const copy = source === 'federation' && job.plugin === DISCOVERJOBS.COPY_PLUGIN;
+        if (copy && (scope === 'album' || scope === 'folder')) { opts.focus = scope; }
+        if (copy && (scope === 'artist' || scope === 'artist-missing') && !rec.filepath) { opts.focus = 'artist'; }
         await this.openDiscoverModal(Object.assign({}, rec, { peer: rec.peer || {} }), source, opts);
+      },
+      // The window learned the gate may have changed (a destination saved,
+      // a start refused for a right or a plug-in gone): whoever watches it
+      // (m.js's ways in, mstreamModule.watchKeepGate) reads it again.
+      dmKeepGateChanged: function () {
+        discoverGateWatchers.slice().forEach((fn) => { try { fn(); } catch (_) { /* a watcher's own trouble */ } });
       },
 
       // ── "From the network" rows ────────────────────────────────────
@@ -3511,7 +4329,7 @@ const VUEPLAYERCORE = (() => {
             {{ratingNumber}}
             <svg class="pop-c" width="14" height="14" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 53.867 53.867"><path class="pop-c" d="m26.934 1.318 8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z" fill="#efce4a"/></svg>
           </span>
-          <span v-on:click="createPopper2($event)" class="np-queue-action popperMenu pop-d" title="More">
+          <span v-on:click="createPopper2($event)" class="np-queue-action popperMenu pop-d" title="More" :data-keep-key="song.federation ? song.federation.peerId + '|queue|' + song.filepath : null">
             <svg class="pop-d" xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path class="pop-d" fill="#aaa" d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
           </span>
           <span v-on:click="removeSong($event)" class="np-queue-action np-queue-remove" title="Remove">
@@ -3946,9 +4764,11 @@ const VUEPLAYERCORE = (() => {
   }
 
   // Keys the player's hotkeys leave alone: one typed into a form or an
-  // editable element, and any key in the recommendation window — there
-  // Space and Enter press its buttons, the arrows move through a radio
-  // group, and nothing should seek, skip or pause behind it.
+  // editable element, any key in the recommendation window — there Space
+  // and Enter press its buttons, the arrows move through a radio group, and
+  // nothing should seek, skip or pause behind it — and a key on a connected
+  // server's page control that opens the window (its header's Keep a
+  // copy…, a row's or a card's ⋯): Space presses it, as Enter does.
   function hotkeysSkip(target) {
     // the recommendation window holds the keyboard while it is open, even
     // when focus fell out of it for a moment (a control it was on went away)
@@ -3956,7 +4776,7 @@ const VUEPLAYERCORE = (() => {
     if (!target || typeof target.tagName !== 'string') { return false; }
     const element = target.tagName.toLowerCase();
     if (element === 'input' || element === 'textarea' || element === 'select' || target.isContentEditable) { return true; }
-    return typeof target.closest === 'function' && target.closest('.dmodal-shadow') !== null;
+    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more') !== null;
   }
 
   window.addEventListener("keydown", (event) => {
@@ -4524,6 +5344,7 @@ const VUEPLAYERCORE = (() => {
     discoverState.plugins.available = available === true;
     discoverState.plugins.list = null;
     discoverState.plugins.jobsAllowed = false;
+    discoverState.plugins.maxFolderSongs = null;
     discoverPluginsPromise = null;
     discoverState.dest = { view: null };
     discoverState.tray.jobs = [];
@@ -4560,23 +5381,28 @@ const VUEPLAYERCORE = (() => {
   // its title, as the panel's rows do).
 
   // Open the window for one network ('p2p') or peers ('federation') row —
-  // the row exactly as the taste route returned it. opts: what its match
-  // bar names — { seedTitle } (the row's seed) or { seedPlain } (a phrase:
-  // the row was matched against the seeds' centroid).
+  // the row exactly as the taste route returned it, or what a connected
+  // server's page names. opts: what its match bar names — { seedTitle }
+  // (the row's seed) or { seedPlain } (a phrase: the row was matched
+  // against the seeds' centroid) — and, from a connected server's pages,
+  // { focus, scope, from: 'browse', hide, folder, opener }: every option
+  // is said at playlistVue.openDiscoverModal.
   mstreamModule.openDiscoverModal = (track, source, opts) => {
     if (!track || typeof track !== 'object' || (source !== 'p2p' && source !== 'federation')) { return Promise.resolve(); }
     return playlistVue.openDiscoverModal(track, source, opts);
   };
 
-  // The plug-in list and whether this account may start jobs — the one
-  // fetch the panel's window shares. → { available, list, jobsAllowed };
-  // without the discoveryPlugins flag nothing is fetched.
+  // The plug-in list, whether this account may start jobs and the most
+  // songs one folder copy takes here (the listing's jobs.maxFolderSongs;
+  // null = an older server, which does not say) — the one fetch the
+  // panel's window shares. → { available, list, jobsAllowed,
+  // maxFolderSongs }; without the discoveryPlugins flag nothing is fetched.
   mstreamModule.ensureDiscoverPlugins = () => {
-    const none = { available: false, list: [], jobsAllowed: false };
+    const none = { available: false, list: [], jobsAllowed: false, maxFolderSongs: null };
     if (!discoverState.plugins.available) { return Promise.resolve(none); }
     return Promise.resolve(playlistVue.ensureDiscoverPlugins())
-      .then((list) => ({ available: true, list: Array.isArray(list) ? list : [], jobsAllowed: discoverState.plugins.jobsAllowed === true }))
-      .catch(() => ({ available: true, list: [], jobsAllowed: false }));
+      .then((list) => ({ available: true, list: Array.isArray(list) ? list : [], jobsAllowed: discoverState.plugins.jobsAllowed === true, maxFolderSongs: discoverState.plugins.maxFolderSongs }))
+      .catch(() => ({ available: true, list: [], jobsAllowed: false, maxFolderSongs: null }));
   };
 
   // Queue one peers row through the federation stream proxy (the panel's
@@ -4610,6 +5436,29 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.watchDiscoverJobs = (fn) => {
     if (typeof fn !== 'function') { return () => {}; }
     return playlistVue.$watch(() => discoverState.tray.jobs, (jobs) => fn(jobs.slice()));
+  };
+
+  // The plug-in listing as m.js's ways in just read it (keepGateRead): the
+  // window's own copy becomes it — the list, whether this account may start
+  // jobs, the folder cap — so a window opened from a way in never holds an
+  // older listing than the page that offered it (a copy plug-in switched
+  // on or off, a right granted or taken since the window last asked).
+  mstreamModule.takeDiscoverPlugins = (listing) => {
+    if (!discoverState.plugins.available || !listing || typeof listing !== 'object') { return; }
+    discoverState.plugins.list = Array.isArray(listing.plugins) ? listing.plugins : [];
+    discoverState.plugins.jobsAllowed = !!(listing.jobs && listing.jobs.allowed === true);
+    discoverState.plugins.maxFolderSongs = DISCOVERJOBS.maxFolderSongs(listing);
+    discoverPluginsPromise = null;
+  };
+
+  // Call fn() when the window learned that Keep a copy's gate may have
+  // changed (SPEC-fed §3): a destination saved in its editor, a start
+  // refused with 403 (a right gone) or 404 (the copy plug-in gone) — the
+  // pages read their gate cache again then. → the unwatch function.
+  mstreamModule.watchKeepGate = (fn) => {
+    if (typeof fn !== 'function') { return () => {}; }
+    discoverGateWatchers.push(fn);
+    return () => { const at = discoverGateWatchers.indexOf(fn); if (at !== -1) { discoverGateWatchers.splice(at, 1); } };
   };
 
   return mstreamModule;

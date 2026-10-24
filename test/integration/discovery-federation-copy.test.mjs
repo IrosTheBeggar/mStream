@@ -25,7 +25,9 @@
  * an artist's album, else the artist it was asked by), never over a tag the
  * file has; and {{SERVERFOLDER}}: the folders a song sits in on the peer,
  * per song, for an album, a song and a folder filed by tags, under literal
- * text, and dropped for a song at the peer library's root. Skips when
+ * text, and dropped for a song at the peer library's root; and a folder
+ * copied as it is on the peer, under the base and the layout's leading
+ * folders of the destination the job was asked for. Skips when
  * @number0/iroh has no prebuilt binary here.
  */
 
@@ -102,6 +104,18 @@ const REMOTE = [
   ['Odd Lot/Side B/Drift.mp3', 'Drift', 'Hollis Grey', 'Tidal Singles', '2010'],
   ['Tag Run/Inner/Tide.mp3', 'Tide', 'Hollis Grey', 'Tidal Singles', '2010'],
   ['Root_Song.mp3', 'Root Song', 'Hollis Grey', 'Rootless', '2010'],
+  // A folder copied as it is under a layout's leading folders: with no base,
+  // with one, and pinned while the layout changes. Their own artist.
+  ['Lead One/Side A/L1.mp3', 'Lead One', 'Leadband', 'Lead Tapes', '2009'],
+  ['Lead Two/L2.mp3', 'Lead Two', 'Leadband', 'Lead Tapes', '2009'],
+  ['Lead Three/L3.mp3', 'Lead Three', 'Leadband', 'Lead Tapes', '2009'],
+  // A folder filed by tags, whose files have no albumartist tag: a
+  // compilation flagged as one and an album with a featured song, each
+  // under the credit the peer names for its songs. Their own artists.
+  ['Credit Run/Mix_1.mp3', 'Mix One', 'Ora Fell', 'Folder Mix', '2008', null, true],
+  ['Credit Run/Mix_2.mp3', 'Mix Two', 'Tem Quill', 'Folder Mix', '2008', null, true],
+  ['Credit Run/Reel_1.mp3', 'Reel One', 'Cole Vane', 'Night Reels', '2007'],
+  ['Credit Run/Reel_2.mp3', 'Reel Two', 'Cole Vane feat. Pim', 'Night Reels', '2007'],
 ];
 
 let srvA, srvB, sharedDir, collectionDir, peerId;
@@ -671,6 +685,93 @@ describe('discovery federation-copy (B copies from A over iroh)', { skip: availa
     assert.equal(t.result.layout, 'tags');
     assert.deepEqual(t.result.songs.copied.map((x) => x.filepath), ['collection/From friends/Tag Run/Inner/Tide.mp3']);
     assert.ok(fs.existsSync(friends('Tag Run', 'Inner', 'Tide.mp3')));
+  });
+
+  test('a folder filed by tags: a song without the albumartist tag lands under the credit the peer names for it, with its album', async () => {
+    const put = await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Folder Credits', layout: '{{ALBUMARTIST}}/{{ALBUM}}' } });
+    assert.equal(put.status, 200, JSON.stringify(put.body));
+    const peer = { id: peerId, name: 'copier' };
+    const started = await api(srvB, 'POST', JOBS, { recommendation: { source: 'federation', peer, filepath: 'shared/Credit Run', title: 'Credit Run' }, scope: 'folder', landing: { tags: true } });
+    assert.equal(started.status, 202, JSON.stringify(started.body));
+    const job = await untilFinished(started.body.job.id);
+    assert.equal(job.state, 'done', `job error: ${job.error}`);
+    assert.deepEqual(job.result.songs.copied.map((s) => [s.filepath, s.artist]).sort(), [
+      ['collection/Folder Credits/Cole Vane/Night Reels/Reel_1.mp3', 'Cole Vane'],
+      ['collection/Folder Credits/Cole Vane/Night Reels/Reel_2.mp3', 'Cole Vane feat. Pim'],
+      ['collection/Folder Credits/Various Artists/Folder Mix/Mix_1.mp3', 'Ora Fell'],
+      ['collection/Folder Credits/Various Artists/Folder Mix/Mix_2.mp3', 'Tem Quill'],
+    ], 'the compilation in one folder, the featured song with its album');
+    assert.deepEqual(fs.readdirSync(path.join(collectionDir, 'Folder Credits')).sort(), ['Cole Vane', 'Various Artists'], 'no folder per track artist');
+  });
+
+  test('a peer\'s songs, read through the browse proxy, name their album\'s credit (album-artist) as the peer has it', async () => {
+    const read = async (route, body) => {
+      const r = await api(srvB, 'POST', `/api/v1/federation/peers/${peerId}/api${route}`, body);
+      assert.equal(r.status, 200, `${route}: ${JSON.stringify(r.body)}`);
+      return r.body;
+    };
+    const comp = await read('/api/v1/db/album-songs', { album: 'Various Hits' });
+    assert.deepEqual(comp.map((s) => [s.metadata.title, s.metadata.artist, s.metadata['album-artist']]), [['Comp Track', 'Nova', 'Various Artists']]);
+    const own = await read('/api/v1/db/metadata', { filepath: 'shared/Remote_Hit.mp3' });
+    assert.equal(own.metadata['album-artist'], 'Nova', 'no ALBUMARTIST tag: the album\'s primary artist');
+    const hits = await read('/api/v1/db/search', { search: 'Comp Track' });
+    assert.ok(hits.title.some((h) => h.metadata['album-artist'] === 'Various Artists'), 'the lite rows too');
+  });
+
+  // A layout with no lead lands a folder under the base alone (the mirror
+  // test above: base "Mirror", {{ARTIST}}/{{ALBUM}}).
+  test('a folder copied as it is lands under the layout\'s leading folders — with no base, and under one — where the job was asked for', async () => {
+    const peer = { id: peerId, name: 'copier' };
+    const folder = (name) => ({ source: 'federation', peer, filepath: `shared/${name}`, title: name });
+    const mirror = async (name, destination) => {
+      const started = await api(srvB, 'POST', JOBS, { recommendation: folder(name), scope: 'folder', ...(destination ? { destination } : {}) });
+      assert.equal(started.status, 202, JSON.stringify(started.body));
+      return started.body.job;
+    };
+    const FRIENDS = 'From friends/{{ALBUMARTIST}}/{{ALBUM}}';
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: FRIENDS } })).status, 200);
+    const one = await untilFinished((await mirror('Lead One')).id);
+    assert.equal(one.state, 'done', `job error: ${one.error}`);
+    assert.equal(one.result.layout, 'mirror');
+    assert.deepEqual(one.result.folder, { path: 'shared/Lead One', name: 'Lead One', landed: 'collection/From friends/Lead One' });
+    assert.deepEqual(one.result.songs.copied.map((s) => s.filepath), ['collection/From friends/Lead One/Side A/L1.mp3'], 'the path inside the peer\'s library, under the lead');
+    assert.ok(fs.existsSync(friends('Lead One', 'Side A', 'L1.mp3')));
+
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: 'Kept', layout: FRIENDS } })).status, 200);
+    const two = await untilFinished((await mirror('Lead Two')).id);
+    assert.equal(two.state, 'done', `job error: ${two.error}`);
+    assert.equal(two.result.folder.landed, 'collection/Kept/From friends/Lead Two', 'the base, then the lead');
+    assert.ok(fs.existsSync(path.join(collectionDir, 'Kept', 'From friends', 'Lead Two', 'L2.mp3')));
+
+    // Pinned: held queued behind two slow test jobs, it lands under the lead
+    // of the layout it was asked for under, though the layout changed first.
+    assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: 'Pinned lead/{{ALBUM}}' } })).status, 200);
+    const shown = (await api(srvB, 'GET', DEST)).body.destination;
+    const fillers = [];
+    try {
+      for (const title of ['slow lead filler one', 'slow lead filler two']) {
+        const r = await api(srvB, 'POST', '/api/v1/discovery/plugins/noop-acquire/jobs', { recommendation: { artist: 'Filler', title } });
+        assert.equal(r.status, 202, JSON.stringify(r.body));
+        fillers.push(r.body.job.id);
+      }
+      const deadline = Date.now() + 10_000;
+      while ((await Promise.all(fillers.map((id) => api(srvB, 'GET', `/api/v1/discovery/plugin-jobs/${id}`)))).some((r) => r.body.job.state !== 'running')) {
+        if (Date.now() > deadline) { throw new Error('the filler jobs never ran'); }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const held = await mirror('Lead Three', shown);
+      assert.deepEqual(held.params, { scope: 'folder', destination: pinnedTo('', 'Pinned lead/{{ALBUM}}') });
+      assert.equal((await api(srvB, 'GET', `/api/v1/discovery/plugin-jobs/${held.id}`)).body.job.state, 'queued', 'held behind the fillers');
+      assert.equal((await api(srvB, 'PUT', DEST, { destination: { vpath: 'collection', base: '', layout: 'Moved lead/{{ALBUM}}' } })).status, 200);
+      for (const id of fillers) { await api(srvB, 'POST', `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+      const three = await untilFinished(held.id);
+      assert.equal(three.state, 'done', `job error: ${three.error}`);
+      assert.equal(three.result.folder.landed, 'collection/Pinned lead/Lead Three');
+      assert.ok(fs.existsSync(path.join(collectionDir, 'Pinned lead', 'Lead Three', 'L3.mp3')));
+      assert.ok(!fs.existsSync(path.join(collectionDir, 'Moved lead')), 'nothing under the lead of the layout in force when it ran');
+    } finally {
+      for (const id of fillers) { await api(srvB, 'POST', `/api/v1/discovery/plugin-jobs/${id}/cancel`); }
+    }
   });
 
   test('a network (p2p) recommendation cannot be copied', async () => {

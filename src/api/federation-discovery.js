@@ -64,16 +64,12 @@ export function setup(mstream) {
     // (MBID → artist+title → near-dup) wants it.
     const ddb = discoveryDb.openDiscoveryDbIfExists() ? discoveryDb.getDiscoveryDb() : null;
     const mbidStmt = ddb ? ddb.prepare('SELECT recording_mbid FROM discovery_tracks WHERE audio_hash = ?') : null;
-    // Same cheap-PK-lookup reasoning for the album's release-group MBID and
-    // its own credit: trackQuery joins albums for the name but not these,
-    // and only the rows that make the cut pay for them. The credit is the
-    // one /db/albums lists (ALBUM_ITEM_COLUMNS): the ALBUMARTIST consensus,
-    // else the album's primary artist ("Various Artists" for an untagged
-    // compilation) — a value this server's album-songs `album_artist`
-    // matches verbatim, so a caller's album copy asks for the album whole.
+    // Same cheap-PK-lookup reasoning for the album's release-group MBID:
+    // trackQuery joins albums for the name and the credit but not this, and
+    // only the rows that make the cut pay for it.
     const albumStmt = db.getDB().prepare(`
-      SELECT al.mbz_release_group_id AS rg, COALESCE(al.album_artist, pa.name) AS credit
-        FROM tracks t JOIN albums al ON al.id = t.album_id LEFT JOIN artists pa ON pa.id = al.artist_id
+      SELECT al.mbz_release_group_id AS rg
+        FROM tracks t JOIN albums al ON al.id = t.album_id
        WHERE t.id = ?`);
 
     const results = [];
@@ -102,8 +98,12 @@ export function setup(mstream) {
         album: row.album_name || null,
         // The album's own credit, apart from the track's artist (a
         // compilation's "Various Artists"); null without an album or a
-        // credit. Absent from servers before 2026-10-19.
-        albumArtist: al?.credit || null,
+        // credit. Absent from servers before 2026-10-19. It is the one
+        // /db/albums lists (ALBUM_ITEM_COLUMNS) — trackQuery's album_credit,
+        // the ALBUMARTIST consensus, else the album's primary artist — a
+        // value this server's album-songs `album_artist` matches verbatim,
+        // so a caller's album copy asks for the album whole.
+        albumArtist: row.album_credit || null,
         year: row.year || null,
         isrc: row.isrc || null,
         releaseGroupMbid: al?.rg || null,

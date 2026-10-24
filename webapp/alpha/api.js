@@ -186,17 +186,30 @@ const MSTREAMAPI = (() => {
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
   // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
-  // = album | artist | artist-missing for a job that acts on more than the song.
+  // = album | artist | artist-missing | folder for a job that acts on more
+  // than the song.
   // `destination` = { vpath, base, layout }: the collection destination the
   // window showed — the job is pinned to it, or refused with 409
   // { error: 'destination_changed', destination } when it is no longer the
   // saved one (the strip's Retry sends the place the job ran with). Absent =
   // no check.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, destination) => {
+  // `landing` = where a folder job lands (DISCOVERJOBS.folderLanding; a
+  // job's own params.landing for its Retry): { vpath?, path } a library
+  // and a folder in it ('' its root; no vpath = the destination's), or
+  // { tags: true } by the layout; none = as on the peer. Sent for a folder
+  // job only — the route refuses it on any other.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, destination, landing) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }
     if (scope && scope !== 'song') { body.scope = scope; }
     if (destination) { body.destination = { vpath: destination.vpath, base: destination.base || '', layout: destination.layout }; }
+    if (scope === 'folder' && landing) {
+      if (landing.tags === true) {
+        body.landing = { tags: true };
+      } else if (typeof landing.path === 'string' || landing.vpath) {
+        body.landing = landing.vpath ? { vpath: landing.vpath, path: landing.path || '' } : { path: landing.path || '' };
+      }
+    }
     return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
@@ -380,6 +393,11 @@ const MSTREAMAPI = (() => {
     // file) — what the recommendation modal's header shows beyond the
     // similar row's own fields.
     metadata: (peerId, filepath) => peerReq(peerId, 'POST', 'api/v1/db/metadata', { filepath }),
+    // Many tracks' metadata in one call (the body is the paths themselves):
+    // { [filepath]: { filepath, metadata } }, metadata null for a path the
+    // peer has no row for — the folder copy's "By your layout" reads its
+    // songs' tags with it.
+    metadataBatch: (peerId, filepaths) => peerReq(peerId, 'POST', 'api/v1/db/metadata/batch', Array.isArray(filepaths) ? filepaths : []),
   };
 
   ///////////////////// Federation requests (admin) — the Discover modal's

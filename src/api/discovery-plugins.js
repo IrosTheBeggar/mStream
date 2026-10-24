@@ -80,7 +80,14 @@ export function setup(mstream) {
   mstream.get('/api/v1/discovery/plugins', (req, res) => {
     // `jobs.allowed` is the acquisition gate for THIS caller: a client hides
     // the acquire / hand-off rows instead of offering a button that answers 403.
-    res.json({ plugins: plugins.listPlugins(), jobs: { allowed: jobsAllowed(req.user) } });
+    // `jobs.maxFolderSongs` is the most songs one folder copy may take
+    // (discoveryJobs.maxFolderSongs, as the copy reads it), so a client says
+    // so before a press rather than after the peer's listing (2026-10-23;
+    // absent from older servers).
+    res.json({
+      plugins: plugins.listPlugins(),
+      jobs: { allowed: jobsAllowed(req.user), maxFolderSongs: plugins.folderSongCap() },
+    });
   });
 
   mstream.get('/api/v1/discovery/plugins/:name/settings', async (req, res) => {

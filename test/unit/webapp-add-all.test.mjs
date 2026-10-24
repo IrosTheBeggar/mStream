@@ -92,6 +92,17 @@ const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath
   'getGenreSongs', 'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch', 'setupSearchPanel', 'federatedSearchOffered'];
 
+// Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
+// browseHead* …): the renderers and panels call it; with its gate never
+// read it draws nothing and asks nothing.
+const KEEP_FNS = [...M_SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote)\(/gm)].map((m) => m[1]);
+const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    let keepGatePending = null;
+    let keepGateAsk = 0;
+    let browseKeepQueued = null;
+    const discoveryView = { flags: { discoveryPlugins: false } };
+    ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
+
 // addAll's own helper is sliced when m.js has one, so this suite runs the
 // same behavioural assertions against any m.js — one that inlines it, or
 // the pre-fix one (where they fail on the lookups, not on a missing name).
@@ -198,6 +209,7 @@ function makeSandbox(api, { server = {}, livePlaylist = null } = {}) {
     const searchToggles = { albums: true, artists: true, files: false, titles: true, lyrics: true, federated: false };
     ${sliceConst('entityMap')}
     ${sliceConst('searchMap')}
+    ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
     ${RENDERERS.map(sliceFn).join('\n\n')}
     ${PANELS.map(sliceFn).join('\n\n')}

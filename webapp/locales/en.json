@@ -140,6 +140,16 @@
     "other": "Only the {{count}} albums you don’t have"
   },
   "discover.modal.onlyMissingNoCount": "Only the albums you don’t have",
+  "discover.modal.folderSub": "Folder · {{path}}",
+  "discover.modal.artistSub": "Artist · {{albums}} on {{peer}}",
+  "discover.modal.counting": "Counting…",
+  "discover.modal.countFailed": "Couldn’t count its songs",
+  "discover.modal.subfolders": {
+    "one": "1 subfolder",
+    "other": "{{count}} subfolders"
+  },
+  "discover.modal.noSubfolders": "no subfolders",
+  "discover.modal.playFolder": "Play folder",
   "discover.keep.what": "What to copy",
   "discover.keep.songAria": "This song: {{title}}",
   "discover.keep.albumAria": "Album: {{album}}",
@@ -213,6 +223,39 @@
   "discover.keep.lost.upload": "Your account can’t add files to this server, so copies are off.",
   "discover.keep.lost.jobs": "Your account can’t start copies on this server.",
   "discover.keep.lost.off": "Copies from connected servers are off on this server right now.",
+  "discover.keep.leftOutOne": "Leaves out {{album}}: {{artist}} only appears on it.",
+  "discover.keep.leftOutMany": "Leaves out {{count}} albums {{artist}} only appears on.",
+  "discover.keep.leftOutSingles": "Songs outside an album stay out too.",
+  "discover.keep.landing.straightIn": "Its files go straight into {{folder}}, with no “{{name}}” folder of their own.",
+  "discover.keep.folder": "Folder",
+  "discover.keep.folderAria": "Folder: {{name}} and everything in it",
+  "discover.keep.folderAriaCount": {
+    "one": "Folder: {{name}}, 1 song",
+    "other": "Folder: {{name}}, {{count}} songs"
+  },
+  "discover.keep.landing": "Where it lands",
+  "discover.keep.landing.mirror": "As on {{peer}}",
+  "discover.keep.landing.mirrorSub": "Its own folders, as they are there",
+  "discover.keep.landing.folder": "Into a folder…",
+  "discover.keep.landing.folderSub": "One you pick, for this copy only",
+  "discover.keep.landing.tags": "By your layout",
+  "discover.keep.landing.tagsSub": "Each song by its tags, like any other copy",
+  "discover.keep.landing.mirrorFoot": "Its path inside “{{library}}” on {{peer}}",
+  "discover.keep.landing.thisCopyOnly": "For this copy only · nothing is saved to your account",
+  "discover.keep.moreFiles": {
+    "one": "and 1 more song",
+    "other": "and {{count}} more songs"
+  },
+  "discover.keep.addFolder": {
+    "one": "Add folder · 1 song",
+    "other": "Add folder · {{count}} songs"
+  },
+  "discover.keep.addFolderUncounted": "Add folder",
+  "discover.keep.folderCap": "“{{name}}” holds {{count}} songs, more than one copy takes here ({{cap}}). Keep its folders one at a time.",
+  "discover.keep.filesLeftOut": {
+    "one": "1 file left out: not music this server plays, or hidden",
+    "other": "{{count}} files left out: not music this server plays, or hidden"
+  },
   "discover.modal.preview": "30 second preview",
   "discover.modal.previewIdle": "Press to play",
   "discover.modal.play": "Play",
@@ -251,6 +294,7 @@
   "discover.modal.dest.slot.year": "‹year›",
   "discover.modal.dest.slot.genre": "‹genre›",
   "discover.modal.dest.slot.serverfolder": "‹server folder›",
+  "discover.modal.dest.slot.albumartist": "‹album artist›",
   "discover.modal.dest.slotNote": {
     "one": "{{slots}} comes from each song’s own tags, so these songs can land in more than one folder.",
     "other": "{{slots}} come from each song’s own tags, so these songs can land in more than one folder."
@@ -410,6 +454,7 @@
   "discover.tray.kindAlbum": "album",
   "discover.tray.kindArtist": "every album",
   "discover.tray.kindMissing": "what you’re missing",
+  "discover.tray.kindFolder": "folder",
   "discover.lookup.find": "Look it up",
   "discover.lookup.idleSub": "Finds the closest upload for “{{query}}” · nothing is downloaded yet",
   "discover.lookup.searching": "searching",
@@ -1044,7 +1089,32 @@
   "search.noResults": "No Results Found",
   "server.thisServer": "This server",
   "server.readOnlyNote": "Browsing {{name}} — read-only. You can play and queue its music, but not change anything.",
+  "server.readOnlyNoteKeep": "Browsing {{name}} — read-only. You can play and queue its music, or keep a copy in your library, but not change anything there.",
   "server.backToThisServer": "← Back to this server",
+  "browse.keep.button": "Keep a copy…",
+  "browse.keep.ofItem": "Keep a copy of {{name}}…",
+  "browse.keep.ofFolder": "Keep a copy of the folder {{name}}…",
+  "browse.keep.ofArtist": "Keep a copy of albums by {{artist}}…",
+  "browse.keep.takes": {
+    "one": "Takes the 1 album credited to {{artist}}",
+    "other": "Takes the {{count}} albums credited to {{artist}}"
+  },
+  "browse.keep.noArtistCopy": "{{artist}} only appears on albums here, so there is no artist copy. Keep each album from its card.",
+  "browse.keep.noCredit": "Its songs name different album artists, so copies go song by song.",
+  "browse.keep.keepsGoing": "Copies keep going if you leave this page or {{peer}}.",
+  "browse.keep.copyingPct": "Copying · {{pct}}%",
+  "browse.keep.copyingOf": "Copying {{name}}",
+  "browse.keep.stateAria": "{{name}}: {{state}}. Open the copy",
+  "browse.keep.stateIntoAria": "{{name}}: {{state}}, into {{path}}. Open the copy",
+  "browse.head.albumsOn": {
+    "one": "1 album on {{peer}}",
+    "other": "{{count}} albums on {{peer}}"
+  },
+  "browse.head.folderOn": "Folder on {{peer}}",
+  "browse.head.folders": {
+    "one": "1 folder",
+    "other": "{{count}} folders"
+  },
   "search.federated": "Search federated servers",
   "search.onThisServer": "On this server",
   "playlist.federatedSkipped": "Federated tracks aren't saved to the live playlist",

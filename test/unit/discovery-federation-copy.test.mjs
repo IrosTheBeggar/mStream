@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import Joi from 'joi';
 import * as pathTemplate from '../../src/torrent/path-template.js';
 import { registerPlugin, unregisterPluginForTests, listPlugins } from '../../src/discovery-plugins/registry.js';
@@ -22,7 +23,7 @@ import plugin, {
 import {
   NAMESPACE, KEY, DEFAULT_LAYOUT, LAYOUT_VARS, destinationSchema, uploadsAllowed, writableLibraries,
   destinationFor, validateLayout, normalizeBase, safeFileName, tagsForLayout, renderTarget, isSupportedAudioFile,
-  sameDestination, destinationForJob,
+  sameDestination, sameDestinationFor, destinationForJob, layoutLead,
 } from '../../src/discovery-plugins/destination.js';
 
 const LIBS = [
@@ -223,6 +224,35 @@ describe('federation-copy · the folder (planFolder, landingFor, accountFor)', (
       { mode: 'folder', vpath: 'other', dir: '' }, 'another library\'s root');
     assert.throws(() => landingFor({ folder: 'shared/Vosto', landing: { vpath: 'private', path: 'x' }, destination, writable }), /may not put files into library 'private'/);
     assert.deepEqual(landingFor({ folder: 'shared/Vosto', landing: { tags: true }, destination, writable }), { mode: 'tags', vpath: 'music', dir: null });
+  });
+
+  test('landingFor: as on the peer, under the base and the layout\'s leading folders — where every other copy of the account lands; a chosen folder and tags take no lead', () => {
+    const writable = [{ vpath: 'music' }, { vpath: 'other' }];
+    const FRIENDS = 'From friends/{{ALBUMARTIST}}/{{ALBUM}}';
+    const at = (base, layout, folder = 'shared/Boukmanflow/Borrowed Tapes') => landingFor({ folder, landing: null, destination: { vpath: 'music', base, layout }, writable });
+    assert.deepEqual(at('', FRIENDS), { mode: 'mirror', vpath: 'music', dir: 'From friends/Boukmanflow/Borrowed Tapes' }, 'no base: the lead, then the path inside the peer\'s library');
+    assert.equal(at('Kept', FRIENDS).dir, 'Kept/From friends/Boukmanflow/Borrowed Tapes', 'a base: the base, the lead, the path');
+    assert.equal(at('', '{{ALBUMARTIST}}/{{ALBUM}}').dir, 'Boukmanflow/Borrowed Tapes', 'a layout with no lead: as before');
+    assert.equal(at('Kept', '{{ALBUMARTIST}}/{{ALBUM}}').dir, 'Kept/Boukmanflow/Borrowed Tapes');
+    assert.equal(at('', 'From friends/{{SERVERFOLDER}}').dir, 'From friends/Boukmanflow/Borrowed Tapes', 'where that layout files each song by its server folder');
+    assert.equal(at('', 'A/B/{{GENRE}}/C').dir, 'A/B/Boukmanflow/Borrowed Tapes', 'the lead stops at the first folder naming a variable');
+    assert.equal(at('', 'Copy of {{SERVERFOLDER}}').dir, 'Boukmanflow/Borrowed Tapes', 'a first folder with a variable in it is no lead');
+    assert.equal(at('', 'plain/only').dir, 'plain/only/Boukmanflow/Borrowed Tapes', 'a layout of literal folders only: every one of them');
+    assert.equal(at('', FRIENDS, '/shared/').dir, 'From friends', 'a library root pressed: its subtree right under the lead');
+    assert.equal(at('', FRIENDS, 'shared/Live: 2015').dir, 'From friends/Live- 2015', 'the peer\'s names made safe, the lead as the layout has it');
+    assert.equal(landingFor({ folder: 'shared/Vosto', landing: null, destination: { vpath: 'music', base: 'Kept' }, writable }).dir, 'Kept/Vosto', 'no layout known: no lead');
+    // A chosen folder is used as chosen, and tags file by the layout itself.
+    assert.equal(landingFor({ folder: 'shared/Vosto', landing: { vpath: null, path: 'Chosen' }, destination: { vpath: 'music', base: 'Kept', layout: FRIENDS }, writable }).dir, 'Chosen');
+    assert.equal(landingFor({ folder: 'shared/Vosto', landing: { tags: true }, destination: { vpath: 'music', base: 'Kept', layout: FRIENDS }, writable }).dir, null);
+    // The mirror of a library root is the folder every song the layout files sits under.
+    const tags = { artist: 'Boukmanflow', album: 'Borrowed Tapes', genre: 'Rap', albumartist: null };
+    for (const layout of [FRIENDS, ' From  friends / Sam \\{{ARTIST}}', '{{ARTIST}}/{{ALBUM}}', 'A/B/{{GENRE}}/C', 'plain/only', 'From friends/{{SERVERFOLDER}}']) {
+      for (const base of ['', 'Kept']) {
+        const root = at(base, layout, '/shared/').dir;
+        const filed = renderTarget({ destination: { vpath: 'music', base, layout }, tags, peerName: 'Sam', serverFolder: 'Boukmanflow/Borrowed Tapes', fileName: 'x.mp3' }).relDir;
+        assert.ok(`${filed}/`.startsWith(root ? `${root}/` : ''), `${JSON.stringify(base)} + ${JSON.stringify(layout)}: ${filed} is under ${root}`);
+      }
+    }
   });
 
   test('accountFor: the whole numbers beside lists that stop at the cap', () => {
@@ -552,6 +582,41 @@ describe('collection destination · rules', () => {
     assert.equal(sameDestination(null, null), true, 'nowhere shown, nowhere in force');
     assert.equal(sameDestination(null, effective), false);
     assert.equal(sameDestination(effective, null), false);
+  });
+
+  test('a folder job is compared on what its own place reads: nothing for its own library and folder, the library for a folder alone, all of it otherwise', () => {
+    const effective = { vpath: 'other', base: 'From peers', layout: 'From friends/{{ARTIST}}', source: 'user' };
+    const stale = { vpath: 'other', base: '', layout: '{{ARTIST}}' };
+    const elsewhere = { ...effective, vpath: 'music' };
+    // Its own library and folder (validateLanding's shape): whatever was shown, nothing at all included.
+    for (const shown of [stale, elsewhere, null, effective]) {
+      assert.equal(sameDestinationFor(shown, effective, { vpath: 'music', path: 'Picked' }), true, JSON.stringify(shown));
+    }
+    // A folder alone: the library, and only it.
+    assert.equal(sameDestinationFor(stale, effective, { vpath: null, path: 'Picked' }), true, 'another base and layout, the same library');
+    assert.equal(sameDestinationFor(elsewhere, effective, { vpath: null, path: '' }), false, 'another library');
+    assert.equal(sameDestinationFor(null, effective, { vpath: null, path: '' }), false, 'none shown while one is in force');
+    assert.equal(sameDestinationFor(null, null, { vpath: null, path: '' }), true, 'nowhere shown, nowhere in force');
+    // As on the peer (no landing), by tags, and every other job: all of it, as sameDestination.
+    for (const landing of [null, undefined, { tags: true }]) {
+      for (const shown of [stale, elsewhere, { ...effective, layout: 'From peers/{{ARTIST}}' }, null]) {
+        assert.equal(sameDestinationFor(shown, effective, landing), false, `${JSON.stringify(landing)} · ${JSON.stringify(shown)}`);
+      }
+      assert.equal(sameDestinationFor({ ...effective, base: ' From peers/ ', source: 'default' }, effective, landing), true);
+    }
+  });
+
+  test('layoutLead: the leading folders that name no variable, trimmed as the layout renders them — the clients\' previews\' rule', () => {
+    const cases = {
+      'From friends/{{ALBUMARTIST}}/{{ALBUM}}': 'From friends', ' a / b \\{{ALBUM}}/x': 'a/b', 'plain/only': 'plain/only',
+      '{{ARTIST}}/{{ALBUM}}': '', 'Copy of {{SERVERFOLDER}}': '', 'a}/b': '', 'x/{b/c': 'x', '//lead//{{ALBUM}}': 'lead', ' From  friends / Sam \\{{ARTIST}}': 'From  friends/Sam',
+      '': '',
+    };
+    for (const [layout, lead] of Object.entries(cases)) { assert.equal(layoutLead(layout), lead, JSON.stringify(layout)); }
+    assert.deepEqual([layoutLead(null), layoutLead(undefined)], ['', '']);
+    // The webapp's preview draws a mirrored folder with its own copy of the rule.
+    const J = createRequire(import.meta.url)('../../webapp/alpha/discover-jobs.js');
+    for (const layout of Object.keys(cases)) { assert.equal(J.layoutLead(layout).folders, layoutLead(layout), `the webapp's lead of ${JSON.stringify(layout)}`); }
   });
 
   test('a job lands where it was pinned while the account may still write there; a pin it lost fails, never moves', () => {

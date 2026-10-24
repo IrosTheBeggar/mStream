@@ -82,6 +82,17 @@ const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath
 // album-songs request helpers the album panels call.
 const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody'];
 
+// Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
+// browseHead* …): the renderers and panels call it; with its gate never
+// read it draws nothing and asks nothing.
+const KEEP_FNS = [...SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote)\(/gm)].map((m) => m[1]);
+const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    let keepGatePending = null;
+    let keepGateAsk = 0;
+    let browseKeepQueued = null;
+    const discoveryView = { flags: { discoveryPlugins: false } };
+    ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
+
 const EXPORTS = [...RENDERERS, ...PANELS].join(', ');
 
 // ── sandbox ─────────────────────────────────────────────────────────
@@ -124,6 +135,7 @@ function makeSandbox(api) {
     let peerContext = null;
     let browseGeneration = 0;
     ${sliceConst('entityMap')}
+    ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
     ${RENDERERS.map(sliceFn).join('\n\n')}
     ${PANELS.map(sliceFn).join('\n\n')}
