@@ -1,7 +1,8 @@
 // Peer-facing federation API (mounted behind the auth wall).
 //
 // The health/identity probe a federated peer hits to test the pairing and
-// learn what it was granted. The peer authenticates with its
+// learn what it was granted, and how much of its key's allowance today has
+// used (api/federation-limits.js). The peer authenticates with its
 // x-federation-key header (see api/federation-auth.js), so req.user.vpaths
 // IS the key's live grant list — a grant change on this server shows up on
 // the peer's next health check without re-pairing. It also advertises the
@@ -24,6 +25,7 @@ import * as config from '../state/config.js';
 import * as fedDb from '../db/federation.js';
 import * as sim from '../db/discovery-similarity.js';
 import { mintGuestToken } from '../state/federation-guest.js';
+import { describeAllowance } from './federation-limits.js';
 import WebError from '../util/web-error.js';
 
 // What a peer needs before sending vector queries: can this server answer
@@ -59,6 +61,12 @@ export function setup(mstream) {
       // parent may offer its devices a direct path to us. A flag, not a
       // probe — like everything else a peer learns here.
       guestAccess: true,
+      // The caller's own allowance — its key's caps and today's use
+      // (api/federation-limits.js describeAllowance) — for a key or a guest
+      // of one; a local user has no key, so the field is absent. A parent
+      // shows it to its own users through the browse proxy, which forwards
+      // this route: GET /api/v1/federation/peers/:id/api/api/v1/federation/health.
+      ...(req.user?.federation === true ? { allowance: describeAllowance(req.user) } : {}),
     });
   });
 

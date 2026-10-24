@@ -7,7 +7,9 @@
  *    (401 before any DB lookup), even over plain LAN HTTP;
  *  - the getUserLibraryIds explicit-grant override: a synthetic user carrying
  *    libraryIds short-circuits BEFORE the public-mode branch (id null would
- *    otherwise read as public mode = every library).
+ *    otherwise read as public mode = every library);
+ *  - a key holder's allowance: the routes that carry it stay proxyable by a
+ *    parent, and only a federation caller has one.
  *
  * The full path through a real server (wall ordering, vpath scoping on
  * /media and db routes, revocation) lives in
@@ -20,7 +22,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { isFederationPathAllowed, authenticateFederationKey, authenticateGuestToken } from '../../src/api/federation-auth.js';
+import { isFederationPathAllowed, isFederationRouteAllowed, authenticateFederationKey, authenticateGuestToken } from '../../src/api/federation-auth.js';
+import { describeAllowance } from '../../src/api/federation-limits.js';
 import { getUserLibraryIds } from '../../src/db/manager.js';
 import * as config from '../../src/state/config.js';
 
@@ -73,6 +76,24 @@ describe('federation route allowlist', () => {
     ]) {
       assert.equal(isFederationPathAllowed(req(m, p)), false, `${m} ${p} should be refused`);
     }
+  });
+});
+
+describe('a key holder\'s allowance', () => {
+  // The parent never carries the figures itself: its users read them on
+  // the peer, through the browse proxy, which forwards only the exact
+  // allowlisted reads. Both routes that carry the allowance must stay on
+  // that list, or the parent's users lose sight of their quota.
+  test('the parent\'s browse proxy forwards both routes that carry it', () => {
+    for (const p of ['/api', '/api/', '/api/v1/federation/health']) {
+      assert.equal(isFederationRouteAllowed('GET', p, { exactOnly: true }), true, `GET ${p} must stay proxyable`);
+    }
+  });
+
+  test('only a federation caller has one (no key, no lookup)', () => {
+    assert.equal(describeAllowance(null), null);
+    assert.equal(describeAllowance({ username: 'alex', admin: true }), null);
+    assert.equal(describeAllowance({ username: 'alex', federation: false, federationKeyId: 7 }), null);
   });
 });
 

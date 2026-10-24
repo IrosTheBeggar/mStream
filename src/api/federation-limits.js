@@ -295,6 +295,36 @@ export function activeStreamCount(keyId) {
   return activeStreams.get(keyId) || 0;
 }
 
+// What a key's HOLDER may know about its own allowance: the caps above and
+// where today stands against them. Without it a holder learned its quota
+// only from the 429 — a long transfer could not pace itself, nor tell "the
+// peer is slow" from "the peer is throttling me". The /api/ user layer and
+// federation/health hand it to a federation caller (the key, or a guest of
+// it — guests share the key's pool, so they see the same figures); anyone
+// else gets null. Live figures: today's bytes include the unflushed
+// remainder, exactly what the quota gate compares.
+export function describeAllowance(user) {
+  if (!user || user.federation !== true) { return null; }
+  const keyId = user.federationKeyId;
+  const limits = user.federationLimits || {};
+  const dailyMb = limits.dailyMb || 0;
+  const used = usedTodayBytes(keyId);
+  return {
+    streamKbps: limits.streamKbps || 0,
+    dailyMb,
+    maxStreams: limits.maxStreams || 0,
+    allowCopies: limits.allowCopies !== false,
+    // The UTC day the usage covers; the quota resets at its end.
+    day: utcDay(),
+    usedTodayBytes: used,
+    // null = no daily quota. A day can overshoot by one file (an in-flight
+    // response is never cut), so this floors at 0.
+    remainingTodayBytes: dailyMb > 0 ? Math.max(0, dailyMb * MB - used) : null,
+    resetsInSeconds: secondsToUtcMidnight(),
+    activeStreams: activeStreamCount(keyId),
+  };
+}
+
 // The byte-heavy surface: media files. Art files are counted against the
 // quota like everything else but stay off the stream cap / throttle — they
 // are small, and starving a UI of thumbnails punishes nobody who matters.

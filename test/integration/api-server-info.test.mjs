@@ -10,18 +10,24 @@
  *  - users-server, no credentials  → 401 (the login-detection signal —
  *    NEVER an anonymous 200; #932 briefly broke this);
  *  - present-but-invalid token     → 401;
- *  - plain user                    → base (`server`, `apiVersions`, the
- *    capability `features` — no `subsonic`, removed) + `user` (the
+ *  - plain user                    → base (`server`, the persisted
+ *    `instanceId`, `apiVersions`, the capability `features` — no
+ *    `subsonic`, removed; `federationProxy: { purpose: true }`, the
+ *    stream proxy forwarding X-mStream-Purpose) + `user` (the
  *    caller-scoped half of the ping payload), no `admin`;
  *  - admin user                    → base + `user` + `admin`;
  *  - ping parity                   → /api/'s `user` object equals
  *    /api/v1/ping's body (minus playlists / identity fields) — the
- *    drift-lock on the shared payload builder;
+ *    drift-lock on the shared payload builder — and ping carries the same
+ *    `instanceId`, but not the /api/-only discoveryReady and
+ *    federationProxy;
  *  - share token                   → 401 (shares fetch a playlist, they
  *    are not a session — the wall's path gating covers /api/ like ping);
  *  - federation key                → base + `user` scoped to the key's
  *    grants, `federation: true`, never `admin` — the mobile-app
- *    "version and capabilities over federation" deliverable;
+ *    "version and capabilities over federation" deliverable — plus the
+ *    key's own allowance (`federationAllowance`), which no local account
+ *    gets;
  *  - federation allowlist          → /api/ allowed, but ping (and every
  *    other unlisted route) still 403s — adding /api loosened nothing;
  *  - bogus federation key          → 401;
@@ -31,7 +37,9 @@
  *    asserted ABSENT from the response by name;
  *  - public mode (no users)        → user + admin layers, matching how
  *    public mode behaves everywhere else (deliberate — public mode IS
- *    admin on every other route; lockAdmin is the hardening lever);
+ *    admin on every other route; lockAdmin is the hardening lever) —
+ *    and, federation off, `features.federationProxy` is still there (a
+ *    version fact);
  *  - public mode + lockAdmin       → demoted user layer, no admin layer;
  *  - REAL admin + lockAdmin        → user.admin stays true (identity),
  *    but a locked admin API serves NO admin params — the layer's absence
@@ -129,6 +137,11 @@ describe('layered /api/ server info', () => {
     const j = await r.json();
     assert.equal(typeof j.server, 'string', 'every authenticated response carries the version');
     assert.match(j.server, /^\d+\.\d+\.\d+/);
+    // The server's own stable id: the UUID config.js persisted on first
+    // boot, the same value mDNS advertises as `id=`.
+    const persisted = JSON.parse(await fs.readFile(path.join(srv.tmpDir, 'config.json'), 'utf8'));
+    assert.match(j.instanceId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(j.instanceId, persisted.discovery.mdns.instanceId);
     assert.deepEqual(j.apiVersions, ['1']);
     assert.ok(!('subsonic' in j.features), 'no subsonic flag (the Subsonic API is gone)');
     assert.equal(j.features.discoveryReady, false, 'discovery off in this config');
@@ -136,6 +149,9 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discoveryP2p, false);
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
+    // The peer stream proxy forwards X-mStream-Purpose (federation-stream.js
+    // FORWARD_REQ): a client copying through it reads this, exactly.
+    assert.deepEqual(j.features.federationProxy, { purpose: true });
     assert.equal(j.user.username, 'pleb');
     assert.equal(j.user.admin, false);
     assert.equal(j.user.federation, false);
@@ -151,6 +167,7 @@ describe('layered /api/ server info', () => {
     assert.equal(typeof j.user.federationDiscovery, 'boolean',
       'peer-relationship-derived flag stays caller-scoped');
     assert.ok('testlib' in j.user.vpathMetaData, 'library type metadata rides along');
+    assert.ok(!('federationAllowance' in j.user), 'a local account has no key, so no allowance');
     assert.ok(!('admin' in j), 'no admin layer for a non-admin');
 
     // The disclosure contract: `user` is built ADDITIVELY from explicit
@@ -226,9 +243,13 @@ describe('layered /api/ server info', () => {
     // `user` minus identity) + the capabilities half (/api/'s `features`
     // minus the /api/-only discoveryReady) + two legacy fields.
     const { username: _u, admin: _a, federation: _f, federationGuest: _g, ...userHalf } = apiJ.user;
-    const { discoveryReady: _dr, ...capsHalf } = apiJ.features;
-    const { playlists, discoveryPath, ...pingRest } = ping;
+    const { discoveryReady: _dr, federationProxy: _fp, ...capsHalf } = apiJ.features;
+    const { playlists, discoveryPath, instanceId, ...pingRest } = ping;
     assert.ok(Array.isArray(playlists), 'ping still carries playlists');
+    assert.equal(instanceId, apiJ.instanceId, 'ping carries /api/\'s server id, flat');
+    assert.ok(instanceId, 'and it is set');
+    assert.ok(!('discoveryReady' in ping) && !('federationProxy' in ping),
+      'the /api/-only capabilities stay off ping');
     assert.ok(!('allowYoutubeDownload' in ping),
       'the velvet-only allowYoutubeDownload field left with the velvet UI');
     assert.equal(discoveryPath, ping.discovery,
@@ -269,8 +290,12 @@ describe('layered /api/ server info', () => {
     assert.equal(r.status, 200);
     const j = await r.json();
     assert.equal(typeof j.server, 'string', 'version visible over federation');
+    const local = await (await api({ 'x-access-token': userToken })).json();
+    assert.equal(j.instanceId, local.instanceId, 'a peer reads the same server id a local user does');
     assert.ok(j.features, 'capabilities visible over federation');
     assert.equal(typeof j.features.discovery, 'boolean');
+    assert.deepEqual(j.features.federationProxy, { purpose: true },
+      'the same version facts a local user reads');
     assert.equal(j.user.federation, true);
     assert.equal(j.user.admin, false);
     assert.deepEqual(j.user.vpaths, ['testlib'], 'scoped to the key grants');
@@ -278,6 +303,14 @@ describe('layered /api/ server info', () => {
     assert.ok(!('admin' in j), 'a federation key can never see the admin layer');
     assert.ok(!('federationLimits' in j.user) && !('federationKeyId' in j.user),
       'the synthetic fed user\'s internal fields stay internal');
+    // What the holder IS told about its key: the caps it was minted with
+    // (the config defaults here) and today's use — never the key's id.
+    const allowance = j.user.federationAllowance;
+    assert.deepEqual(
+      { streamKbps: allowance.streamKbps, dailyMb: allowance.dailyMb, maxStreams: allowance.maxStreams, allowCopies: allowance.allowCopies },
+      { streamKbps: 8000, dailyMb: 2048, maxStreams: 3, allowCopies: true });
+    assert.equal(typeof allowance.usedTodayBytes, 'number');
+    assert.ok(!('id' in allowance) && !('keyId' in allowance));
 
     // Adding /api to the allowlist loosened NOTHING else: ping (and every
     // other unlisted route) still refuses the key.
@@ -314,6 +347,8 @@ describe('layered /api/ in public-access mode', () => {
       assert.equal(j.user.admin, true, 'public mode is effectively admin');
       assert.equal(j.user.federation, false);
       assert.ok(j.admin, 'admin layer present in public mode');
+      // Federation is off here: the proxy flag is a version fact, not config.
+      assert.deepEqual(j.features.federationProxy, { purpose: true });
     } finally {
       await pub.stop();
     }

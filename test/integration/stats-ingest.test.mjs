@@ -8,8 +8,9 @@
  * Locks in: the per-play answer shape, that counted plays reach the legacy
  * most-played / recently-played reads (the counters they run on), that a
  * replay is acknowledged and inert, that a short skip is kept without
- * counting, the Joi 400s (unknown key, empty batch, bad enum), and that the
- * route is not on the federation allowlist.
+ * counting, the Joi 400s (unknown key, empty batch, bad enum), a portable
+ * player's backdated play kept with source `device`, and that the route is
+ * not on the federation allowlist.
  */
 
 import { describe, before, after, test } from 'node:test';
@@ -153,6 +154,22 @@ describe('POST /api/v1/stats/plays', () => {
     assert.equal((await post(server.baseUrl, '/api/v1/stats/plays', { plays: [play({ outcome: 'vanished' })] })).status, 400);
     assert.equal((await post(server.baseUrl, '/api/v1/stats/plays', { plays: [play({ source: 'legacy' })] })).status, 400);
     assert.equal((await post(server.baseUrl, '/api/v1/stats/plays', {})).status, 400);
+  });
+
+  test('a portable player\'s play is accepted as source device, and kept as one', async () => {
+    const r = await post(server.baseUrl, '/api/v1/stats/plays', {
+      client: { name: 'portable-player', version: '0.12.0', instanceId: '0123456789abcdef' },
+      plays: [play({ id: 'card-0123456789abcdef-1', source: 'device', startedAt: '2026-09-10T08:00:00Z' })],
+    });
+    assert.equal(r.status, 200, r.body);
+    assert.deepEqual(r.body, { accepted: ['card-0123456789abcdef-1'], duplicates: [], rejected: [] });
+
+    const exported = await fetch(`${server.baseUrl}/api/v1/stats/export`);
+    assert.equal(exported.status, 200);
+    const rows = (await exported.text()).trim().split('\n').map((l) => JSON.parse(l));
+    const row = rows.find((x) => x.id === 'card-0123456789abcdef-1');
+    assert.equal(row?.source, 'device');
+    assert.equal(row.startedAt, '2026-09-10T08:00:00.000Z', 'the play keeps its own time, not the upload\'s');
   });
 
   test('the route is not on the federation allowlist', () => {
