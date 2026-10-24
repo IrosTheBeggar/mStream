@@ -26,8 +26,6 @@ import { appRoot, isBunStandalone } from '../util/esm-helpers.js';
 
 export const READ_CHUNK = 64 * 1024;
 
-export const delay = (ms) => new Promise((r) => setTimeout(r, ms));
-
 // Lazily import the native module exactly once. Kept out of module scope so a
 // missing/unloadable binary only surfaces when a feature is actually used.
 let irohMod = null;
