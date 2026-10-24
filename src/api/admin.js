@@ -644,11 +644,23 @@ export function setup(mstream) {
     // network?" as opposed to "the process is running".
     let joined = false;
     let neighbors = 0;
+    // Gossip liveness as the sidecar (≥ v1.4.0) reports it — null on older
+    // sidecars: seconds since the last received gossip message / any gossip
+    // event, whether its actor probe last passed, and how often it had to
+    // re-create its subscriber. "Connected, 4 neighbors, last heard 22h
+    // ago" is the honest reading of the 2026-10-22 wedge.
+    let gossip = { lastGossipAgeSecs: null, lastEventAgeSecs: null, actorAlive: null, subscriberRestarts: null };
     if (discoveryP2p.isRunning()) {
       try {
         const s = await discoveryP2p.status();
         joined = s.joined === true;
         neighbors = Number(s.neighbors) || 0;
+        gossip = {
+          lastGossipAgeSecs: Number.isFinite(s.lastGossipAgeSecs) ? s.lastGossipAgeSecs : null,
+          lastEventAgeSecs: Number.isFinite(s.lastEventAgeSecs) ? s.lastEventAgeSecs : null,
+          actorAlive: typeof s.actorAlive === 'boolean' ? s.actorAlive : null,
+          subscriberRestarts: Number.isFinite(s.subscriberRestarts) ? s.subscriberRestarts : null,
+        };
       } catch (err) {
         winston.warn(`discovery p2p sidecar status query failed: ${err.message}`);
       }
@@ -664,6 +676,7 @@ export function setup(mstream) {
       ticket: discoveryP2p.getEndpointTicket(),
       joined,
       neighbors,
+      gossip,
       // Who those neighbors are (endpoint ids), tracked from the sidecar's
       // neighbor events. Bounded by the gossip fan-out (hyparview active
       // view), so never more than a handful. The panel's mesh map joins
