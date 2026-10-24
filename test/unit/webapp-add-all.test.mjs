@@ -35,8 +35,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const M_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8');
-const VP_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'vp.js'), 'utf8');
+const M_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8').replace(/\r\n/g, '\n');
+const VP_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'vp.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // ── source slicing ──────────────────────────────────────────────────
 // Same brace-match as webapp-local-search: from a top-level

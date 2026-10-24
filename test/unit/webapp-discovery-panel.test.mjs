@@ -66,7 +66,7 @@ import { createRequire } from 'node:module';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..', '..');
 const M_PATH = path.join(ROOT, 'webapp', 'alpha', 'm.js');
-const SRC = fs.readFileSync(M_PATH, 'utf8');
+const SRC = fs.readFileSync(M_PATH, 'utf8').replace(/\r\n/g, '\n');
 const require = createRequire(import.meta.url);
 const DISCOVERYPAGE = require('../../webapp/alpha/discovery-page.js');
 const DISCOVERJOBS = require('../../webapp/alpha/discover-jobs.js');
@@ -449,7 +449,7 @@ const answer = (body) => (body.sources.includes('peers') ? PEERS : MAIN);
 // api.js's own MSTREAMAPI.peerArtUrl (the art proxy URL), over the
 // sandbox's server — so a test sees the very URL an <img> would load.
 function realPeerArtUrl() {
-  const api = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8');
+  const api = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8').replace(/\r\n/g, '\n');
   const start = api.indexOf('  mstreamModule.peerArtUrl = ');
   assert.ok(start >= 0, 'api.js no longer defines mstreamModule.peerArtUrl — update this test');
   const end = api.indexOf('\n  };', start);
@@ -703,12 +703,12 @@ describe('Discover page: opening it', () => {
     // shown as the play button is: on hover, on keyboard focus inside the
     // card (never a mouse click's focus), always on touch — on any album
     // card (a connected server's browse cards carry the same ⋯)
-    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
     assert.match(css, /\n\.album-grid-card:hover \.dpage-album-more, \.album-grid-card:has\(:focus-visible\) \.dpage-album-more \{ opacity: 1; \}/);
     assert.match(css, /\.dpage-album-more:focus-visible \{ outline: 2px solid #fa832b;/);
     const touch = css.slice(css.indexOf('@media (hover: none) {', css.indexOf('/* ── The Discover page')));
     assert.match(touch.slice(0, touch.indexOf('\n}')), /\n {2}\.dpage-album-more \{ opacity: 1;/);
-    assert.ok(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8').includes('"dpage.verb.albumMore": "More for this album"'));
+    assert.ok(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8').replace(/\r\n/g, '\n').includes('"dpage.verb.albumMore": "More for this album"'));
   });
 
   test('connected servers\' covers: the row\'s albumArt through the art proxy, on the album card and the song row', async () => {
@@ -1659,7 +1659,7 @@ describe('Discover page: the bar lives outside the scroll box', () => {
   const many = { ...MAIN, seeds: [...SEEDS, ...Array.from({ length: 8 }, (_, i) => ({ hash: `m${i}`, filepath: `music/M/${i}.flac`, metadata: { title: `More ${i}` }, outcome: 'completed', plays: 1, pinned: false, analyzed: true }))] };
 
   test('index.html: the host is in the #browser column, hidden, directly before #filelist', () => {
-    const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8');
+    const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
     const col = html.slice(html.indexOf('<div id="browser"'));
     assert.match(col, /<div id="dpage-head" class="super-hide"><\/div>\s*<div id="filelist">/);
     assert.ok(col.indexOf('id="directory_bar"') < col.indexOf('id="dpage-head"'), 'with the rest of the chrome');
@@ -2225,7 +2225,7 @@ describe('Discover page: job badges (the play page\'s connected servers)', () =>
     assert.match(card, /data-bslot="a0"><span class="dpage-badge dpage-badge-src">discover\.job\.copying<\/span>/, 'the card: the same copy, under its artist line — no "album" on an album');
     assert.match(card, /data-pslot="a0"><div class="dpage-prog dpage-prog-thin"/, 'its bar along the cover');
     assert.ok(!/data-[bp]slot/.test(libCol(html)), 'library rows carry no slot');
-    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
     assert.match(css, /\.dpage-songs \.dpage-row \.dpage-prog-thin \{ position: absolute;/, 'the row bar is pinned, never a line of its own');
     assert.ok(!/\.discover-row-info \.dpage-badge \{ display: block/.test(css), 'the row badge is never a block line under the subtitle');
     assert.ok(!html.includes('discover.job.copiedCount') && !html.includes('1 of 2 songs'), 'no count');
@@ -2342,7 +2342,7 @@ describe('Discover page: job badges (the play page\'s connected servers)', () =>
   });
 
   test('spa.css: the play page\'s badge and thin bar use the house badge colours', () => {
-    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
     assert.match(css, /\.dpage-prog-thin i \{ width: 100%; transform-origin: left center; \}/);
     // the row's badge shares the subtitle line, and its bar is pinned to the row's edge
     assert.match(css, /\.dpage-subline \{ display: flex; align-items: baseline; gap: 8px; min-width: 0; \}/);
@@ -2357,9 +2357,9 @@ describe('Discover page: job badges (the play page\'s connected servers)', () =>
 });
 
 describe('Discover page: wiring', () => {
-  const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8');
-  const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8'));
-  const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8');
+  const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
+  const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8').replace(/\r\n/g, '\n'));
+  const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
 
   test('index.html: the nav entry in the Music group after Most Played, hidden until the ping', () => {
     const nav = html.match(/<div id="nav-discover" class="([^"]*)" onclick="changeView\(discoveryPanel, this\);" data-panel="discovery">/);
@@ -2464,7 +2464,7 @@ describe('Discover page: wiring', () => {
   });
 
   test('en.json: every dpage.* key the module and the panel emit exists', () => {
-    const moduleSrc = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'discovery-page.js'), 'utf8');
+    const moduleSrc = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'discovery-page.js'), 'utf8').replace(/\r\n/g, '\n');
     const start = SRC.indexOf('///////////////// Discover page');
     const end = SRC.indexOf('///////////////// Transcode');
     assert.ok(start > 0 && end > start);
@@ -2483,7 +2483,7 @@ describe('Discover page: wiring', () => {
   });
 
   test('i18n t(): a param\'s $-patterns are text (a song title, a peer name)', () => {
-    const src = fs.readFileSync(path.join(ROOT, 'webapp', 'assets', 'js', 'i18n.js'), 'utf8');
+    const src = fs.readFileSync(path.join(ROOT, 'webapp', 'assets', 'js', 'i18n.js'), 'utf8').replace(/\r\n/g, '\n');
     const win = {};
     const I18N = new Function('window', 'document', 'localStorage', 'navigator', `${src}\nreturn I18N;`)(win, {}, { getItem: () => null }, { language: 'en' });
     assert.equal(I18N.t('because {{title}}', { title: "Money $' Talks $& $$" }), "because Money $' Talks $& $$");

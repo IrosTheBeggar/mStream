@@ -899,6 +899,13 @@ const GONE = 600;
 function seedGoneHistory(username, { analyzed = true } = {}) {
   const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
   const ddb = new DatabaseSync(path.join(server.tmpDir, 'db', 'discovery.db'), { timeout: 5000 });
+  // One transaction per database: 1200 autocommit inserts per user are
+  // ~1200 fsyncs with this process's loop blocked — long past the server's
+  // 5 s keep-alive idle timeout on a slow runner disk, after which the next
+  // fetch reuses a pooled socket the server has closed (ECONNRESET on
+  // Windows; the dlna-surface flake, #1043, was the same mechanism).
+  mdb.exec('BEGIN');
+  ddb.exec('BEGIN');
   try {
     const userId = mdb.prepare('SELECT id FROM users WHERE username = ?').get(username).id;
     const libraryId = mdb.prepare("SELECT id FROM libraries WHERE name = 'testlib'").get().id;
@@ -921,6 +928,8 @@ function seedGoneHistory(username, { analyzed = true } = {}) {
     const seq = Number(ddb.prepare("SELECT value FROM discovery_meta WHERE key = 'row_seq'").get().value) + GONE;
     ddb.prepare("UPDATE discovery_meta SET value = ? WHERE key IN ('row_seq', 'index_epoch')").run(String(seq));
   } finally {
+    ddb.exec('COMMIT');
+    mdb.exec('COMMIT');
     ddb.close();
     mdb.close();
   }
