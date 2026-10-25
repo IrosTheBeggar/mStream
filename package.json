@@ -70,7 +70,7 @@
     "jsonwebtoken": "^9.0.3",
     "m3u8-parser": "^7.2.0",
     "mime-types": "^3.0.2",
-    "music-metadata": "^11.15.0",
+    "music-metadata": "^12.2.3",
     "nanoid": "^6.0.1",
     "onnxruntime-web": "1.30.0",
     "tree-kill": "^1.2.2",
