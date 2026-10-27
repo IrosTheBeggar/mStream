@@ -5702,8 +5702,8 @@ async function peerRecsTurnOnOpen() {
 }
 
 // The block, whole (renderDiscovery hands the page over while the mode is
-// up): no bar in the host; the keyboard's button put back when a draw
-// replaced it.
+// up): no bar in the host; busy while the status or the enable is out;
+// the keyboard's button put back when a draw replaced it.
 function peerRecsTurnOnDraw() {
   const o = peerRecsView.turnOn;
   const root = document.getElementById('filelist');
@@ -5711,7 +5711,7 @@ function peerRecsTurnOnDraw() {
   discoveryHideHead();
   const refocus = discoveryFocusedSelector();
   o.acts = peerRecsTurnOnActsHtml(o);
-  root.innerHTML = `<div class="dpage dpage-page-peerRecs prec-on-page"${o.mode === 'loading' ? ' aria-busy="true"' : ''}>${peerRecsTurnOnHtml(o)}</div>`;
+  root.innerHTML = `<div class="dpage dpage-page-peerRecs prec-on-page"${o.mode === 'loading' || o.busy ? ' aria-busy="true"' : ''}>${peerRecsTurnOnHtml(o)}</div>`;
   const el = root.querySelector('.dpage');
   if (el) {
     el.addEventListener('click', onDiscoveryClick);
@@ -5747,10 +5747,13 @@ function peerRecsTurnOnHtml(o) {
 }
 
 // Turn on — shut while the fields are not what the server takes
-// (DISCOVERYPAGE.turnOnValid) and while it is turning on ("Turning on…").
+// (DISCOVERYPAGE.turnOnValid), and while it is turning on ("Turning on…")
+// shut for the pointer and the screen reader alone (aria-disabled): the
+// keyboard stays on it and its label is read (a press is dropped by
+// peerRecsTurnOnSubmit).
 function peerRecsTurnOnActsHtml(o) {
-  const ok = !o.busy && DISCOVERYPAGE.turnOnValid(o);
-  return `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${ok ? '' : ' disabled'}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
+  const off = o.busy ? ' aria-disabled="true"' : (DISCOVERYPAGE.turnOnValid(o) ? '' : ' disabled');
+  return `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${off}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
 }
 
 // A field typed in: its value kept (the form is drawn from it), and Turn
@@ -5778,9 +5781,10 @@ function peerRecsTurnOnKey(ev) {
   peerRecsTurnOnSubmit();
 }
 
-// Turn on: "Turning on…" and the fields shut, then POST enabled — no
-// client timeout: the server may fetch the sidecar first. Refused: the
-// server's own words under the button, the form back. On: the name and
+// Turn on: "Turning on…" (the keyboard on it, from a field too) and the
+// fields shut, then POST enabled — no client timeout: the server may
+// fetch the sidecar first. Refused: the server's own words under the
+// button, the form back. On: the name and
 // the description, each only when the form changed it — a failure is a
 // warning (the network stays on) — then the page (peerRecsTurnedOn). A
 // page left meanwhile draws nothing; what was sent is still saved.
@@ -5794,6 +5798,7 @@ async function peerRecsTurnOnSubmit() {
   o.busy = true;
   o.error = '';
   peerRecsTurnOnDraw();
+  discoveryRefocus('[data-dp="precTurnOn"]');
   try {
     await MSTREAMAPI.discoveryP2pSetEnabled(true);
   } catch (err) {

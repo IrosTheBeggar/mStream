@@ -3524,7 +3524,7 @@ a.prec-band-credit:hover { color: #dfe3ea; }
 .prec-on-acts { margin-top: 16px; }
 .prec-on-btn { min-width: 96px; }
 .prec-on .dpage-btn.pri:focus { background-color: #657ee4; }
-.prec-on-btn:disabled, .prec-on-btn:disabled:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }
+.prec-on-btn:disabled, .prec-on-btn:disabled:hover, .prec-on-btn[aria-disabled="true"], .prec-on-btn[aria-disabled="true"]:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }
 .prec-on-err { margin: 8px 0 0 0; font-size: 12px; line-height: 1.5; color: #ec8a90; overflow-wrap: anywhere; }
 @media (pointer: coarse) {
   .prec-on-input, .prec-on-input[type="text"], .prec-on-btn, .prec-on-page .prec-retry .dpage-btn { height: 44px; }

@@ -4066,7 +4066,9 @@ describe('W7: the form', () => {
     await flush();
     const busy = box.S.html();
     const btn = turnOnBtn(busy);
-    assert.ok('disabled' in btn.attrs);
+    assert.equal(btn.attrs['aria-disabled'], 'true', 'shut');
+    assert.equal('disabled' in btn.attrs, false, 'but focusable: the keyboard stays on it, "Turning on…" read');
+    assert.match(busy, /^<div class="dpage dpage-page-peerRecs prec-on-page" aria-busy="true">/);
     assert.ok(busy.includes('>peerRecs.turnOn.busy</button>'));
     assert.ok('disabled' in fieldOf(busy, 'name').attrs && 'disabled' in fieldOf(busy, 'description').attrs, 'the fields shut');
     assert.equal(fieldOf(busy, 'name').attrs.value, '  Attic Tapes  ', 'as typed');
@@ -4141,6 +4143,25 @@ describe('W7: the form', () => {
     assert.equal(enterIn(box, 'description'), true);
     await settle();
     assert.deepEqual(callNames(box.calls).slice(0, 4), ['adminStatus', 'setEnabled', 'setDescription', 'ping']);
+  });
+
+  test('the keyboard while it turns on: on "Turning on…" (from Turn on or from Enter in a field), the block busy — and back on Turn on, not busy, when refused', async () => {
+    for (const how of ['button', 'enter']) {
+      let refuse;
+      const gate = new Promise((_, r) => { refuse = r; });
+      const box = onBox({ setEnabled: () => gate });
+      await openPage(box);
+      if (how === 'button') { box.keyClick({ 'data-dp': 'precTurnOn' }); } else { enterIn(box, 'name'); }
+      await flush();
+      assert.equal(box.focused.at(-1), 'precTurnOn', `${how}: the keyboard on the busy button`);
+      assert.deepEqual(box.activeAttrs() && [box.activeAttrs()['data-dp'], box.activeAttrs()['aria-disabled']], ['precTurnOn', 'true'], how);
+      assert.ok(box.S.html().includes('>peerRecs.turnOn.busy</button>'), how);
+      assert.ok(box.S.html().includes('aria-busy="true"'), `${how}: busy`);
+      refuse(refused(500, 'no'));
+      await settle();
+      assert.ok(!box.S.html().includes('aria-busy'), `${how}: refused — not busy`);
+      assert.deepEqual([box.focused.at(-1), 'aria-disabled' in box.activeAttrs()], ['precTurnOn', false], `${how}: Turn on again`);
+    }
   });
 
   test('the Enter that confirms an IME conversion (ja / ko / zh) is the IME\'s: it turns nothing on', async () => {
@@ -4406,7 +4427,7 @@ describe('W7: wiring', () => {
   test('spa.css: one centred block that fits 390 px, the house fields, 44 px targets on touch', () => {
     assert.match(css, /\.prec-on \{ box-sizing: border-box; width: calc\(100% - 32px\); max-width: 440px; margin: 32px auto 0 auto;[^}]*background: #23282f; \}/);
     assert.match(css, /\.prec-on-input, \.prec-on-input\[type="text"\] \{ display: block; width: 100%; height: 32px;[^}]*background: #1a1e25;/);
-    assert.match(css, /\.prec-on-btn:disabled, \.prec-on-btn:disabled:hover \{ opacity: \.5;/);
+    assert.match(css, /\.prec-on-btn:disabled, \.prec-on-btn:disabled:hover, \.prec-on-btn\[aria-disabled="true"\], \.prec-on-btn\[aria-disabled="true"\]:hover \{ opacity: \.5;/, 'busy (aria-disabled) looks shut too');
     assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on-btn, \.prec-on-page \.prec-retry \.dpage-btn \{ height: 44px; \}\n\}/);
     assert.match(css, /\.prec-on-err \{[^}]*overflow-wrap: anywhere; \}/, 'a long server error wraps inside 390 px');
   });
