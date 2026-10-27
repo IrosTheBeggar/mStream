@@ -5729,7 +5729,7 @@ function peerRecsTurnOnDraw() {
 function peerRecsTurnOnHtml(o) {
   if (o.mode === 'loading') { return ''; }
   if (o.mode === 'failed') {
-    return `<div class="prec-retry"><button type="button" class="dpage-btn" data-dp="precOnRetry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
+    return `<div class="prec-on"><button type="button" class="dpage-btn" data-dp="precOnRetry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
   }
   if (o.mode === 'unavailable') {
     return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.unavailable'))}</p></div>`;

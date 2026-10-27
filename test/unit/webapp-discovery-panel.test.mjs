@@ -4003,11 +4003,11 @@ describe('W7: opening the page as an admin with the network off', () => {
     assert.equal(box.views.at(-1), box.explorer);
   });
 
-  test('a status that did not come: "Try again" alone — it asks the status again', async () => {
+  test('a status that did not come: "Try again" alone, in the one centred block — it asks the status again', async () => {
     let fail = true;
     const box = onBox({ adminStatus: () => { if (fail) { throw refused(500); } return ON_STATUS(); } });
     await openPage(box);
-    assert.equal(box.S.html(), '<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-retry"><button type="button" class="dpage-btn" data-dp="precOnRetry">dpage.verb.tryAgain</button></div></div>');
+    assert.equal(box.S.html(), '<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-on"><button type="button" class="dpage-btn" data-dp="precOnRetry">dpage.verb.tryAgain</button></div></div>');
     fail = false;
     box.click({ 'data-dp': 'precOnRetry' });
     await settle();
@@ -4428,7 +4428,7 @@ describe('W7: wiring', () => {
     assert.match(css, /\.prec-on \{ box-sizing: border-box; width: calc\(100% - 32px\); max-width: 440px; margin: 32px auto 0 auto;[^}]*background: #23282f; \}/);
     assert.match(css, /\.prec-on-input, \.prec-on-input\[type="text"\] \{ display: block; width: 100%; height: 32px;[^}]*background: #1a1e25;/);
     assert.match(css, /\.prec-on-btn:disabled, \.prec-on-btn:disabled:hover, \.prec-on-btn\[aria-disabled="true"\], \.prec-on-btn\[aria-disabled="true"\]:hover \{ opacity: \.5;/, 'busy (aria-disabled) looks shut too');
-    assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on-btn, \.prec-on-page \.prec-retry \.dpage-btn \{ height: 44px; \}\n\}/);
+    assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on \.dpage-btn \{ height: 44px; \}\n\}/, 'Turn on and Try again');
     assert.match(css, /\.prec-on-err \{[^}]*overflow-wrap: anywhere; \}/, 'a long server error wraps inside 390 px');
   });
 });
