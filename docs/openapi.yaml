@@ -805,12 +805,17 @@ components:
         `failed` state, `no-room` included, is dropped on any change to the
         shelf or its pins — an Add or fetch landing, a removal, a rotation
         swap, a block, a pin or an unpin — so "No room" clears itself as soon
-        as an admin unpins something. Switching the discovery network off
-        drops every state, and an Add still downloading then writes nothing
-        to the shelf. Clients show `no-room` as "No room"
-        (inert) and every other failed code as "Try again"; the server's own
-        messages go to the log only. Null where a peer has no state (the
-        peers route's `add`).
+        as an admin unpins something. A `no-room` also clears when any other
+        download (an Add, the admin panel's fetch, the auto-fetch) ends
+        without landing, since the room it held is free again. A `done`
+        state goes as soon as its snapshot leaves the shelf again (the row is
+        then plain addable). Every stop of the discovery network drops every
+        state — switching it off, a failed switch-on rolled back, and the
+        soft reboot that any reboot-requiring admin save triggers — and an
+        Add still downloading then writes nothing to the shelf. Clients show
+        `no-room` as "No room" (inert) and every other failed code as "Try
+        again"; the server's own messages go to the log only. Null where a
+        peer has no state (the peers route's `add`).
       nullable: true
       required: [state, code, at]
       properties:
@@ -825,16 +830,21 @@ components:
           description: >
             Null unless `failed`. `no-room`: the snapshot cannot fit under the
             storage cap even after swapping out every unpinned snapshot —
-            checked before the download and again with the bytes received;
-            only a page Add stores it. `no-disk`: the volume has less free
-            space than the snapshot plus a 500 MB floor. `offline`: nothing
-            to fetch from (the peer is not online and no one seeds its
-            snapshot, or the discovery network is not running), or the
+            planned on its announced size before the download, and planned
+            again when the bytes received did not fit the shelf as it stood
+            by then; only a page Add stores it. `no-disk`: the volume has less
+            free space than the snapshot plus a 500 MB floor. `offline`:
+            nothing to fetch from (the peer is not online and no one seeds
+            its snapshot, or the discovery network is not running), or the
             download could not reach a source (a timeout or dial failure).
-            `bad-snapshot`: the peer sent more than it announced, or no usable
-            snapshot. `gone`: the peer left the catalog during its Add.
-            `failed`: anything else — the admin panel's fetch stores a cap
-            refusal of its own as this, never as `no-room`.
+            `bad-snapshot`: the peer announces no snapshot size (refused
+            before any download: no room can be planned for it), sent more
+            than it announced, or sent no usable snapshot. `gone`: the peer
+            was not in the catalog when its download was to start (a queued
+            Add's turn, or the retry after a refusal for room); a peer
+            forgotten while its download runs still lands. `failed`: anything
+            else — the admin panel's fetch stores a cap refusal of its own as
+            this, never as `no-room`.
         at: { type: string, format: date-time, description: "When the peer entered this state." }
     DiscoveryP2pPeer:
       type: object
@@ -3364,15 +3374,19 @@ paths:
         request stays open for the whole download. The entry is **pinned**
         (rotation-immune: an admin's explicit choice must not be rotated
         away; `POST /api/v1/admin/discovery/p2p/peer-dbs/pin` undoes it), and
-        a pin is sticky: a refresh never unpins. It never makes room: a
-        fetch that would pass the storage cap (`maxPeerDbStorageMb`) is
-        refused, as are a blocked peer, too little free disk (the snapshot
-        plus a 500 MB floor) and a peer that sends more than it announced.
-        A snapshot in another model space is fetched all the same.
+        a pin is sticky: a refresh never unpins. It makes no room of its
+        own: a fetch that would pass the storage cap (`maxPeerDbStorageMb`)
+        is refused, as are a blocked peer, too little free disk (the
+        snapshot plus a 500 MB floor) and a peer that sends more than it
+        announced. A snapshot in another model space is fetched all the
+        same.
 
         A peer already being fetched (a page Add, or the shelf's own
         auto-fetch) is not downloaded twice: the call joins that download
-        and pins what lands. While it runs the peer's Add state on
+        and pins what lands. Joining a page Add means joining its swap too:
+        the unpinned snapshots that Add planned to evict leave the shelf
+        when it lands, before this call answers. While it runs the peer's
+        Add state on
         `GET /api/v1/discovery/p2p/peers` reads `adding`, then `done` or
         `failed` — a cap refusal stored as code `failed`, never `no-room`
         (only `POST /api/v1/admin/discovery/p2p/peer-dbs/add` stores that). A
@@ -3428,7 +3442,7 @@ paths:
         |---|---|---|
         | 202 | `{ endpointId, state: adding, code: null, at }` | started, queued, or already in flight (deduped) |
         | 200 | `{ endpointId, state: done, code: null, at }` | already on the shelf |
-        | 200 | `{ endpointId, state: failed, code: no-room \| offline, at }` | a check before the download failed (the state is stored, so every client's strip shows it) |
+        | 200 | `{ endpointId, state: failed, code: no-room \| offline \| bad-snapshot, at }` | a check before the download failed (the state is stored, so every client's strip shows it) |
         | 404 | `{ error: not-in-catalog }` | no announcement heard from the peer |
         | 409 | `{ error: blocked }` / `{ error: incompatible }` | the peer is blocked — checked before the catalog, so a blocked peer the block route also forgot answers 409, not 404 — or its snapshot is in another model space |
 
@@ -3460,8 +3474,12 @@ paths:
 
         **Nothing survives a restart**: an Add in flight dies with the
         process, and after a reboot the row is plain addable again (`add:
-        null`), so a re-POST starts afresh. Admin-only; 403 while the
-        discovery network is disabled.
+        null`), so a re-POST starts afresh. The same holds for every stop of
+        the discovery network inside one process (switching it off, a failed
+        switch-on rolled back, the soft reboot after a reboot-requiring
+        admin save): the Add states go, and the downloads still running are
+        abandoned and land nothing. Admin-only; 403 while the discovery
+        network is disabled.
       requestBody:
         required: true
         content:
@@ -3487,8 +3505,9 @@ paths:
           description: >
             Nothing started: `done` (already on the shelf), or `failed` with
             `no-room` (it cannot fit even after evicting every unpinned
-            snapshot) or `offline` (the peer is not online and no one seeds
-            its snapshot, or the discovery network is not running).
+            snapshot), `offline` (the peer is not online and no one seeds
+            its snapshot, or the discovery network is not running) or
+            `bad-snapshot` (the peer announces no snapshot size).
           content:
             application/json:
               schema:

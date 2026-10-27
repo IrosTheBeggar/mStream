@@ -135,18 +135,18 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
 |---|---|---|
 | 202 | `{endpointId, state:'adding', code:null, at}` | started, queued, or already in flight (deduped) |
 | 200 | `{endpointId, state:'done', code:null, at}` | already on the shelf |
-| 200 | `{endpointId, state:'failed', code:'no-room'\|'offline', at}` | a pre-check failed (the state is stored) |
+| 200 | `{endpointId, state:'failed', code:'no-room'\|'offline'\|'bad-snapshot', at}` | a pre-check failed (the state is stored) |
 | 404 | `{error:'not-in-catalog'}` | no announcement heard |
 | 409 | `{error:'blocked'}` / `{error:'incompatible'}` | **`isBlocked` is checked before the catalog lookup**, so a blocked peer (which the block route also forgets, `admin.js:852-853`) gets 409, not 404 |
 
 - **Codes** (clients map `no-room` → "No room"; any other failed code → "Try again"; raw messages only reach `winston`):
-  - `no-room`: from `planRoom` only. Either `fits:false`, or the post-download re-plan with the actual bytes says `fits:false`.
+  - `no-room`: from `planRoom` only. Either `fits:false`, or, after the download was refused for room (the shelf moved meanwhile), the re-plan says `fits:false`. The re-plan uses the announced size; the bytes received are never more (more is `bad-snapshot`).
   - `no-disk`: the free-disk floor (`peer-dbs.js:241-246`).
   - `offline`, either:
     - before dialing: `!online && seederCount === 0`, or `!discoveryP2p.isRunning()`; or
     - an RPC rejection matching `/timed? ?out|dial|connect|unreachable|no provider/i`.
-  - `bad-snapshot`: over-announced, or `inspectSnapshot` failed (`:295-323`).
-  - `gone`: the peer left the catalog mid-add.
+  - `bad-snapshot`: over-announced, or `inspectSnapshot` failed (`:295-323`), or, as a pre-check, the announcement carries no positive `size` (no room can be planned for it, and the download's only ceiling would be the headroom).
+  - `gone`: the peer was not in the catalog when its download was to start (a queued Add's turn, or the retry after a no-room). A peer forgotten while its download runs still lands.
   - `failed`: anything else.
 - **State machine** (NEW `src/state/discovery-peer-add.js`, `createPeerAdder(deps)` plus a default instance):
   - `Map<endpointId,{state,code,at,by}>`, ≤ 200 entries.
@@ -154,7 +154,9 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
   - At most 2 downloads at once; the rest queue FIFO and report `adding`.
   - The plan is re-run when a queued Add starts.
   - **Clearing [review]**: every stored `failed` entry (no-room included) is dropped on any shelf or pin change. That covers pin/unpin (`admin.js:797-810`), `removePeerDb`, any fetch landing, rotation eviction and the block route. It goes through a NEW `peerDbs.onShelfChange(fn)` hook (no import cycle).
-  - `stopAutoFetch` (`peer-dbs.js:851`) and a p2p disable call `adder.reset()`. After a reset, an in-flight fake or real fetch must not write the registry (generation check).
+  - **[verify]** A download that ends without landing (any caller: an Add, the panel's fetch, reconcile) fires `onShelfChange(id, 'released')`: the room it reserved, and the evictees nobody else could plan with, are free again. It drops every stored `no-room` (and only those), so a No room decided while another download held the room never outlives it.
+  - **[verify]** A `done` entry is dropped when its own peer is `removed` from the shelf, so a row swapped or rotated out within 5 min shows "+" again, not an inert `done`.
+  - Every p2p stack stop runs `stopAutoFetch` (`peer-dbs.js:851`), which calls `adder.reset()`: a disable, a failed enable's rollback, and the soft reboot any reboot-requiring admin save triggers (`server.js` reboot teardown → `stopDiscoveryP2pStack`). After a reset, an in-flight fake or real fetch must not write the registry (generation check).
   - Nothing survives a restart; after a reboot the row shows "+" again.
 - **Making room** (P1): export `evictionOrder` (`rotation.js:96-113`), and give it, `planRotation` (`:137`) and a NEW `planRoom` an `onlineWindowMs` parameter (default `ONLINE_WINDOW_MS`):
 ```js
@@ -164,11 +166,11 @@ export function planRoom({ shelf, catalog, incoming /* {endpointId,size} */, cap
   reservedBytes = 0, now, seederCountOf = () => 0, onlineWindowMs = ONLINE_WINDOW_MS })
 ```
 - **Execution: always fetch first, then evict.** (Rotation is also fetch-first, unless `planRotation` sets `evictFirst` because the bytes are needed, `peer-dbs.js:781-804`.)
-  - **[review] Crash safety**: `fetchPeerNow(id, {pinned:false, discount: evictIds})` removes the evictees **in the same synchronous block** as `registry.set`, with one `save()` (today `:354-355`). So a kill can never leave the shelf over its cap at rest.
+  - **[review] Crash safety**: `fetchPeerNow(id, {pinned:false, discount: evictIds})` removes the evictees **in the same synchronous block** as `registry.set`, with one `save()` (today `:354-355`). So a kill can never leave the shelf over its cap at rest. **[verify]** The `save()` comes first; only then are the evictees' and a replaced copy's files deleted, their blobs forgotten and the evictions recorded, so a kill in between leaves only files the registry no longer names (swept at boot), never a lost newcomer.
   - The cap admission and the post-download check subtract the evictees' bytes.
   - The transient overshoot during the download is at most the incoming size, and the free-disk floor still applies.
   - Each eviction calls `recordEviction` (export it, `:732`) and is logged.
-- **[review] Orphan sweep**: `ensureLoaded` (`peer-dbs.js:110`) deletes `*.db` files in `peerDbDir()` (`:102`) that the registry does not reference. This covers a kill after the sidecar exported a file but before `registry.set` (there is no sweep today; the only removals are `:299, 318, 329, 371`).
+- **[review] Orphan sweep**: `ensureLoaded` (`peer-dbs.js:110`) deletes `*.db` files in `peerDbDir()` (`:102`) that the registry does not reference. This covers a kill after the sidecar exported a file but before `registry.set` (there is no sweep today; the only removals are `:299, 318, 329, 371`). **[verify]** The raw `POST /api/v1/admin/discovery/p2p/fetch` (`admin.js:1233`) exported into that directory too, and its file is the route's deliverable; it now exports into `{dbDirectory}/discovery-fetched/` (`peerDbs.rawFetchDir()`), which the sweep never scans.
 - **P3 shelf mechanics** (`src/state/discovery-peer-dbs.js`):
   1. `Object.assign(new Error(msg), {code})` at every throw (`:225-226, 232, 243, 303, 322`) and around the `discoveryP2p.fetch` call (`:275`). Messages are unchanged.
   2. A per-peer in-flight guard: `inFlight: Map<id,{promise, reservedBytes, discount}>`. The exported `fetchPeer` joins an existing promise (then pins if asked) or registers one.
@@ -176,7 +178,8 @@ export function planRoom({ shelf, catalog, incoming /* {endpointId,size} */, cap
   4. Reconcile (`:628`, room math `:649-656`) counts in-flight ids and reserved bytes, and skips in-flight candidates.
   5. Rotation (`:754`) passes `capBytes − reservedOthers(null)`. Rotation evicting an Add's planned evictee is harmless: `removePeerDb` is idempotent.
   6. Export `isBlocked` (`:174`).
-- **Admin panel back-compat**: `POST …/peer-dbs/fetch` keeps its exact contract: synchronous, **pins**, returns the record, 500 `fetch failed: <msg>`, no eviction. Internally it now joins the deduped `fetchPeer`. While it runs it writes `adding` to the adder, then `done` or `failed`. **It never stores `no-room`**: a cap failure there is stored as `failed{code:'failed'}`. Prefix its failure warn (`admin.js:790`) with `[discovery-peer-dbs]` so it reaches the activity ring.
+  7. **[verify]** A size-less announcement's ceiling is the headroom; at exactly 0 `discoveryP2p.fetch()` drops it (`maxBytes > 0`), so `fetchPeerNow` refuses `no-room` before dialing instead of sending no ceiling.
+- **Admin panel back-compat**: `POST …/peer-dbs/fetch` keeps its exact contract: synchronous, **pins**, returns the record, 500 `fetch failed: <msg>`, no eviction of its own (when it joins a page Add's download, that Add's swap evicts as it lands, before the fetch answers). Internally it now joins the deduped `fetchPeer`. While it runs it writes `adding` to the adder, then `done` or `failed`. **It never stores `no-room`**: a cap failure there is stored as `failed{code:'failed'}`. Prefix its failure warn (`admin.js:790`) with `[discovery-peer-dbs]` so it reaches the activity ring.
 - **Logging** (every line starts `[discovery-peer-dbs]`, so it matches `P2P_LINE`, `src/logger.js:131`, and shows in `GET /admin/discovery/p2p/activity`):
   - `add <id12>… (<label>) by '<user>'` (plus `queued`);
   - `add … landed (<n> tracks, <size>)`;
@@ -904,7 +907,7 @@ House rules for every phase:
 - **Label churn**: a newly heard same-name peer suffixes both labels on the next poll. All state keys on `endpointId`.
 - **Privacy**: members see the online state of shelf peers (already public gossip). Third parties are reached only on a press. Earned art loads from the provider CDN on the client after a press.
 - **Rate limits are server-wide**. Several users on Preview all can exhaust Deezer's 40 / 5 s. This is bounded by one-in-flight plus one prefetch and the transient 429 rule.
-- **Restart**: every peer reads offline for about 15 s, and in-flight Add states vanish (the row shows "+" again).
+- **Restart**: every peer reads offline for about 15 s, and in-flight Add states vanish (the row shows "+" again). A soft reboot (any reboot-requiring admin save) does the same to Add states and abandons running downloads.
 - **`discoveryP2p` true while the stack is down** (no sidecar for the platform, or the recovery ladder): admins get "Try again" (`offline`) and members "No peers yet". `shelf.running:false` and the activity log tell an admin why.
 - **Merge conflicts** (textual):
   - mStream #1072 (flags, ping, openapi);
@@ -924,7 +927,7 @@ Applied: every finding not listed below, with its fix as written in this plan. I
 - design B1, B2, M1–M3, m1, m2, m5–m12, m14 (as a flagged user check).
 
 Rejected or changed, one line each:
-- **compat M1, "a tap on No room re-POSTs"**: rejected. No room is inert on all three clients, because the server now clears the state on any shelf or pin change, so the row returns to "+" exactly when a retry could succeed. A re-POST before that would only repeat the same `planRoom` refusal.
+- **compat M1, "a tap on No room re-POSTs"**: rejected. No room is inert on all three clients, because the server now clears the state on any shelf or pin change, and when another download that held room ends without landing, so the row returns to "+" exactly when a retry could succeed. A re-POST before that would only repeat the same `planRoom` refusal.
 - **compat m1, "in Preview all, skip past a long iTunes wait"**: rejected. Skipping fires the next resolve into the same exhausted server-wide limiter; the chain ends after one wait and one retry instead.
 - **compat m7, "All: re-ask on every client" vs the web's cache**: not unified either way. A per-tab cache is optional (R2), because a pinned walk over an unchanged shelf returns the same rows.
 - **compat B1 fallback ("vendor the fixture into phone and terminal")**: not needed. The tile and the monogram are stamped by the server, so clients carry no hash code and no fixture copy.
@@ -936,3 +939,5 @@ Rejected or changed, one line each:
 - **compat M2 detail, "20+ unreleased player commits"**: corrected to 99 non-merge commits since v0.14.0. The release-notes step is kept.
 - **facts F15, the "TOOLS takes row 4" wording**: no plan change was needed, because the drafts' coordinates were already right. §2 item 21 states that the whole column shifts.
 - **web draft, "keep the plug-ins-off copy fallback"; phone draft, the attribution ARB keys; terminal draft, its own `norm` and the "- Title" copy**: all superseded by design B2 / M3, facts F1 / F5 and §5.
+
+Build review (the verify pass over the finished server pieces): seven findings, all applied (the §3.3 ones marked **[verify]**). A download ending without landing clears stale No room; a `done` goes with its snapshot; a size-less announcement is refused up front and a zero ceiling is no-room; non-string peer names read as none, and the taste route's label stamping sits inside the network section's try; the swap saves the registry before deleting files; the raw admin fetch exports outside the swept directory; and the docs now say what resets Add states, when `gone` is decided, and that the panel's fetch can join an Add's swap.
