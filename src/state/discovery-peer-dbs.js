@@ -486,6 +486,11 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   // v1.0.3 ignores the extra param, which is why the on-disk re-check
   // below stays load-bearing.
   const maxFetchBytes = announcedSize > 0 ? announcedSize : storageCapBytes() - restingWithout();
+  // A size-less announcement on a shelf with no headroom left: a ceiling of
+  // zero is no ceiling to the sidecar (fetch() drops it), so refuse here.
+  if (maxFetchBytes <= 0) {
+    throw shelfError('no-room', 'no room left under the peer-DB storage cap for a snapshot of unannounced size');
+  }
   // hold: shelf snapshots are what the holds beacon advertises, so the
   // sidecar must keep the blob GC-rooted for as long as we claim to seed
   // it. Every removal path (replace-on-update, removePeerDb, a swap, the

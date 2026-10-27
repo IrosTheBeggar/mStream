@@ -295,6 +295,25 @@ describe('reservations', () => {
     assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('a'), id('c')]);
   });
 
+  test('a size-less announcement on a full shelf is refused for room, never fetched without a ceiling', async () => {
+    await shelve('e', 200_000);
+    const hash = hashOf('s');
+    const file = path.join(templateDir, `${hash}.db`);
+    fs.rmSync(file, { force: true });
+    makeSnapshot(file, 1000);
+    templates.set(hash, file);
+    catalog.record(id('s'), { hash, snapshotSeq: 1, rowCount: 1, modelId: MODEL, name: 'Sizeless' });
+    announced.add(id('s'));
+    const cap = config.program.discoveryP2p.maxPeerDbStorageMb;
+    config.program.discoveryP2p.maxPeerDbStorageMb = peerDbs.totalBytes() / (1024 * 1024); // exactly full
+    try {
+      await assert.rejects(peerDbs.fetchPeer(id('s')), { code: 'no-room' });
+    } finally {
+      config.program.discoveryP2p.maxPeerDbStorageMb = cap;
+    }
+    assert.equal(callsFor('s'), 0, 'a zero ceiling is no ceiling to the sidecar (fetch() drops it): never dialed');
+  });
+
   test('reconcile skips an in-flight peer and counts its slot and its bytes', async () => {
     await shelve('e', 200_000);
     announce('a', 600_000, { rowCount: 9999 }); // the best candidate — but downloading

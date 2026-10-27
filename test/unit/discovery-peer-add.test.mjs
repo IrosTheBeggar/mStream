@@ -213,6 +213,20 @@ describe('pre-checks: the route status table', () => {
     assert.equal(t.fetches.length, 1);
   });
 
+  test('a peer announcing no size is 200 failed bad-snapshot: no plan, no download', () => {
+    const t = harness();
+    for (const ch of 'ab') { t.announce(ch); }
+    delete t.catalog.get(id('a')).payload.size;
+    t.catalog.get(id('b')).payload.size = 0;
+    for (const ch of 'ab') {
+      assert.deepEqual(t.add(ch), {
+        status: 200, body: { endpointId: id(ch), state: 'failed', code: 'bad-snapshot', at: iso(t.clock) },
+      });
+    }
+    assert.equal(t.planCalls.length, 0, 'nothing to plan room for');
+    assert.equal(t.fetches.length, 0);
+  });
+
   test('no room is 200 failed no-room, stored, and nothing downloads', () => {
     const t = harness();
     t.announce('a');
