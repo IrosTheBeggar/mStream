@@ -1193,7 +1193,9 @@ export function setup(mstream) {
     }
   });
 
-  // Pull a peer's snapshot into {dbDirectory}/discovery-peers/. Returns
+  // Pull a peer's snapshot into {dbDirectory}/discovery-fetched/ (never the
+  // shelf's discovery-peers/, whose unnamed files the boot sweep deletes;
+  // this file is the route's deliverable and stays). Returns
   // { hash, size, path }; the transfer is BLAKE3-verified by the protocol,
   // so a completed fetch is an intact file. Addressing is EITHER a blob
   // ticket (manual hand-off, works with zero prior contact) OR the
@@ -1230,7 +1232,7 @@ export function setup(mstream) {
       maxBytes = entry.payload.size > 0 ? entry.payload.size : undefined;
     }
 
-    const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
+    const outDir = discoveryPeerDbs.rawFetchDir();
     try {
       // No hold: this raw route delivers a file, not a shelf membership —
       // nothing here would ever forget() the blob, so rooting it in the
