@@ -317,9 +317,10 @@ function shelfChanged(endpointId, change) {
 // Subscribe to shelf membership and pin changes: `fn({ endpointId, change })`
 // with change 'landed' (a fetch put or refreshed a snapshot on the shelf),
 // 'removed' (removePeerDb, a rotation eviction, an Add's swap, the block
-// route) or 'pinned' (pin or unpin). Synchronous, after the registry write.
-// Returns the unsubscribe. The Add state machine's way in without an import
-// cycle.
+// route), 'pinned' (pin or unpin) or 'released' (a download ended without
+// landing: the shelf is unchanged, but the room it reserved is free again).
+// Synchronous, after the registry write. Returns the unsubscribe. The Add
+// state machine's way in without an import cycle.
 export function onShelfChange(fn) {
   shelfListeners.add(fn);
   return () => shelfListeners.delete(fn);
@@ -407,6 +408,11 @@ export async function fetchPeer(endpointId, { pinned = false, discount = [] } = 
   download.promise = fetchPeerNow(endpointId, pinned, download).finally(() => {
     if (inFlight.get(endpointId) === download) { inFlight.delete(endpointId); }
   });
+  // A download that ends without landing hands back what it held from
+  // everyone else's plans: its reserved bytes and its evictees. Registered
+  // before any caller awaits, so listeners hear it before the caller's own
+  // outcome is written.
+  download.promise.catch(() => shelfChanged(endpointId, 'released'));
   inFlight.set(endpointId, download);
   return download.promise;
 }

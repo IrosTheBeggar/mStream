@@ -492,6 +492,38 @@ describe('clearing on a shelf change', () => {
     assert.equal(t.state('a').state, 'adding');
     assert.equal(t.state('b').state, 'done');
   });
+
+  test('a download ending without landing drops No room only: the room it held is free again', async () => {
+    const t = harness();
+    for (const ch of 'abc') { t.announce(ch); }
+    t.add('a');
+    await t.fail('a', coded('offline'));
+    t.plans.set(id('b'), { fits: false });
+    t.add('b');
+    t.running = false;
+    t.add('c');
+
+    t.shelfChange(id('z'), 'released');
+    assert.equal(t.state('b'), null, 'the plan that said No room counted the released bytes');
+    assert.equal(t.state('a').code, 'offline', 'a release frees room, nothing else: Try again stays');
+    assert.equal(t.state('c').code, 'offline');
+  });
+
+  test('a done state goes when its own snapshot leaves the shelf, and only then', async () => {
+    const t = harness();
+    for (const ch of 'ab') { t.announce(ch); }
+    t.add('a');
+    t.add('b');
+    await t.land('a');
+    await t.land('b');
+
+    t.shelfChange(id('b'), 'removed');
+    t.shelfChange(id('a'), 'pinned');
+    t.shelfChange(id('a'), 'landed');
+    assert.equal(t.state('a').state, 'done', "another peer's removal, a pin or a refresh keeps it");
+    assert.equal(t.state('b'), null, 'B left the shelf: its row is addable again, not done');
+    assert.equal(t.add('b').status, 202);
+  });
 });
 
 describe('reset (onStop)', () => {
@@ -744,6 +776,32 @@ describe('wired: the default instance on the real shelf', () => {
     assert.equal(peerAdder.add(id('c'), { by: 'admin' }).status, 202);
     await peerAdder.whenIdle();
     assert.deepEqual(registryIds(), [id('b'), id('c')]);
+  });
+
+  test('a No room decided while another Add held the room clears when that Add fails', async () => {
+    await shelve('p', 500_000, { pinned: true });
+    await shelve('v', 400_000);
+    announce('a', 400_000);
+    announce('b', 300_000);
+    holdNext.add(hashOf('a'));
+    assert.equal(peerAdder.add(id('a'), { by: 'admin' }).status, 202);
+    await downloading('a');
+    assert.equal(peerAdder.add(id('b'), { by: 'admin' }).body.code, 'no-room', "V is A's to swap out");
+
+    const failFile = path.join(fakeDir, `${hashOf('a')}.fail`);
+    fs.writeFileSync(failFile, '');
+    try {
+      release('a');
+      await peerAdder.whenIdle();
+    } finally {
+      fs.rmSync(failFile, { force: true });
+    }
+    assert.equal(peerAdder.stateOf(id('a')).code, 'offline');
+    assert.equal(peerAdder.stateOf(id('b')), null, 'V is free again, so B is no longer No room');
+    assert.equal(peerAdder.add(id('b'), { by: 'admin' }).status, 202);
+    await peerAdder.whenIdle();
+    assert.equal(peerAdder.stateOf(id('b')).state, 'done');
+    assert.deepEqual(registryIds(), [id('b'), id('p')]);
   });
 
   test('the stack stopping mid-download: the state is gone, and nothing lands', async () => {

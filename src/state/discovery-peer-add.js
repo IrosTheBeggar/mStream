@@ -20,7 +20,11 @@
 // taste route), failed 30 min, both checked on read. Every failed state is
 // dropped on any shelf or pin change (peer-dbs onShelfChange): a snapshot
 // leaving the shelf, or an unpin, may be exactly the room a "No room" was
-// waiting for, and a fresh try costs one press.
+// waiting for, and a fresh try costs one press. A download that ends
+// without landing changes no shelf but frees the room it held from every
+// plan made meanwhile, so it drops the "No room"s (and only those). A done
+// state goes as soon as its snapshot leaves the shelf: the row is addable
+// again, and done would leave it with no "+".
 //
 // At most two Adds download at once; the rest queue FIFO and report adding.
 // An Add plans its room when it starts (planRoom, through peer-dbs
@@ -345,9 +349,12 @@ export function createPeerAdder({
     while (running.size > 0) { await Promise.allSettled([...running]); }
   }
 
-  onShelfChange(() => {
+  onShelfChange(({ endpointId, change }) => {
     for (const [id, entry] of states) {
-      if (entry.state === 'failed') { states.delete(id); }
+      const stale = entry.state === 'failed'
+        ? change !== 'released' || entry.code === 'no-room'
+        : entry.state === 'done' && change === 'removed' && id === endpointId;
+      if (stale) { states.delete(id); }
     }
   });
   onStop(reset);
