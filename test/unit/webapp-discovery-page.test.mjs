@@ -673,6 +673,12 @@ describe('peerGroups', () => {
 // vp.js's peer window: dmSongMeta (what Play now / Queue next / Add
 // queue), sliced from the component's methods and run over a stub modal.
 const VP_SRC = readFileSync(new URL('../../webapp/alpha/vp.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+// m.js's escapeHtml (a page global vp.js calls for every toast that names
+// another server's words: iziToast inserts title and message as markup)
+const M_SRC = readFileSync(new URL('../../webapp/alpha/m.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+const escapeHtml = new Function(`${M_SRC.match(/\nconst entityMap = \{[\s\S]*?\n\};\n/)[0]}
+${M_SRC.match(/\nfunction escapeHtml \(string\) \{[\s\S]*?\n\}\n/)[0]}
+return escapeHtml;`)();
 function vpDmSongMeta() {
   const start = VP_SRC.indexOf('      dmSongMeta: function () {');
   assert.ok(start >= 0, 'vp.js no longer defines dmSongMeta — update this test');
@@ -807,8 +813,8 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); } };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
-  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', body)(
-    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); });
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', 'escapeHtml', body)(
+    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); }, escapeHtml);
   const loads = [];
   const starts = [];
   const cancels = [];
@@ -1414,6 +1420,50 @@ describe('the recommendation window: what album focus and a reopened failure sho
     vm.toastDiscoverJob({ ...guest, id: 82, params: {}, key: 'text:x', state: 'failed', error: 'does not allow copies', result: null });
     assert.equal(toasts[0].message, 'does not allow copies', 'a song\'s failure: the server\'s own words, as before');
     assert.equal(EN['discover.job.toastNothing'], 'Nothing to copy');
+  });
+
+  test('a job\'s words are another server\'s: every toast takes them as text, never markup', () => {
+    const { vm, toasts } = makeWindow({ reads: STAGE_READS() });
+    // iziToast inserts title and message as markup: a peer that names a
+    // song, album or artist (or answers an error) with tags must not run them
+    const IMG = '<img src=x onerror="alert(1)">';
+    const rec = { ...tapesRow(STAGE_B, IMG, { album: '<i>Tapes</i>' }), artist: '<b>Mo</b>' };
+    const evilPeer = { ...STAGE_B, name: '<s>B</s>' };
+    const many = (over) => ({ scope: 'album', songs: { total: 2, copied: [{ from: 'a' }], skipped: [], failed: [] }, counts: { total: 2, copied: 1, skipped: 0, failed: 0 }, stopped: null, peer: evilPeer, ...over });
+    const base = { id: 90, plugin: 'federation-copy', key: 'text:x', params: {}, error: null, result: null, recommendation: rec };
+    const jobs = {
+      failed: { ...base, state: 'failed', error: `no ${IMG}` },
+      copied: { ...base, state: 'done', result: { copied: { filepath: 'copies/<u>Mo</u>/x.mp3' } } },
+      owned: { ...base, state: 'done', result: { skipped: 'owned', existing: { filepath: 'music/<u>Mo</u>/x.mp3' } } },
+      downloaded: { ...base, plugin: 'youtube', state: 'done', result: { downloaded: { filepath: 'music/<u>Mo</u>/x.mp3' } } },
+      copiedMany: { ...base, key: 'album:x', params: { scope: 'album' }, state: 'done', result: many() },
+      stopped: { ...base, key: 'album:x', params: { scope: 'album' }, state: 'done', result: many({ stopped: 'peer' }) },
+      nothing: { ...base, key: 'album:x', params: { scope: 'album' }, state: 'done', result: many({ songs: { total: 0, copied: [], skipped: [], failed: [] }, counts: { total: 0, copied: 0, skipped: 0, failed: 0 } }) },
+    };
+    jobs.failedMany = { ...jobs.copiedMany, result: many({ songs: { total: 2, copied: [], skipped: [], failed: [{}, {}] }, counts: { total: 2, copied: 0, skipped: 0, failed: 2 } }) };
+    for (const [state, job] of Object.entries(jobs)) {
+      assert.equal(J.jobRowState(job).state, state === 'failedMany' ? 'failed' : state, state);
+      toasts.length = 0;
+      vm.toastDiscoverJob(job);
+      assert.equal(toasts.length, 1, state);
+      const said = `${toasts[0].title} ${toasts[0].message}`;
+      assert.ok(!/[<>]/.test(said), `${state}: no markup reaches the toast — ${said}`);
+    }
+    toasts.length = 0;
+    vm.toastDiscoverJob(jobs.failed);
+    assert.equal(toasts[0].message, escapeHtml(`no ${IMG}`), 'the server\'s words, as text');
+    toasts.length = 0;
+    vm.toastDiscoverJob(jobs.copied);
+    assert.equal(toasts[0].message, escapeHtml(`${IMG} — <b>Mo</b>`), 'the song as text');
+    toasts.length = 0;
+    vm.toastDiscoverJob(jobs.stopped);
+    assert.ok(toasts[0].message.startsWith(escapeHtml('<i>Tapes</i>')), 'the album as text');
+    assert.match(toasts[0].message, /&lt;s&gt;B&lt;/, 'the peer\'s name in the counts, as text');
+    // a plug-in's title is the server's own, but it rides in the same title
+    vm.discover.plugins.list = [{ ...COPY, title: '<b>Copy</b>' }];
+    toasts.length = 0;
+    vm.toastDiscoverJob(jobs.failed);
+    assert.equal(toasts[0].title, escapeHtml(tEn('discover.job.toastFailed', { plugin: '<b>Copy</b>' })));
   });
 });
 
@@ -2600,8 +2650,8 @@ function makeDestWindow({ reads = shiftReads(['Harbour Lights', 'Borrowed Tapes'
   const doc = { activeElement: null, body: { name: 'body' } };
   // a saved place's toast lands with the window's own
   const izi = { success: (o) => w.toasts.push({ kind: 'success', ...o }) };
-  const methods = new Function('DISCOVERJOBS', 'MSTREAMAPI', 'document', 't', 'iziToast',
-    `return { ${DEST_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(J, api, doc, tEn, izi);
+  const methods = new Function('DISCOVERJOBS', 'MSTREAMAPI', 'document', 't', 'iziToast', 'escapeHtml',
+    `return { ${DEST_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(J, api, doc, tEn, izi, escapeHtml);
   Object.assign(w.vm, methods, { ensureDiscoverPlugins: async () => w.vm.discover.plugins.list, noteDiscoverJob() {} });
   w.vm.discover.dest = { view: server.view, saves: 0 };
   const els = {};
@@ -3143,6 +3193,14 @@ describe('where files land: the editor (vp.js)', () => {
     assert.deepEqual(calls.saves, [{ vpath: 'copies', base: '', layout: 'From friends/{{ARTIST}}' }]);
     assert.equal(pathLine(vm.dmDestPath('song')), 'copies › From friends › Boukmanflow', 'the bar shows the new path');
     assert.equal(toasts.pop().title, 'Saved · copies land in copies › From friends', 'where every copy lands, whatever its tags');
+  });
+
+  test('the saved toast names the folders as text (iziToast inserts its title as markup)', async () => {
+    const { vm, k, toasts } = await opened();
+    vm.dmPickerChooseCustom();
+    k.text = "Sam's & co/{{ARTIST}}";
+    await vm.dmPickerSubmit();
+    assert.equal(toasts.pop().title, 'Saved · copies land in copies › Sam&#39;s &amp; co');
   });
 
   test('a variable button drops {{NAME}} at the caret, over the selection, the caret after it — at the end without a field; off with no room left; named "Insert …"', async () => {
@@ -4662,8 +4720,8 @@ describe('the window\'s markup and styles after the 2026-10-21 review', () => {
 });
 
 describe('the strip\'s Retry sends the place the copy ran with (vp.js dtRetry)', () => {
-  const dtRetry = (api, toasts) => new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)(
-    api, J, { error: (o) => toasts.push(o) });
+  const dtRetry = (api, toasts) => new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', 'escapeHtml', `return ${vpMethodSrc('dtRetry')}`)(
+    api, J, { error: (o) => toasts.push(o) }, escapeHtml);
   const harness = (view, answer) => {
     const sent = [];
     const toasts = [];
@@ -4710,6 +4768,38 @@ describe('the strip\'s Retry sends the place the copy ran with (vp.js dtRetry)',
     await h.run(job({ params: { scope: 'album', destination: PIN } }));
     assert.deepEqual(h.reads, []);
     assert.equal(h.toasts[0].title, 'words: someone else on this server is already getting this');
+  });
+
+  test('the server\'s words reach the toast as text (they may quote a peer\'s; iziToast inserts its title as markup)', async () => {
+    const quoted = Object.assign(new Error('<img src=x onerror="alert(1)"> is gone'), { status: 500, body: { error: 'x' } });
+    const h = harness({ destination: NOW }, quoted);
+    await h.run(job({ params: { scope: 'album', destination: PIN } }));
+    assert.equal(h.toasts[0].title, escapeHtml('words: <img src=x onerror="alert(1)"> is gone'));
+    assert.ok(!/[<>]/.test(h.toasts[0].title));
+  });
+});
+
+describe('a "From the network" row\'s copy (vp.js copyDiscoverP2p)', () => {
+  // the text is the peer's: the clipboard gets it as it is, the toast
+  // (which takes markup) as text — and where there is no clipboard (plain
+  // http on a LAN) the toast IS the text, to copy by hand
+  const copyWith = (clipboard, toasts) => new Function('navigator', 'iziToast', 't', 'escapeHtml', `return (${vpMethodSrc('copyDiscoverP2p')});`)(
+    { clipboard }, { success: (o) => toasts.push(o), info: (o) => toasts.push(o) }, tEn, escapeHtml);
+  const evil = { artist: '<b>Mo</b>', title: '<img src=x onerror="alert(1)">' };
+
+  test('copied: the clipboard gets the text as it is, the toast names it as text', async () => {
+    const writes = [];
+    const toasts = [];
+    await copyWith({ writeText: (s) => { writes.push(s); return Promise.resolve(); } }, toasts)(evil);
+    assert.deepEqual(writes, ['<b>Mo</b> - <img src=x onerror="alert(1)">']);
+    assert.deepEqual(toasts, [{ title: tEn('discover.network.copied'), message: escapeHtml('<b>Mo</b> - <img src=x onerror="alert(1)">'), position: 'topCenter', timeout: 2500 }]);
+  });
+
+  test('no clipboard: the toast\'s title is the text, as text', async () => {
+    const toasts = [];
+    await copyWith(undefined, toasts)(evil);
+    assert.deepEqual(toasts, [{ title: escapeHtml('<b>Mo</b> - <img src=x onerror="alert(1)">'), position: 'topCenter', timeout: 3500 }]);
+    assert.ok(!/[<>]/.test(toasts[0].title));
   });
 });
 
@@ -5233,7 +5323,7 @@ describe('from browsing: a folder\'s start, its states on its own landing, the c
 
   test('the strip\'s Retry sends a folder job\'s own landing', async () => {
     const sent = [];
-    const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)({ discoveryJobStart: async (...args) => { sent.push(args); return {}; } }, J, { error() {} });
+    const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', 'escapeHtml', `return ${vpMethodSrc('dtRetry')}`)({ discoveryJobStart: async (...args) => { sent.push(args); return {}; } }, J, { error() {} }, escapeHtml);
     await retry.call({ discover: { dest: { view: null } }, noteDiscoverJob() {}, scheduleDiscoverJobsPoll() {}, dmLoadDestination() {}, tt: tEn },
       folderJob({ state: 'failed', params: { scope: 'folder', landing: { tags: true }, destination: COPIES } }));
     assert.deepEqual([sent[0][3], sent[0][5]], ['folder', { tags: true }]);
@@ -5476,8 +5566,8 @@ describe('from browsing: the keyboard in a folder\'s window (the 2026-10-23 revi
 describe('the strip\'s Retry refused for a right or the plug-in gone: the pages read their gate again', () => {
   test('403 and 404 tell the watchers; a 409 does not', async () => {
     for (const [status, want] of [[403, 1], [404, 1], [409, 0], [429, 0]]) {
-      const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', `return ${vpMethodSrc('dtRetry')}`)(
-        { discoveryJobStart: () => Promise.reject(httpError(status, { error: 'x' })) }, J, { error() {} });
+      const retry = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'iziToast', 'escapeHtml', `return ${vpMethodSrc('dtRetry')}`)(
+        { discoveryJobStart: () => Promise.reject(httpError(status, { error: 'x' })) }, J, { error() {} }, escapeHtml);
       let heard = 0;
       await retry.call({ discover: { dest: { view: null } }, noteDiscoverJob() {}, scheduleDiscoverJobsPoll() {}, dmLoadDestination() {}, dmErrorText: () => 'x', dmKeepGateChanged() { heard += 1; }, tt: tEn },
         folderJob({ state: 'failed', params: { scope: 'folder', destination: COPIES } }));
