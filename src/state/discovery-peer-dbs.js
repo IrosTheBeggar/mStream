@@ -156,6 +156,13 @@ export function peerDbDir() {
   return path.join(config.program.storage.dbDirectory, 'discovery-peers');
 }
 
+// Where the raw admin route (POST /api/v1/admin/discovery/p2p/fetch) exports
+// a pulled snapshot: a file for the admin, not a shelf member, so it stays
+// out of the directory the boot sweep tidies.
+export function rawFetchDir() {
+  return path.join(config.program.storage.dbDirectory, 'discovery-fetched');
+}
+
 function registryPath() {
   return path.join(config.program.storage.dbDirectory, 'discovery-p2p', REGISTRY_FILE);
 }
@@ -191,8 +198,9 @@ function ensureLoaded() {
 // process died before the registry write (a kill mid-Add or mid-rotation).
 // Nothing would ever read or remove it, so it goes now, once per process.
 // Matched by file name, not full path, so a symlinked dbDirectory can never
-// make a held snapshot look orphaned. The raw admin p2p/fetch route exports
-// into this directory too; its files are not shelf members either.
+// make a held snapshot look orphaned. Only shelf downloads land here: the
+// raw admin p2p/fetch route exports into a directory of its own
+// (rawFetchDir), whose files are the route's deliverable.
 function sweepOrphans() {
   const named = new Set([...registry.values()].map((e) => path.basename(e.path)));
   let files;

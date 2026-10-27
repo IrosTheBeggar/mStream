@@ -172,6 +172,10 @@ before(async () => {
   discoveryP2p = await import('../../src/state/discovery-p2p.js');
   peerDbs = await import('../../src/state/discovery-peer-dbs.js');
   peerDbs.setFetchForTests(fakeFetch);
+  // What the raw admin p2p/fetch route delivered before this boot: a file
+  // for the admin, in a directory of its own.
+  fs.mkdirSync(peerDbs.rawFetchDir(), { recursive: true });
+  makeSnapshot(path.join(peerDbs.rawFetchDir(), 'pulled.db'), 0);
 });
 
 afterEach(() => {
@@ -198,6 +202,8 @@ describe('boot', () => {
     assert.ok(fs.existsSync(path.join(peerDir, 'held.db')));
     assert.ok(!fs.existsSync(path.join(peerDir, 'orphan.db')), 'nothing names it, nothing would ever remove it');
     assert.ok(fs.existsSync(path.join(peerDir, 'notes.txt')), 'only *.db files are snapshots');
+    assert.notEqual(peerDbs.rawFetchDir(), peerDir);
+    assert.ok(fs.existsSync(path.join(peerDbs.rawFetchDir(), 'pulled.db')), "the raw route's deliverable stays");
   });
 
   test('the stack-down seams are inert: forget and the holds push resolve offline', async () => {
