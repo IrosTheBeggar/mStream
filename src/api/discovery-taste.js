@@ -438,18 +438,20 @@ function networkReason(found, results, filtered) {
 async function networkSection(index, centroid, ctx) {
   const { seeds, limit, newArtistsOnly, networkPeers } = ctx;
   if (limit.network === 0) { return emptyNetwork(null); }
-  let found;
+  let found, results;
   try {
     found = await searchPeers(centroid, index.modelId, {
       peers: networkPeers, excludeSets: localIdentitySets(), newArtistsOnly, limit: limit.network,
       headroom: NETWORK_HEADROOM, seedVecs: seeds.map((s) => s.entry.vec),
     });
+    // Labels read the catalog (peers' own announcements): inside the try, so
+    // whatever trips there costs this section, never the whole answer.
+    results = stampNetworkRows(found.results, seeds, limit.network, shelfLabels());
   } catch (err) {
     // Answered as an empty section; the next call walks again.
     winston.warn(`discovery taste: p2p shelf search failed: ${err.message}`);
     return emptyNetwork('error');
   }
-  const results = stampNetworkRows(found.results, seeds, limit.network, shelfLabels());
   return { results, searched: found.searched, reason: networkReason(found, results, networkPeers != null) };
 }
 

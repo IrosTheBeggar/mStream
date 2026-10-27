@@ -281,6 +281,28 @@ describe('peerLabels — the §3.2 label rule', () => {
     assert.equal(labels.get(id('bbbb01')), 'Fetched Only');
     assert.equal(labels.get(id('cccc01')), 'Fetched Name');
   });
+
+  test('a name that is not a string is no name (announcements are only signature-checked)', () => {
+    const labels = peerLabels({
+      shelf: [held('aaaa01', { name: 7 }), held('bbbb01', { name: 'Fetched Name' })],
+      catalog: [cat('aaaa01', { name: 42 }), cat('bbbb01', { name: ['x'] }), cat('cccc01', { name: { a: 1 } })],
+    });
+    assert.equal(labels.get(id('aaaa01')), 'mStream · aaaa');
+    assert.equal(labels.get(id('bbbb01')), 'Fetched Name');
+    assert.equal(labels.get(id('cccc01')), 'mStream · cccc');
+
+    const view = buildPeerView({
+      shelf: [held('aaaa01', { name: 7 })],
+      catalog: [cat('aaaa01', { name: 42 }), cat('cccc01', { name: ['x'] })],
+      localModel: MODEL,
+      now: NOW,
+      canAdd: true,
+    });
+    assert.deepEqual(view.peers.map((row) => [row.name, row.label, row.monogram]), [
+      ['', 'mStream · aaaa', 'mS'],
+      ['', 'mStream · cccc', 'mS'],
+    ]);
+  });
 });
 
 describe('buildPeerView — rows', () => {

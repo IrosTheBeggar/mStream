@@ -54,6 +54,13 @@ function compareIds(a, b) {
   return a > b ? 1 : 0;
 }
 
+// A peer's name as announced (or as its snapshot was fetched under): the
+// announcement payload is the peer's own JSON, checked for its signature
+// only, so anything but a string reads as no name.
+function nameText(name) {
+  return typeof name === 'string' ? name : '';
+}
+
 // endpointId -> label for every peer in the universe: catalog ∪ shelf,
 // minus blocked. A peer's name is its latest announced one, else the name
 // its snapshot was fetched under, else none.
@@ -73,11 +80,11 @@ function compareIds(a, b) {
 export function peerLabels({ shelf = [], catalog = [], isBlocked = () => false } = {}) {
   const names = new Map();
   for (const entry of shelf) {
-    if (!isBlocked(entry.endpointId)) { names.set(entry.endpointId, entry.name || ''); }
+    if (!isBlocked(entry.endpointId)) { names.set(entry.endpointId, nameText(entry.name)); }
   }
   for (const entry of catalog) {
     if (!isBlocked(entry.from)) {
-      names.set(entry.from, entry.payload?.name || names.get(entry.from) || '');
+      names.set(entry.from, nameText(entry.payload?.name) || names.get(entry.from) || '');
     }
   }
 
@@ -259,7 +266,7 @@ export function buildPeerView({
     .filter((entry) => modelCompatible(entry, localModel))
     .map((entry) => row(
       entry.endpointId,
-      catalogById.get(entry.endpointId)?.payload?.name || entry.name || '',
+      nameText(catalogById.get(entry.endpointId)?.payload?.name) || nameText(entry.name),
       { onShelf: true, pinned: entry.pinned === true, rowCount: entry.rowCount || 0 },
     ))
     .sort((a, b) => (Number(b.online) - Number(a.online))
@@ -284,7 +291,7 @@ export function buildPeerView({
     ].slice(0, MAX_ADDABLE_ROWS));
     addableRows = candidates
       .filter((entry) => kept.has(entry))
-      .map((entry) => row(entry.from, entry.payload.name || '', {
+      .map((entry) => row(entry.from, nameText(entry.payload.name), {
         onShelf: false, pinned: false, rowCount: entry.payload.rowCount || 0,
       }));
   }
