@@ -58,6 +58,8 @@ function toggleThing(el, bool) {
 
   if (bool === false) {
     document.getElementById('browser').classList.add('hide-on-small-only');
+    // the column hides, Peer Recommendations' band with it: its clip ends (m.js)
+    if (typeof peerRecsCovered === 'function') { peerRecsCovered(); }
   }else {
     document.getElementById('browser').classList.remove('hide-on-small-only');
   }
