@@ -792,9 +792,6 @@ async function init() {
     // its songs (the Keep a copy window's folder count).
     MSTREAMAPI.currentServer.supportedAudioFiles = response.supportedAudioFiles || null;
 
-    // Discovery capability — consumed by the Discover panel (below) and
-    // the Auto-DJ panel's sonic-similarity section.
-    MSTREAMAPI.currentServer.discovery = response.discovery === true;
     // Stats API v2 — with it, the player reports complete plays instead of
     // the 30-second scrobble (assets/js/mstream.player.js), and posts what
     // an earlier page left behind.
@@ -802,8 +799,10 @@ async function init() {
     if (typeof MSTREAMPLAYER.statsInit === 'function') { MSTREAMPLAYER.statsInit(); }
     // The listening page (/stats) reads the same API; its nav entry follows the flag.
     document.getElementById('nav-stats').classList.toggle('super-hide', MSTREAMAPI.currentServer.stats < 2);
-    VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
-    VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
+    // Discovery capability — the now-playing Discover panel and its "From
+    // the network", the Auto-DJ panel's sonic-similarity section, Sonic
+    // Path's nav row.
+    applyDiscoverySurfaces(response);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
     // Discovery plug-ins (actions on a recommendation row) — the flag says
     // the server has at least one switched on; the list is fetched lazily.
@@ -815,10 +814,6 @@ async function init() {
     MSTREAMAPI.serverInfo()
       .then(applyServerInfo)
       .catch(() => applyServerInfo(null));
-    // Sonic Path is a standalone side-nav panel — reveal its nav entry
-    // only when the server has the route (never probed).
-    MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
-    document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
     // Downloads: what the discovery plug-ins brought in — the same flag as
     // the "Get it" rows, so the panel exists only where a download can.
     document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
@@ -4036,6 +4031,23 @@ function applyDiscoveryPing(response) {
   peerRecsSetEntry(peerRecsEntryNow() !== null);
 }
 
+// The rest of the app's discovery flags off the ping (init(), and the
+// network turned on from Peer Recommendations: peerRecsTurnedOn). The
+// now-playing panel's Discover and its "From the network" — the network's
+// first, so a panel that shows asks for both; the Auto-DJ panel's sonic
+// similarity (currentServer.discovery); Sonic Path, a standalone side-nav
+// panel — its nav entry only where the server has the route (never
+// probed).
+function applyDiscoverySurfaces(response) {
+  const r = response || {};
+  MSTREAMAPI.currentServer.discovery = r.discovery === true;
+  MSTREAMAPI.currentServer.discoveryPath = r.discoveryPath === true;
+  const nav = document.getElementById('nav-sonic-path');
+  if (nav) { nav.classList.toggle('super-hide', r.discoveryPath !== true); }
+  VUEPLAYERCORE.setDiscoveryP2pAvailable(r.discoveryP2p === true);
+  VUEPLAYERCORE.setDiscoveryAvailable(r.discovery === true);
+}
+
 // GET /api's identity, once it answers (init(), after the ping): an admin
 // or not — the Downloads panel's "All accounts", the window's invite row —
 // and whether the admin API answers (its `admin` object, absent while
@@ -5802,7 +5814,8 @@ async function peerRecsTurnOnSubmit() {
 }
 
 // The network is on (the form's, or the status said so): one re-ping —
-// its flags the app's from now on — then the page in its own mode, a
+// its flags the app's from now on, the now-playing panel's and the rest
+// (applyDiscoverySurfaces) too — then the page in its own mode, a
 // fresh visit and its first ask (R1). Not the page after it (no answer, or
 // a gate the network alone does not open): the row as the flags stand,
 // and the file explorer. A page left meanwhile draws nothing.
@@ -5811,7 +5824,10 @@ async function peerRecsTurnedOn(visit) {
   try {
     r = await MSTREAMAPI.ping();
   } catch (_) { /* no answer: the flags as they were */ }
-  if (r) { applyDiscoveryPing(r); }
+  if (r) {
+    applyDiscoveryPing(r);
+    applyDiscoverySurfaces(r);
+  }
   if (visit !== peerRecsView.visit || !peerRecsOnScreen()) { return; }
   if (peerRecsEntryNow() === 'page') { return discoveryPanel({ page: 'peerRecs' }); }
   peerRecsExit();

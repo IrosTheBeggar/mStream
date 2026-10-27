@@ -108,7 +108,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
-  'localIgnoreVPaths', 'applyDiscoveryPing', 'applyServerInfo', 'discoverySetEntry',
+  'localIgnoreVPaths', 'applyDiscoveryPing', 'applyDiscoverySurfaces', 'applyServerInfo', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryOnScreen', 'discoveryNowPlayingPath',
   'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'redoDiscoveryPeers', 'discoveryOff',
@@ -136,9 +136,9 @@ const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(s
     ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
 
 const KNOWN_IDS = ['filelist', 'dpage-head', 'localSearchBar', 'directoryName', 'directory_bar',
-  'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover', 'nav-peer-recs', 'dpage-band'];
+  'local_search_btn', 'upload_btn', 'mkdir_btn', 'nav-discover', 'nav-peer-recs', 'dpage-band', 'nav-sonic-path'];
 // what index.html draws hidden until the ping (or a clip) shows it
-const HIDDEN_IDS = ['nav-discover', 'nav-peer-recs', 'dpage-head', 'dpage-band'];
+const HIDDEN_IDS = ['nav-discover', 'nav-peer-recs', 'dpage-head', 'dpage-band', 'nav-sonic-path'];
 
 // t() echoes the key, with its params when there are any — so a test can
 // see which label (and which count) was drawn.
@@ -379,6 +379,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
   const clipSnap = () => ({ ...clip, live: LIVE.includes(clip.status) });
   // VUEPLAYERCORE.setAdmin's calls (applyServerInfo)
   const adminSet = [];
+  // the now-playing panel's discovery setters, in order: [name, value]
+  const surfaces = [];
   // an admin call's answer: fn's value or promise, its throw a rejection
   const answerOf = (fn, args, fallback) => {
     try {
@@ -495,6 +497,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       },
       refreshDiscoverJobs: () => Promise.resolve([]),
       setAdmin: (on) => { adminSet.push(on); },
+      setDiscoveryAvailable: (on) => { surfaces.push(['discovery', on]); },
+      setDiscoveryP2pAvailable: (on) => { surfaces.push(['p2p', on]); },
       watchKeepGate: (fn) => { gateWatchers.push(fn); return () => { const at = gateWatchers.indexOf(fn); if (at !== -1) { gateWatchers.splice(at, 1); } }; },
       clipToggle: (raw) => {
         clipCalls.push(['toggle', raw]);
@@ -660,7 +664,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     off: () => { clipStop('reset'); clipEmit('reset'); clipEmit('off'); },
     main: () => { clipStop('main'); },
   };
-  return { S, dispatch, locate, adminSet, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer };
+  return { S, dispatch, locate, adminSet, surfaces, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -3888,6 +3892,14 @@ describe('W7: the nav row per role while the network is off', () => {
     assert.match(SRC, /\n {4}MSTREAMAPI\.serverInfo\(\)\n {6}\.then\(applyServerInfo\)\n {6}\.catch\(\(\) => applyServerInfo\(null\)\);\n/);
   });
 
+  test('init() and the turn-on\'s re-ping set the rest of the app\'s discovery flags in one place (applyDiscoverySurfaces)', () => {
+    assert.match(SRC, /\n {4}applyDiscoverySurfaces\(response\);\n/);
+    for (const set of ['VUEPLAYERCORE.setDiscoveryAvailable(', 'VUEPLAYERCORE.setDiscoveryP2pAvailable(', 'MSTREAMAPI.currentServer.discovery = ', 'MSTREAMAPI.currentServer.discoveryPath = ']) {
+      assert.equal(SRC.split(set).length - 1, 1, `${set} once: applyDiscoverySurfaces's`);
+      assert.ok(sliceFn('applyDiscoverySurfaces').includes(set), set);
+    }
+  });
+
   test('a member or a locked admin with the network off: the page asks nothing', async () => {
     for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }]) {
       const box = onBox(who);
@@ -4075,6 +4087,34 @@ describe('W7: the form', () => {
     assert.ok(!box.S.html().includes('data-prec-on'));
     assert.equal(box.S.prec.turnOn, null);
     assert.ok(!box.els.get('nav-peer-recs').classList.contains('super-hide'));
+  });
+
+  test('turned on: the rest of the app follows the re-ping — the now-playing Discover and its "From the network", Auto-DJ\'s similarity, Sonic Path\'s row', async () => {
+    for (const [label, extra] of [['the form', {}], ['already on', { adminStatus: () => ON_STATUS({ enabled: true }) }]]) {
+      // collection off at boot: the enable turns it on (the ping says so)
+      const box = onBox({ flags: { ...OFF_FLAGS, discovery: false }, ping: { ...ON_PING, discovery: true, discoveryPath: true }, ...extra });
+      Object.assign(box.api.currentServer, { discovery: false, discoveryPath: false });
+      await openPage(box);
+      if (label === 'the form') { box.click({ 'data-dp': 'precTurnOn' }); }
+      await settle();
+      assert.deepEqual(box.surfaces, [['p2p', true], ['discovery', true]], `${label}: the network's first — the panel that shows asks for both`);
+      assert.deepEqual([box.api.currentServer.discovery, box.api.currentServer.discoveryPath], [true, true], label);
+      assert.equal(box.els.get('nav-sonic-path').classList.contains('super-hide'), false, `${label}: Sonic Path's row`);
+      assert.equal(tasteCalls(box.calls).length, 1, `${label}: the page`);
+    }
+  });
+
+  test('refused, or no re-ping answer: the rest of the app stays as it was', async () => {
+    for (const [label, extra] of [['refused', { setEnabled: () => { throw refused(500, 'no'); } }], ['no answer', { ping: null }]]) {
+      const box = onBox({ flags: { ...OFF_FLAGS, discovery: false }, ...extra });
+      Object.assign(box.api.currentServer, { discovery: false, discoveryPath: false });
+      await openPage(box);
+      box.click({ 'data-dp': 'precTurnOn' });
+      await settle();
+      assert.deepEqual(box.surfaces, [], label);
+      assert.deepEqual([box.api.currentServer.discovery, box.api.currentServer.discoveryPath], [false, false], label);
+      assert.ok(box.els.get('nav-sonic-path').classList.contains('super-hide'), label);
+    }
   });
 
   test('only what changed is sent: the description alone, a cleared description, a name only re-spaced', async () => {
