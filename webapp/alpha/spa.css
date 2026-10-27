@@ -1199,6 +1199,12 @@ svg {
   height: 40px;
   background-color: #111;
   margin-top: 5px;
+  /* one line: a title longer than the half-width tab ("Peer
+     Recommendations", a connected server's "Name · Panel") wrapped and its
+     second line was cut off, leaving "Peer" */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .selected-tab {

@@ -3795,6 +3795,13 @@ describe('Peer Recommendations: what it never draws', () => {
 });
 
 describe('Peer Recommendations: wiring', () => {
+  test('spa.css: the phone\'s tab keeps its title on one line ("Peer Recommendations" wrapped, and only "Peer" showed)', () => {
+    const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
+    const tab = css.match(/\n\.m-tab \{[^}]*\}/);
+    assert.ok(tab, '.m-tab');
+    for (const rule of ['white-space: nowrap;', 'overflow: hidden;', 'text-overflow: ellipsis;']) { assert.ok(tab[0].includes(rule), rule); }
+  });
+
   const html = fs.readFileSync(path.join(ROOT, 'webapp', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
   const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
 
