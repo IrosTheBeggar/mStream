@@ -19,6 +19,8 @@ import * as waveformLib from './waveform-lib.js';
 import * as waveformFallback from './waveform-fallback.js';
 import { invalidateCoverageCache } from './enrichment-status-lib.js';
 import { syncModelGenres } from './genre-sync.js';
+import { syncModelMoods } from './mood-sync.js';
+import { activeMoodVersion } from './discovery-features-lib.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -84,11 +86,12 @@ let scanIntervalTimer = null;
 // in a batch — skipped on fully-unchanged rescans so control points aren't
 // poked for nothing.
 let anyScansChanged = false;
-// One-shot: run the model-genre sync on the first queue drain after boot,
-// even when nothing changed — a fully-embedded, unchanged library trips
-// neither the scan-changed nor the new-embeddings trigger, so a user
-// enabling modelGenres (or upgrading into V79) gets their first sync here.
-let bootGenreSyncPending = true;
+// One-shot: run the model syncs on the first queue drain after boot, even
+// when nothing changed — a fully-embedded, unchanged library trips neither
+// the scan-changed nor the new-embeddings trigger, so a user flipping
+// modelGenres / analyzeMoods (or upgrading into V79 / V80) gets their first
+// sync here.
+let bootModelSyncPending = true;
 // Set in onScanClose after a clean scan; consumed in
 // checkQueueDrainedSideEffects to enqueue the album-art download pass once
 // the whole scan batch has drained. Module-level because the enqueue point
@@ -635,6 +638,19 @@ async function applyHashTransitionsInner() {
   }
 }
 
+// The model syncs (src/db/genre-sync.js, src/db/mood-sync.js) — each
+// idempotent, each a no-op while its feature is off; one failing never
+// stops the other.
+function runModelSyncs(when) {
+  for (const [what, sync] of [['genre', syncModelGenres], ['mood', syncModelMoods]]) {
+    try {
+      sync();
+    } catch (err) {
+      winston.warn(`model-${what} sync ${when} failed: ${err.message}`);
+    }
+  }
+}
+
 function checkQueueDrainedSideEffectsInner() {
   // Enrichment passes (waveform decode, art download) don't count against
   // "drained": the side effects below are about the SCAN batch — the
@@ -650,25 +666,22 @@ function checkQueueDrainedSideEffectsInner() {
   // but only if some scan in the just-drained batch actually changed the
   // DB. Backups don't change library content, so they don't set the flag.
   // Safe to call whether or not DLNA is enabled.
-  // Model-genre sync triggers, cheapest-sufficient set (the sync itself is
-  // idempotent and no-ops when the feature is off):
+  // Model-sync triggers (genres + moods), cheapest-sufficient set (each
+  // sync is idempotent and no-ops when its feature is off):
   //   • scan batch changed the DB — a re-parse wipes each changed track's
   //     track_genres rows (including model-sourced ones) and may queue no
   //     discovery work at all (tag edit → same audio hash → nothing to
-  //     embed), so heal from the existing discovery data here.
+  //     embed), so heal from the existing discovery data here; a new or
+  //     moved file needs its genre links and mood row too.
   //   • first drain after boot — a fully-embedded, unchanged library never
-  //     trips the other triggers, so a user enabling the feature (or
+  //     trips the other triggers, so a user enabling a feature (or
   //     upgrading into it) would otherwise wait for the next library
   //     change before their first sync.
   // (The third trigger lives in the discovery pass's closeOnce: new
-  // embeddings mean new genre_tags.)
-  if (anyScansChanged || bootGenreSyncPending) {
-    bootGenreSyncPending = false;
-    try {
-      syncModelGenres();
-    } catch (err) {
-      winston.warn(`model-genre sync on queue drain failed: ${err.message}`);
-    }
+  // embeddings mean new genre_tags and mood scores.)
+  if (anyScansChanged || bootModelSyncPending) {
+    bootModelSyncPending = false;
+    runModelSyncs('on queue drain');
   }
 
   if (anyScansChanged) {
@@ -1946,12 +1959,14 @@ export function maybeEnqueueDiscovery() {
 
   try {
     // The pre-check needs both DBs: a track is work iff its canonical hash
-    // has no current-model embedding row. The main process's discovery
+    // has no current-model embedding row — or, with moods on, none that
+    // also carries the current mood pin. The main process's discovery
     // handle ATTACHes the library DB briefly — same pattern as the export
     // builder's snapshot ATTACH, and single-threaded like it, so the two
     // can't interleave mid-statement.
     const ddb = discoveryDb.openDiscoveryDbIfExists();
     if (!ddb) { return; }   // toggle/boot creates it when the flag is on
+    const moodVersion = activeMoodVersion(config.program.scanOptions);
     const libPath = path.join(config.program.storage.dbDirectory, 'mstream.db').replace(/'/g, "''");
     ddb.exec(`ATTACH DATABASE '${libPath}' AS precheck_lib`);
     let row;
@@ -1965,10 +1980,11 @@ export function maybeEnqueueDiscovery() {
                   WHERE dt.audio_hash = COALESCE(t.audio_hash, t.file_hash)
                     AND dt.embedding IS NOT NULL
                     AND dt.model_id = ?
+                    AND (? IS NULL OR dt.mood_version IS ?)
                )
          LIMIT 1
       `).get(DISCOVERY_MIN_DURATION_SEC, DISCOVERY_MAX_DURATION_SEC,
-        config.program.scanOptions.discoveryModel);
+        config.program.scanOptions.discoveryModel, moodVersion, moodVersion);
       // Second kind of work (discovery.db v3): rows embedded before the
       // catalogue columns existed whose library track HAS an album. Rows
       // whose file simply carries no album tag are not counted — they can
@@ -2021,6 +2037,8 @@ function runDiscoveryTask(taskObj) {
     // thread count is dropped by JSON.stringify → the worker's own policy.
     runtime: config.program.scanOptions.embeddingRuntime,
     threads: config.program.scanOptions.embeddingThreads,
+    // Mood heads ride the same inference (src/db/mood-sync.js mirrors them).
+    moods: config.program.scanOptions.analyzeMoods !== false,
     maxPerRun: config.program.scanOptions.discoveryPerRun || 50,
     expectedSchemaVersion: SCHEMA_VERSION,
     // Duration window / cooldowns / budget use the worker defaults.
@@ -2052,7 +2070,8 @@ function runDiscoveryTask(taskObj) {
           observers.hitCap = !!evt.hitCap;
           observers.completeEvt = evt;
           if (evt.attempted > 0) {
-            winston.info(`Discovery-embedding pass complete: ${evt.embedded} embedded, `
+            const moodOnly = evt.moodOnly > 0 ? ` (${evt.moodOnly} for moods only)` : '';
+            winston.info(`Discovery-embedding pass complete: ${evt.embedded} embedded${moodOnly}, `
               + `${evt.errors} error(s) (${evt.attempted} attempted)`);
           }
           if (evt.filled > 0) {
@@ -2145,14 +2164,10 @@ function runDiscoveryTask(taskObj) {
     // discovery network. No-ops unless p2p is enabled and the dataset
     // actually advanced past the last announced snapshot.
     if (code === 0 && !signal && !taskQueue.some((t) => t.task === 'discovery')) {
-      // New embeddings mean new genre_tags — reconcile them into the real
-      // genre tables before announcing the snapshot (the sync is local
-      // mstream.db work; it doesn't change what gets published).
-      try {
-        syncModelGenres();
-      } catch (err) {
-        winston.warn(`model-genre sync after embedding pass failed: ${err.message}`);
-      }
+      // New embeddings mean new genre_tags and mood scores — reconcile them
+      // into mstream.db before announcing the snapshot (the syncs are local
+      // mstream.db work; they don't change what gets published).
+      runModelSyncs('after embedding pass');
       import('../state/discovery-p2p.js')
         .then((p2p) => p2p.maybeAutoPublishSnapshot())
         .catch((err) => winston.warn(`discovery auto-publish after embedding pass failed: ${err.message}`));

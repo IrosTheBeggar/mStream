@@ -10,6 +10,8 @@
 // storage.modelCacheDirectory after one discovery pass — and the test runs;
 // otherwise it skips. Where the native addon has no binary (Intel Mac,
 // 32-bit ARM) the wasm half still runs and the comparison is skipped.
+// The mood-head test additionally needs the eight head files there
+// (spec.moods.heads[].file.filename) and skips without them.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -23,6 +25,9 @@ const haveModel = !!cache
   && fs.existsSync(path.join(cache, spec.weights.filename))
   && fs.existsSync(path.join(cache, spec.labels.filename));
 const skip = haveModel ? false : 'set MSTREAM_TEST_MODEL_CACHE to a directory holding the EffNet weights';
+const haveHeads = haveModel
+  && spec.moods.heads.every((h) => fs.existsSync(path.join(cache, h.file.filename)));
+const skipMoods = haveHeads ? false : 'set MSTREAM_TEST_MODEL_CACHE to a directory holding the EffNet weights and mood heads';
 
 // 35 s of deterministic, music-shaped audio at the model's rate: a slow
 // chord of three partials with a beat-like amplitude pulse and a little
@@ -84,5 +89,33 @@ test('auto picks a runtime and reports it', { skip }, async () => {
   assert.ok(Array.isArray(embedder.skippedRuntimes));
   if (embedder.runtime === 'wasm') {
     assert.equal(embedder.skippedRuntimes[0]?.runtime, 'native', 'wasm in auto mode means native was tried first');
+  }
+});
+
+test('mood heads score every trait on either runtime, and the runtimes agree', { skip: skipMoods }, async () => {
+  const signal = synthSignal();
+  const keys = spec.moods.heads.map((h) => h.key);
+
+  const wasm = await createEmbedder('effnet-discogs', { modelCacheDir: cache, runtime: 'wasm', threads: 1, moods: true });
+  assert.equal(wasm.hasMoods, true, wasm.moodError ?? '');
+  const w = await wasm.analyzeSignal(signal);
+  assert.deepEqual(Object.keys(w.moods), keys);
+  for (const [k, p] of Object.entries(w.moods)) { assert.ok(p >= 0 && p <= 1, `${k} = ${p}`); }
+
+  // Off unless asked: the plain embedder never loads a head.
+  const plain = await createEmbedder('effnet-discogs', { modelCacheDir: cache, runtime: 'wasm', threads: 1 });
+  assert.equal(plain.hasMoods, false);
+  assert.equal((await plain.analyzeSignal(signal)).moods, null);
+
+  let native;
+  try {
+    native = await createEmbedder('effnet-discogs', { modelCacheDir: cache, runtime: 'native', threads: 1, moods: true });
+  } catch (err) {
+    if (err.dependencyMissing === true) { return; }
+    throw err;
+  }
+  const n = await native.analyzeSignal(signal);
+  for (const k of keys) {
+    assert.ok(Math.abs(n.moods[k] - w.moods[k]) <= 1e-3, `${k}: native ${n.moods[k]} vs wasm ${w.moods[k]}`);
   }
 });

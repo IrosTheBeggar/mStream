@@ -2034,6 +2034,18 @@ paths:
                               type: object
                               description: Attempt-ledger counts by outcome (per-pass vocabulary, e.g. notfound/error, nomatch/lowconf/undecodable).
                               additionalProperties: { type: integer }
+                            moods:
+                              type: object
+                              nullable: true
+                              description: |
+                                Discovery pass only — how many embedded tracks carry the current mood-head
+                                scores (`done`) and how many still wait for them (`remaining`). A library
+                                embedded before the heads existed is re-analysed once to fill them, so this
+                                is the progress of that catch-up. Null when `scanOptions.analyzeMoods` is off
+                                or the model has no heads. Absent for other passes.
+                              properties:
+                                done: { type: integer }
+                                remaining: { type: integer }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/db/metadata:
