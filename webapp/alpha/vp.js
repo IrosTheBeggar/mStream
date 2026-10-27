@@ -375,7 +375,8 @@ const VUEPLAYERCORE = (() => {
   //   pausedMain      this session paused the main player: it resumes it
   //   mainWasPlaying  the main player played when the session was claimed
   //                   (a session asked while it was paused ends if the user
-  //                   starts it before the clip does)
+  //                   starts it before the clip does); false again once a
+  //                   clip starts with it stopped
   const aside = { el: null, owner: null, on: null, token: 0, loaded: null, pausedMain: false, mainWasPlaying: false };
   // The main player's stats; null where there is none.
   function asideMainStats() {
@@ -426,12 +427,17 @@ const VUEPLAYERCORE = (() => {
   }
   // Play `url` for `owner`: a new claim, then the main player paused if it
   // plays (this session resumes it), then the one element. → the token.
+  // A session that finds it stopped (it played at the claim, then the user
+  // paused it or its queue ended) no longer counts it as playing: the
+  // user starting it ends this clip.
   function asidePlay(owner, url, on) {
     const token = asideClaim(owner, on);
     const s = asideMainStats();
     if (s && s.playing === true) {
       aside.pausedMain = true;
       MSTREAMPLAYER.playPause();
+    } else if (!aside.pausedMain) {
+      aside.mainWasPlaying = false;
     }
     const el = asideEl();
     aside.loaded = token;
