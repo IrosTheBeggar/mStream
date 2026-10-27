@@ -4428,7 +4428,7 @@ describe('W7: wiring', () => {
     assert.match(css, /\.prec-on \{ box-sizing: border-box; width: calc\(100% - 32px\); max-width: 440px; margin: 32px auto 0 auto;[^}]*background: #23282f; \}/);
     assert.match(css, /\.prec-on-input, \.prec-on-input\[type="text"\] \{ display: block; width: 100%; height: 32px;[^}]*background: #1a1e25;/);
     assert.match(css, /\.prec-on-btn:disabled, \.prec-on-btn:disabled:hover, \.prec-on-btn\[aria-disabled="true"\], \.prec-on-btn\[aria-disabled="true"\]:hover \{ opacity: \.5;/, 'busy (aria-disabled) looks shut too');
-    assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on \.dpage-btn \{ height: 44px; \}\n\}/, 'Turn on and Try again');
+    assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on \.dpage-btn \{ height: 44px; \}\n {2}\.prec-on-input, \.prec-on-input\[type="text"\] \{ font-size: 16px; \}\n\}/, 'Turn on and Try again; 16 px text: iOS Safari zooms into a smaller focused field');
     assert.match(css, /\.prec-on-err \{[^}]*overflow-wrap: anywhere; \}/, 'a long server error wraps inside 390 px');
   });
 });

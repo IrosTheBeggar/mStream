@@ -3526,8 +3526,11 @@ a.prec-band-credit:hover { color: #dfe3ea; }
 .prec-on .dpage-btn.pri:focus { background-color: #657ee4; }
 .prec-on-btn:disabled, .prec-on-btn:disabled:hover, .prec-on-btn[aria-disabled="true"], .prec-on-btn[aria-disabled="true"]:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }
 .prec-on-err { margin: 8px 0 0 0; font-size: 12px; line-height: 1.5; color: #ec8a90; overflow-wrap: anywhere; }
+/* touch: 44 px targets; 16 px field text, or iOS Safari zooms the page
+   into the focused field and the form pans sideways */
 @media (pointer: coarse) {
   .prec-on-input, .prec-on-input[type="text"], .prec-on .dpage-btn { height: 44px; }
+  .prec-on-input, .prec-on-input[type="text"] { font-size: 16px; }
 }
 
 /* the now-playing panel's "Discover page →": where the ping has the page */
