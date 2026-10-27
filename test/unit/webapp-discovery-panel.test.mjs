@@ -4304,6 +4304,30 @@ describe('W7: switched off (R7) with the page up', () => {
     }
   });
 
+  test('the page\'s first ask, still out when the poll\'s 403 turned the page into the form, is dropped — refused or answered, it draws nothing and asks nothing', async () => {
+    for (const [label, late] of [['refused', { disabled: true }], ['network null', { ...prAnswer(), network: null }], ['answered', prAnswer()]]) {
+      let release;
+      const gate = new Promise((r) => { release = r; });
+      const box = prBox({ admin: true, adminApi: true, ping: OFF_PING, adminStatus: () => ON_STATUS(), taste: () => gate.then(() => late), peers: () => { throw refusal; } });
+      const run = box.S.peerRecsPanel();
+      await settle();
+      assert.equal(tasteCalls(box.calls).length, 1, `${label}: the first ask is out`);
+      assert.ok(fieldOf(box.S.html(), 'name'), `${label}: the form, before the ask answers`);
+      typeIn(box, 'name', 'Attic');
+      const renders = box.renders();
+      const asked = callNames(box.calls).length;
+      release();
+      await run;
+      await settle();
+      assert.equal(box.renders(), renders, `${label}: nothing drawn over the form`);
+      assert.equal(callNames(box.calls).length, asked, `${label}: no second ping, no second status`);
+      assert.deepEqual([box.calls.filter((c) => c.name === 'ping').length, box.calls.filter((c) => c.name === 'adminStatus').length], [1, 1], label);
+      assert.equal(box.S.prec.turnOn.name, 'Attic', `${label}: as typed`);
+      assert.equal(box.S.view.main, undefined, `${label}: the answer is not the page's`);
+      assert.ok(turnOnBtn(box.S.html()), label);
+    }
+  });
+
   test('a member, or a locked admin API: the row goes and the page is left, as before', async () => {
     for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }]) {
       const box = prBox({ ...who, ping: OFF_PING, adminStatus: () => ON_STATUS(), taste: () => ({ disabled: true }) });
