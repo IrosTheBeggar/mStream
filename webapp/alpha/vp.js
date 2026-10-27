@@ -620,22 +620,24 @@ const VUEPLAYERCORE = (() => {
     return { el, sel, key: el.getAttribute('data-keep-key') || null };
   }
   // Focus back on the opener; on the control in its place when the page
-  // redrew it (a button first: a lead's row and its ⋯ carry the same
-  // data-dp, the row first in the page); when it is gone, on the Discover
-  // page's first heading. A browse or queue control is found again by its
-  // key — the filter and a poll redraw rows, and a queue row the list
-  // reuses for another song carries another key — in the page's header,
-  // its list or the queue; gone, a queue row's ⋮ hands over to the queue,
-  // a page's control to the header's Keep a copy… button, else the panel's
-  // title (the phone's tab where the title is hidden): never <body>. A row
-  // or a heading is no control: it takes focus as tabindex -1, out of the
-  // tab order. → the element focused, or null.
+  // or Peer Recommendations' band redrew it (a button first: a lead's row
+  // and its ⋯ carry the same data-dp, the row first in the page); when it
+  // is gone, on the Discover page's first heading (Peer Recommendations
+  // has none: its Preview all, else the bar's More options). A browse or
+  // queue control is found again by its key — the filter and a poll
+  // redraw rows, and a queue row the list reuses for another song carries
+  // another key — in the page's header, its list or the queue; gone, a
+  // queue row's ⋮ hands over to the queue, a page's control to the
+  // header's Keep a copy… button, else the panel's title (the phone's tab
+  // where the title is hidden): never <body>. A row or a heading is no
+  // control: it takes focus as tabindex -1, out of the tab order. → the
+  // element focused, or null.
   function dmFocusBack(opener, doc) {
     const key = (opener && opener.key) || null;
     let el = opener && opener.el && opener.el.isConnected !== false ? opener.el : null;
     if (el && key && typeof el.getAttribute === 'function' && el.getAttribute('data-keep-key') !== key) { el = null; }
     if (!el && opener && opener.sel) {
-      for (const at of ['#dpage-head .dpage', '#filelist .dpage']) {
+      for (const at of ['#dpage-head .dpage', '#filelist .dpage', '#dpage-band']) {
         el = doc.querySelector(`${at} button${opener.sel}`) || doc.querySelector(`${at} ${opener.sel}`);
         if (el) { break; }
       }
@@ -653,7 +655,11 @@ const VUEPLAYERCORE = (() => {
         if (shown(found)) { el = found; break; }
       }
     }
-    if (!el) { el = doc.querySelector('#filelist .dpage h3'); }
+    // the heading; on Peer Recommendations, Preview all, else the bar
+    for (const at of el ? [] : ['#filelist .dpage h3', '#filelist .dpage [data-dp="precAll"]', '#dpage-head .dpage [data-dp="options"]']) {
+      el = doc.querySelector(at);
+      if (el) { break; }
+    }
     if (!el || typeof el.focus !== 'function') { return null; }
     if (!/^(a|button|input|select|textarea)$/i.test(el.tagName || '') && !el.hasAttribute('tabindex')) { el.setAttribute('tabindex', '-1'); }
     el.focus({ preventScroll: true });
