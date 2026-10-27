@@ -881,8 +881,9 @@ describe('the Auto DJ panel: the Genres row', () => {
 describe('the Auto DJ panel: facts on the server object', () => {
   const applySandbox = () => {
     const MSTREAMAPI = { currentServer: {} };
-    const fn = new Function('MSTREAMAPI', 'discoveryView', 'discoverySetEntry', 'DISCOVERYPAGE',
-      `${sliceFn('applyDiscoveryPing')}\nreturn applyDiscoveryPing;`)(MSTREAMAPI, {}, () => {}, { pageAvailable: () => false });
+    // (the Peer Recommendations nav row: no row here)
+    const fn = new Function('MSTREAMAPI', 'discoveryView', 'discoverySetEntry', 'DISCOVERYPAGE', 'peerRecsSetEntry', 'peerRecsEntryNow',
+      `${sliceFn('applyDiscoveryPing')}\nreturn applyDiscoveryPing;`)(MSTREAMAPI, {}, () => {}, { pageAvailable: () => false, peerRecsAvailable: () => false }, () => {}, () => null);
     return { MSTREAMAPI, applyDiscoveryPing: fn };
   };
 
