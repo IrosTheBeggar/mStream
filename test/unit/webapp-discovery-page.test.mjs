@@ -362,6 +362,92 @@ describe('buildRequests', () => {
   });
 });
 
+describe('W7: an admin can turn the network on (peerRecsCanTurnOn, peerRecsEntry)', () => {
+  // p2p off on a server with the page's routes
+  const OFF = { ...PFLAGS, discoveryP2p: false };
+  const ADMIN = { admin: true, adminApi: true };
+
+  test('an admin whose admin API answers, p2p off: the form — discovery itself not needed', () => {
+    for (const flags of [OFF, { ...OFF, discovery: false }, { ...OFF, discovery: undefined }, { ...OFF, discoveryP2p: undefined }, { ...OFF, discoveryP2p: 'true' }]) {
+      assert.equal(D.peerRecsCanTurnOn(flags, ADMIN), true, JSON.stringify(flags));
+      assert.equal(D.peerRecsEntry(flags, ADMIN), 'turnOn', JSON.stringify(flags));
+    }
+  });
+
+  test('anyone else, p2p off: no row — a member, a locked admin API, no identity yet', () => {
+    for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }, { admin: false, adminApi: true }, { admin: true },
+      { adminApi: true }, { admin: 'true', adminApi: true }, { admin: true, adminApi: 1 }, {}, null, undefined, 'admin']) {
+      assert.equal(D.peerRecsCanTurnOn(OFF, who), false, JSON.stringify(who));
+      assert.equal(D.peerRecsEntry(OFF, who), null, JSON.stringify(who));
+    }
+  });
+
+  test('the page\'s routes: generation 2 and the peers route — numbers, numeric strings, later generations', () => {
+    for (const flags of [{ ...OFF, discoveryTaste: '2' }, { ...OFF, discoveryP2pPeers: '1' }, { ...OFF, discoveryTaste: ' 2 ', discoveryP2pPeers: '1' },
+      { ...OFF, discoveryTaste: 3, discoveryP2pPeers: 2 }, { ...OFF, discoveryTaste: '3', discoveryP2pPeers: '2' }]) {
+      assert.equal(D.peerRecsEntry(flags, ADMIN), 'turnOn', JSON.stringify(flags));
+    }
+    for (const flags of [{ ...OFF, discoveryTaste: 1 }, { ...OFF, discoveryTaste: '1' }, { ...OFF, discoveryTaste: undefined }, { ...OFF, discoveryTaste: '2.5' },
+      { ...OFF, discoveryTaste: true }, { ...OFF, discoveryP2pPeers: 0 }, { ...OFF, discoveryP2pPeers: '0' },
+      { ...OFF, discoveryP2pPeers: undefined }, { ...OFF, discoveryP2pPeers: true }, { ...OFF, discoveryP2pPeers: '' }, {}, null, 'flags']) {
+      assert.equal(D.peerRecsCanTurnOn(flags, ADMIN), false, JSON.stringify(flags));
+      assert.equal(D.peerRecsEntry(flags, ADMIN), null, JSON.stringify(flags));
+    }
+  });
+
+  test('p2p on: the page for everyone the gate lets in; nothing to turn on where it does not', () => {
+    for (const who of [ADMIN, { admin: false, adminApi: false }, { admin: true, adminApi: false }, null]) {
+      assert.equal(D.peerRecsEntry(PFLAGS, who), 'page', JSON.stringify(who));
+      assert.equal(D.peerRecsEntry({ ...PFLAGS, discoveryTaste: '2', discoveryP2pPeers: '1' }, who), 'page');
+      assert.equal(D.peerRecsCanTurnOn(PFLAGS, who), false, 'already on');
+      // collection off under a running network: the page's gate fails, and
+      // the enable route has nothing to turn on
+      assert.equal(D.peerRecsEntry({ ...PFLAGS, discovery: false }, who), null);
+    }
+  });
+});
+
+describe('W7: the turn-on form\'s fields (turnOnValid — the server\'s Joi)', () => {
+  const ok = (name, description) => D.turnOnValid({ name, description });
+
+  test('the name: trimmed, 1–64 characters', () => {
+    assert.equal(ok('Kitchen Radio', ''), true);
+    assert.equal(ok('a'), true, 'no description at all');
+    assert.equal(ok(''), false, 'blank');
+    for (const blank of [' ', '   ', '\t \n']) { assert.equal(ok(blank), false, `whitespace only: ${JSON.stringify(blank)}`); }
+    assert.equal(ok('x'.repeat(64)), true, '64');
+    assert.equal(ok('x'.repeat(65)), false, '65');
+    assert.equal(ok(`  ${'x'.repeat(64)}  `), true, '64 once trimmed (it is sent trimmed)');
+    assert.equal(ok(`  ${'x'.repeat(65)}  `), false);
+  });
+
+  test('the description: trimmed, at most 180 — empty, whitespace or absent is fine', () => {
+    for (const d of ['', '   ', undefined, null, 'A shelf of late-night radio.']) { assert.equal(ok('n', d), true, JSON.stringify(d)); }
+    assert.equal(ok('n', 'd'.repeat(180)), true, '180');
+    assert.equal(ok('n', 'd'.repeat(181)), false, '181');
+    assert.equal(ok('n', ` ${'d'.repeat(180)} `), true, '180 once trimmed');
+  });
+
+  test('no "|" and no control character in either; unicode letters are text', () => {
+    for (const bad of ['a|b', '|', 'a\u0000b', 'a\u0007b', 'a\tb', 'a\nb', 'a\u001fb', 'a\u007fb', 'a\u0085b', 'a\u009fb']) {
+      assert.equal(ok(bad, ''), false, `name ${JSON.stringify(bad)}`);
+      assert.equal(ok('n', bad), false, `description ${JSON.stringify(bad)}`);
+    }
+    for (const good of ['Ünïcödé Radio', 'Радио на кухне', '台所のラジオ', '부엌 라디오', 'Café — “quoted” · ok', '🎵 Tapes', 'a/b\\c <b>&amp;</b>']) {
+      assert.equal(ok(good, good), true, good);
+    }
+    // the server's own pattern: the same verdict on every case above
+    const server = /^[^|\p{Cc}]*$/u;
+    for (const s of ['a|b', 'a\u0085b', 'a\tb', 'Ünïcödé', '🎵']) { assert.equal(server.test(s), ok(s, s), s); }
+  });
+
+  test('what is not a field', () => {
+    for (const fields of [null, undefined, 'Kitchen', {}, { name: 42 }, { name: null }, { name: ['a'] }, { name: 'a', description: 7 }, { name: 'a', description: {} }]) {
+      assert.equal(D.turnOnValid(fields), false, JSON.stringify(fields));
+    }
+  });
+});
+
 describe('peersRequest: the peers call seeds from the library answer\'s batch', () => {
   const seed = (i, extra = {}) => ({ hash: `h${i}`, filepath: `Music/S/${i}.flac`, metadata: {}, pinned: false, analyzed: true, ...extra });
   const peersBody = () => D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'Music/S/0.flac', exclude: ['hx'], limits: { tracks: 48, peers: 25 } }).peers;

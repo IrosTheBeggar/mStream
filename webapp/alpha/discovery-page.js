@@ -244,6 +244,41 @@
     return generation(flags.discoveryTaste) >= 2 && generation(flags.discoveryP2pPeers) >= 1;
   }
 
+  // An admin can turn the network on from the page (peer-recommendations
+  // plan §4.1 W7) while p2p is off, on a server with the page's routes
+  // (taste generation 2, the peers route). `who` = { admin, adminApi }:
+  // user.admin from GET /api, and its `admin` object present — absent while
+  // lockAdmin is on, when every admin route answers 405. `discovery` is not
+  // needed: turning the network on turns collection on.
+  function peerRecsCanTurnOn(flags, who) {
+    if (!isObj(flags) || !isObj(who) || who.admin !== true || who.adminApi !== true) { return false; }
+    if (flags.discoveryP2p === true) { return false; }
+    return generation(flags.discoveryTaste) >= 2 && generation(flags.discoveryP2pPeers) >= 1;
+  }
+
+  // What the nav row opens: 'page' (Peer Recommendations), 'turnOn' (an
+  // admin's form to turn the network on), or null — no row.
+  function peerRecsEntry(flags, who) {
+    if (peerRecsAvailable(flags)) { return 'page'; }
+    return peerRecsCanTurnOn(flags, who) ? 'turnOn' : null;
+  }
+
+  // The turn-on form's fields as the server's Joi takes them
+  // (src/api/admin.js POST …/p2p/name and …/p2p/description, the config's
+  // serverName / serverDescription), trimmed as they are sent: a name of
+  // 1–64 characters, a description of at most 180 (empty is fine), neither
+  // with a '|' (the announcement's signing separator) or a control
+  // character.
+  const TURN_ON_TEXT = /^[^|\p{Cc}]*$/u;
+  function turnOnValid(fields) {
+    const f = isObj(fields) ? fields : {};
+    if (typeof f.name !== 'string' || (f.description != null && typeof f.description !== 'string')) { return false; }
+    const name = f.name.trim();
+    const description = (f.description || '').trim();
+    return name.length >= 1 && name.length <= 64 && description.length <= 180
+      && TURN_ON_TEXT.test(name) && TURN_ON_TEXT.test(description);
+  }
+
   function cleanLimits(limits) {
     if (!isObj(limits)) { return null; }
     const out = {};
@@ -1439,7 +1474,7 @@
     WINDOWS, DEFAULT_WINDOW, SOURCES, PAGES, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
     LIMIT_DEFAULTS, LIMIT_CAPS, PEER_LIMITS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     storedWindow, dropSeed, restoreSeed, passPick, randomPick, noPickLeft,
-    pageAvailable, peerRecsAvailable, buildRequests, peersRequest, batchRequest, mergeResponses,
+    pageAvailable, peerRecsAvailable, peerRecsCanTurnOn, peerRecsEntry, turnOnValid, buildRequests, peersRequest, batchRequest, mergeResponses,
     fmtLength,
     seedChips, windowOptions,
     librarySections, networkRows,
