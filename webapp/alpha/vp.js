@@ -4828,7 +4828,9 @@ const VUEPLAYERCORE = (() => {
       // copies "Artist - Title" so the user can go find it: the title alone
       // when there is no artist (PEERRECS.copyText's rule, plan §2 item
       // 19). `copied` = the toast's own key, its one word (Peer
-      // Recommendations' window: 'peerRecs.copied').
+      // Recommendations' window: 'peerRecs.copied'). The text is the
+      // peer's: escaped for the toast, which takes markup (m.js's
+      // escapeHtml).
       copyDiscoverP2p: async function (track, copied) {
         const artist = String(track.artist || '').trim();
         const title = String(track.title || '').trim();
@@ -4838,10 +4840,11 @@ const VUEPLAYERCORE = (() => {
           if (copied) {
             iziToast.success({ title: t(copied), position: 'topCenter', timeout: 2500 });
           } else {
-            iziToast.success({ title: t('discover.network.copied'), message: text, position: 'topCenter', timeout: 2500 });
+            iziToast.success({ title: t('discover.network.copied'), message: escapeHtml(text), position: 'topCenter', timeout: 2500 });
           }
         } catch (_) {
-          iziToast.info({ title: text, position: 'topCenter', timeout: 3500 });
+          // no clipboard here (plain http): the text itself, to copy by hand
+          iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
         }
       },
       discoverP2pMbUrl: function (track) {

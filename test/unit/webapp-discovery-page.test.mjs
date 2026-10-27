@@ -6018,8 +6018,10 @@ describe('the window opened from Peer Recommendations (vp.js, plan §2 item 15)'
     // the copy itself (vp.js copyDiscoverP2p), the page's rule (PEERRECS.copyText)
     const toasts = [];
     const writes = [];
-    const copy = new Function('navigator', 'iziToast', 't', `return (${vpMethodSrc('copyDiscoverP2p')});`)(
-      { clipboard: { writeText: async (s) => { writes.push(s); } } }, { success: (o) => toasts.push(o), info: (o) => toasts.push(o) }, tEn);
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const copyWith = (clipboard) => new Function('navigator', 'iziToast', 't', 'escapeHtml', `return (${vpMethodSrc('copyDiscoverP2p')});`)(
+      { clipboard }, { success: (o) => toasts.push(o), info: (o) => toasts.push(o) }, tEn, esc);
+    const copy = copyWith({ writeText: async (s) => { writes.push(s); } });
     for (const t of [signal, untitled, { artist: 'Mo', title: '' }, { artist: '  Mo ', title: ' Lead ' }, { artist: null, title: null }]) {
       await copy(t);
       assert.equal(writes[writes.length - 1], PR.copyText(t), JSON.stringify(t));
@@ -6029,6 +6031,16 @@ describe('the window opened from Peer Recommendations (vp.js, plan §2 item 15)'
     toasts.length = 0;
     await copy(signal, 'peerRecs.copied');
     assert.deepEqual(toasts, [{ title: 'Copied', position: 'topCenter', timeout: 2500 }], 'one word');
+    // the toast takes markup: a peer's song text reaches it escaped — the
+    // copied line, and the text itself where there is no clipboard (plain http)
+    const evil = { artist: '<b>Mo</b>', title: '<img src=x onerror="alert(1)">' };
+    toasts.length = 0;
+    await copy(evil);
+    assert.equal(writes[writes.length - 1], '<b>Mo</b> - <img src=x onerror="alert(1)">', 'the clipboard gets the text as it is');
+    assert.equal(toasts[0].message, '&lt;b&gt;Mo&lt;/b&gt; - &lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    toasts.length = 0;
+    await copyWith(undefined)(evil, 'peerRecs.copied');
+    assert.deepEqual(toasts, [{ title: '&lt;b&gt;Mo&lt;/b&gt; - &lt;img src=x onerror=&quot;alert(1)&quot;&gt;', position: 'topCenter', timeout: 3500 }]);
     assert.match(win, /<section v-if="dmPeerRecs\(\)" class="dmodal-section dm-copy-row">\s*<button type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"><\/dm-icon>\{\{ tt\('peerRecs\.copy'\) \}\}<\/button>/);
     assert.ok(win.indexOf('dm-copy-row') > win.indexOf('<section v-if="dmFindVisible()"'), 'after Find elsewhere');
   });
