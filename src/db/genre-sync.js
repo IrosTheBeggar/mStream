@@ -27,12 +27,12 @@
 // no row under the ACTIVE model are left untouched (mid model-migration
 // their links would otherwise flap: removed now, re-added after re-embed).
 //
-// Which tracks (scanOptions.modelGenresMode): 'untagged', the default, gives
-// model genres only to tracks with no tag-sourced genre at all — a tagged
-// library's genre vocabulary stays the user's, and a track that gains a
-// genre tag loses its model links on the next sync. 'all' links every
+// Which tracks (scanOptions.modelGenresMode): 'all', the default, links every
 // analysed track, alongside its tags (up to five styles plus their
-// parents). Turning modelGenres off removes every model link.
+// parents). 'untagged' gives model genres only to tracks with no
+// tag-sourced genre at all — a tagged library's genre vocabulary stays the
+// user's, and a track that gains a genre tag loses its model links on the
+// next sync. Turning modelGenres off removes every model link.
 
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -77,10 +77,10 @@ export function parseGenreTags(json) {
  * @param {DatabaseSync} ddb      discovery.db (read-only use)
  * @param {string}       modelId  active model pin — only its rows sync
  * @param {object}       [opts]
- * @param {'untagged'|'all'} [opts.mode='untagged']  which tracks get links
+ * @param {'all'|'untagged'} [opts.mode='all']  which tracks get links
  * @returns stats { rows, tracks, linksAdded, linksRemoved, genresCreated }
  */
-export function reconcileModelGenres(mainDb, ddb, modelId, { mode = 'untagged' } = {}) {
+export function reconcileModelGenres(mainDb, ddb, modelId, { mode = 'all' } = {}) {
   const stats = { rows: 0, tracks: 0, linksAdded: 0, linksRemoved: 0, genresCreated: 0 };
   const untaggedOnly = mode !== 'all';
 

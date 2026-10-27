@@ -15,8 +15,9 @@
  *   - idempotence; stale-link removal when predictions change; healing
  *     after a scanner-style track_genres wipe.
  *   - inactive-model rows / unknown hashes / malformed JSON are skipped.
- *   - modelGenresMode 'untagged' (the default): tagged tracks get no model
- *     links and lose old ones; 'all' links every track; removeModelGenres.
+ *   - modelGenresMode: 'all' (the default) links tagged tracks too;
+ *     'untagged' keeps them free of model links and drops old ones;
+ *     removeModelGenres.
  */
 
 import { describe, test, before, after, beforeEach } from 'node:test';
@@ -287,7 +288,9 @@ describe('reconcileModelGenres', () => {
 
 // ── which tracks: modelGenresMode ───────────────────────────────────────────
 
-describe("modelGenresMode 'untagged' (the default)", () => {
+describe('modelGenresMode', () => {
+  const UNTAGGED = { mode: 'untagged' };
+
   // Track 100 and 102 are two files of one song (hash h1).
   function tagRock(db, ...trackIds) {
     db.exec("INSERT INTO genres (name) VALUES ('Rock')");
@@ -297,62 +300,74 @@ describe("modelGenresMode 'untagged' (the default)", () => {
     }
   }
 
-  test('a tagged file gets no model links; its untagged copy does', () => {
+  test("the default is 'all': a tagged file gets model links next to its tags", () => {
     const db = freshMain();
     tagRock(db, 100);
     seedDiscoveryRow('h1', ['Electronic---Synthwave']);
     reconcileModelGenres(db, ddb, MODEL);
+
+    assert.deepEqual(modelLinks(db, 100), ['Electronic', 'Synthwave']);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM track_genres WHERE track_id = 100 AND source = 'tag'").get().n, 1);
+    db.close();
+  });
+
+  test("'untagged': a tagged file gets no model links; its untagged copy does", () => {
+    const db = freshMain();
+    tagRock(db, 100);
+    seedDiscoveryRow('h1', ['Electronic---Synthwave']);
+    reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
 
     assert.deepEqual(modelLinks(db, 100), []);
     assert.deepEqual(modelLinks(db, 102), ['Electronic', 'Synthwave']);
     db.close();
   });
 
-  test('creates no genre row when every file of the song is tagged', () => {
+  test("'untagged': no genre row is created when every file of the song is tagged", () => {
     const db = freshMain();
     tagRock(db, 100, 102);
     seedDiscoveryRow('h1', ['Electronic---Synthwave']);
-    const stats = reconcileModelGenres(db, ddb, MODEL);
+    const stats = reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
 
     assert.equal(stats.genresCreated, 0);
     assert.equal(db.prepare("SELECT COUNT(*) AS n FROM genres WHERE name = 'Synthwave'").get().n, 0);
     db.close();
   });
 
-  test('a file tagged after the model filled it loses its model links', () => {
+  test("'untagged': a file tagged after the model filled it loses its model links", () => {
     const db = freshMain();
     seedDiscoveryRow('h1', ['Ambient']);
-    reconcileModelGenres(db, ddb, MODEL);
+    reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
     assert.deepEqual(modelLinks(db, 100), ['Ambient']);
 
     tagRock(db, 100);
-    const stats = reconcileModelGenres(db, ddb, MODEL);
+    const stats = reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
     assert.deepEqual(modelLinks(db, 100), []);
     assert.deepEqual(modelLinks(db, 102), ['Ambient'], 'the untagged copy keeps its link');
     assert.equal(stats.linksRemoved, 1);
     db.close();
   });
 
-  test('the purge runs even when no discovery row is under the active model', () => {
+  test("'untagged': the purge runs even when no discovery row is under the active model", () => {
     const db = freshMain();
     seedDiscoveryRow('h1', ['Ambient']);
-    reconcileModelGenres(db, ddb, MODEL);
+    reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
 
     tagRock(db, 100);
-    reconcileModelGenres(db, ddb, 'other-model');
+    reconcileModelGenres(db, ddb, 'other-model', UNTAGGED);
     assert.deepEqual(modelLinks(db, 100), [], 'tagged: removed');
     assert.deepEqual(modelLinks(db, 102), ['Ambient'], 'untagged: left for the new pin');
     db.close();
   });
 
-  test("switching from 'all' keeps model links only on untagged files", () => {
+  test("switching to 'untagged' keeps model links only on untagged files", () => {
     const db = freshMain();
     tagRock(db, 100);
     seedDiscoveryRow('h1', ['Electronic---Synthwave']);
     reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
     assert.deepEqual(modelLinks(db, 100), ['Electronic', 'Synthwave']);
 
-    reconcileModelGenres(db, ddb, MODEL);
+    reconcileModelGenres(db, ddb, MODEL, UNTAGGED);
     assert.deepEqual(modelLinks(db, 100), []);
     assert.deepEqual(modelLinks(db, 102), ['Electronic', 'Synthwave']);
     assert.equal(

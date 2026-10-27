@@ -244,11 +244,11 @@ const scanOptions = Joi.object({
   // for users who want embeddings/network WITHOUT the model touching
   // their genre vocabulary — turning it off removes the model's links.
   modelGenres: Joi.boolean().default(true),
-  // Which tracks get model genres. 'untagged' (default): only tracks whose
-  // files carry no genre tag, so a tagged library's genres stay the
-  // user's. 'all': every analysed track, next to its tag genres (up to
-  // five styles plus their parent genres each).
-  modelGenresMode: Joi.string().valid('untagged', 'all').default('untagged'),
+  // Which tracks get model genres. 'all' (default): every analysed track,
+  // next to its tag genres (up to five styles plus their parent genres
+  // each). 'untagged': only tracks whose files carry no genre tag, so a
+  // tagged library's genres stay the user's.
+  modelGenresMode: Joi.string().valid('all', 'untagged').default('all'),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.
