@@ -483,10 +483,10 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 - **Form**: the shares line; the collection line only when the ping says `discovery === false`; Server name (prefilled from `status.serverName`, maxlength 64); Description (prefilled from `status.serverDescription`, maxlength 180, optional); Turn on.
   - `DP.turnOnValid({name, description})` is the server's Joi: name trimmed 1–64, description ≤ 180, neither with `|` or a control character. Turn on is disabled while invalid. No hint text.
   - No federation-requests checkbox: it stays in the admin panel's flow (`webapp/admin/index.js` `enableP2p`).
-- **Submit order**: the button reads "Turning on…" and the fields disable.
-  1. `POST /api/v1/admin/discovery/p2p/enabled {enabled:true}`, with no client timeout shorter than the sidecar download. An error → the server's `error` string, escaped, on one line under the button, and the form re-enables.
+- **Submit order**: Turn on, or Enter in a field (not the Enter that confirms an IME conversion: `isComposing` / keyCode 229). The button reads "Turning on…" and keeps the keyboard (`aria-disabled`, not `disabled`), the block is `aria-busy`, and the fields disable.
+  1. `POST /api/v1/admin/discovery/p2p/enabled {enabled:true}`, with no client timeout shorter than the sidecar download. An error → the server's `error` string, escaped, on one line under the button (outside the slot typing rewrites, so its `role="alert"` is read once), and the form re-enables.
   2. On ok: the name if changed (trimmed, non-blank) → `POST …/p2p/name`; the description if changed → `POST …/p2p/description`. Either failing → an iziToast warning (the network is on, the value is not saved).
-  3. Re-ping → flags → the page opens in page mode (the first R1 ask).
+  3. Re-ping → flags → the page opens in page mode (the first R1 ask). The re-ping also sets the rest of the app's discovery flags (`applyDiscoverySurfaces`, shared with init()): the now-playing Discover panel and its "From the network", Auto-DJ's similarity, Sonic Path's row.
 - **R7**: for an admin who can turn the network on, the off re-ping shows the form instead of leaving.
 - **Strings** (`peerRecs.turnOn.*`, EN, every file): `shares` "Shares your library's metadata, never its audio, on the public discovery network, with this server's name and description.", `collection` "Also turns on discovery data collection.", `name` "Server name", `description` "Description", `button` "Turn on", `busy` "Turning on…", `unavailable` "The discovery network isn't available on this platform.", `nameNotSaved` "The network is on, but the server name wasn't saved.", `descriptionNotSaved` "The network is on, but the description wasn't saved."
 - **Tests**:
