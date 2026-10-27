@@ -1160,9 +1160,11 @@ describe('m.js: the gate, the panel, the wiring', () => {
     assert.match(init, /MSTREAMAPI\.currentServer\.ytdl = Number\(response\.ytdl\) \|\| 0;/);
     assert.match(init, /\n {4}ytdlApplyGates\(\);\n {2}\}catch \(err\) \{/, 'last in the ping\'s try, after the transcode flag');
     assert.ok(init.indexOf('ytdlApplyGates();') > init.indexOf('MSTREAMPLAYER.transcodeOptions.serverEnabled = true;'));
-    const info = init.slice(init.indexOf('MSTREAMAPI.serverInfo()'), init.indexOf('MSTREAMAPI.currentServer.discoveryPath'));
+    // GET /api's answer goes to applyServerInfo, a failed call's null too
+    // (info && … then falls back to the token's user)
+    assert.match(init, /MSTREAMAPI\.serverInfo\(\)\n\s*\.then\(applyServerInfo\)\n\s*\.catch\(\(\) => applyServerInfo\(null\)\);/);
+    const info = findFn('applyServerInfo');
     assert.match(info, /MSTREAMAPI\.currentServer\.username = info && info\.user && typeof info\.user\.username === 'string' \? info\.user\.username : ytdlTokenUser\(\);\n\s*ytdlStart\(MSTREAMAPI\.currentServer\.username\);/);
-    assert.match(info, /\.catch\(\(\) => \{[\s\S]*MSTREAMAPI\.currentServer\.username = ytdlTokenUser\(\);\n\s*ytdlStart\(MSTREAMAPI\.currentServer\.username\);/);
   });
 
   test('the panel goes with the column; it is a root panel, never a connected server\'s; its title comes back after a language change', () => {
