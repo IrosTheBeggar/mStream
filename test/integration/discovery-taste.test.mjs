@@ -812,7 +812,7 @@ describe('discovery taste: public mode', () => {
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.notAnalyzed, true);
     assert.equal(r.body.seedSource, 'pinned');
-    assert.deepEqual(r.body.network, { results: [], searched: { peers: 0, tracks: 0 } });
+    assert.deepEqual(r.body.network, { results: [], searched: { peers: 0, tracks: 0 }, reason: 'scan-pending' });
     assert.equal(r.body.peers, null, 'federation is off: not advertised');
     assert.deepEqual(r.body.library.tracks, []);
   });
@@ -872,12 +872,12 @@ describe('discovery taste: public mode', () => {
 describe('discovery taste: the capability flag', () => {
   test('features.discoveryTaste on GET /api and discoveryTaste on ping, an integer generation', async () => {
     const api = await call(server, 'GET', '/api/', undefined, tokens.bob);
-    assert.equal(api.body.features.discoveryTaste, 1);
+    assert.equal(api.body.features.discoveryTaste, 2);
     const ping = await call(server, 'GET', '/api/v1/ping', undefined, tokens.bob);
-    assert.equal(ping.body.discoveryTaste, 1);
+    assert.equal(ping.body.discoveryTaste, 2);
     // A version fact: present (and the same) with discovery off too.
     const off = await call(offServer, 'GET', '/api/v1/ping');
-    assert.equal(off.body.discoveryTaste, 1);
+    assert.equal(off.body.discoveryTaste, 2);
     assert.equal(off.body.discovery, false);
   });
 });

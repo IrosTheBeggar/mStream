@@ -48,6 +48,10 @@ import { requireIndex, resolveSeedTrack, resolveVisible, considerBudget } from '
 import { searchPeers } from './discovery-p2p.js';
 import { fanOutFederation, recordPeerStatus, loadFederationClient } from './discovery-federation.js';
 import { refuseJukebox } from './discovery-plugin-jobs.js';
+import { requireAccount } from '../util/require-account.js';
+import * as peerDbs from '../state/discovery-peer-dbs.js';
+import * as discoveryCatalog from '../state/discovery-catalog.js';
+import { peerLabels, leadTile } from '../state/discovery-peer-view.js';
 import * as taste from '../discovery/taste-queries.js';
 
 const d = () => db.getDB();
@@ -60,15 +64,6 @@ const NETWORK_HEADROOM = 2;
 // Failed visibility probes each step of choosing seeds may spend
 // (collectSeeds).
 const VISIBLE_MISS_CAP = 2 * taste.SEED_CAP * taste.SEED_OVERFETCH;
-
-// ── Gates ────────────────────────────────────────────────────────────────
-
-// The stats routes' requireAccount rule (api/stats.js): a federation key or
-// a guest token builds a user with no id, or a federation-flagged one —
-// neither has a play history of its own here.
-function requireAccount(req) {
-  if (!req.user?.id || req.user.federation) { throw new WebError('Forbidden', 403); }
-}
 
 // ── Validation ───────────────────────────────────────────────────────────
 
@@ -91,6 +86,13 @@ const tasteSchema = Joi.object({
   limit: limitSchema,
   newArtistsOnly: Joi.boolean().default(false),
   ignoreVPaths: Joi.array().items(Joi.string().max(256)).max(100),
+  // Generation 2, the Peer Recommendations page (both ignored without the
+  // network source). networkPeers narrows the shelf walk to these peers
+  // (a peer tab; absent = the whole shelf, [] is a 400): ids not on the
+  // shelf match nothing. networkOnRandomSeed walks the shelf on a random
+  // seed too, so a user with no finished songs still gets leads.
+  networkPeers: Joi.array().items(Joi.string().hex().length(64).lowercase()).min(1).max(50).unique(),
+  networkOnRandomSeed: Joi.boolean().default(false),
 });
 
 // ── Seeds ────────────────────────────────────────────────────────────────
@@ -414,21 +416,48 @@ async function librarySection(req, index, ctx) {
 
 // ── Network (p2p shelf) ──────────────────────────────────────────────────
 
+// The network section with no rows, and why (`reason`), so a client names
+// the empty state instead of guessing it from the counts:
+//   null            rows came back, or none were asked for (limit 0)
+//   'scan-pending'  no seed has a vector yet (the route's early answer)
+//   'error'         the walk failed; the next call walks again
+//   'empty-shelf'   no peer snapshot on the shelf
+//   'not-on-shelf'  none of the networkPeers asked for is on the shelf
+//   'no-compatible' every shelf peer is in another model space
+//   'nothing-new'   peers were searched, nothing new to this library
+function emptyNetwork(reason) {
+  return { results: [], searched: { peers: 0, tracks: 0 }, reason };
+}
+
+function networkReason(found, results, filtered) {
+  if (results.length > 0) { return null; }
+  if (found.held === 0) { return filtered ? 'not-on-shelf' : 'empty-shelf'; }
+  return found.searched.peers === 0 ? 'no-compatible' : 'nothing-new';
+}
+
 async function networkSection(index, centroid, ctx) {
-  const { seeds, limit, newArtistsOnly } = ctx;
-  if (limit.network === 0) { return { results: [], searched: { peers: 0, tracks: 0 } }; }
+  const { seeds, limit, newArtistsOnly, networkPeers } = ctx;
+  if (limit.network === 0) { return emptyNetwork(null); }
   let found;
   try {
     found = await searchPeers(centroid, index.modelId, {
-      excludeSets: localIdentitySets(), newArtistsOnly, limit: limit.network,
+      peers: networkPeers, excludeSets: localIdentitySets(), newArtistsOnly, limit: limit.network,
       headroom: NETWORK_HEADROOM, seedVecs: seeds.map((s) => s.entry.vec),
     });
   } catch (err) {
     // Answered as an empty section; the next call walks again.
     winston.warn(`discovery taste: p2p shelf search failed: ${err.message}`);
-    return { results: [], searched: { peers: 0, tracks: 0 } };
+    return emptyNetwork('error');
   }
-  return { results: stampNetworkRows(found.results, seeds, limit.network), searched: found.searched };
+  const results = stampNetworkRows(found.results, seeds, limit.network, shelfLabels());
+  return { results, searched: found.searched, reason: networkReason(found, results, networkPeers != null) };
+}
+
+// The peers route's labels (GET /api/v1/discovery/p2p/peers): one map over
+// the same universe (catalog ∪ shelf, minus blocked), so a lead's
+// "● <label>" reads exactly as its peer's strip item does.
+function shelfLabels() {
+  return peerLabels({ shelf: peerDbs.list(), catalog: discoveryCatalog.list(), isBlocked: peerDbs.isBlocked });
 }
 
 // Peer rows are untrusted (a public-network snapshot, a federated server's
@@ -463,8 +492,13 @@ export function sendableRow(row) {
 // = the seed the row sits closest to (searchPeers' seedIndex, dropped from
 // the wire), and one row per recommendationKey — two peers holding one song
 // show it once, the better match winning (the rows arrive best first).
+// After the schema check, two display facts no plug-in reads: `peer.label`
+// (from `labels`, endpointId -> label; the peer's name when the map lacks
+// it) and the generated tile a client draws for a lead with no art
+// (discovery-peer-view.js leadTile). The schema keeps unknown peer keys and
+// strips unknown top-level ones, so the row still forwards unchanged.
 // Exported for tests: the integration servers run without a p2p shelf.
-export function stampNetworkRows(rows, seeds, limit) {
+export function stampNetworkRows(rows, seeds, limit, labels = new Map()) {
   const seen = new Set();
   const results = [];
   for (const { seedIndex, ...row } of rows) {
@@ -478,6 +512,10 @@ export function stampNetworkRows(rows, seeds, limit) {
     const key = recommendationKey(rec);
     if (seen.has(key)) { continue; }
     seen.add(key);
+    if (rec.peer) {
+      rec.peer = { ...rec.peer, label: labels.get(rec.peer.endpointId) ?? rec.peer.name ?? '' };
+    }
+    rec.tile = leadTile(rec);
     results.push(rec);
   }
   return results;
@@ -548,7 +586,14 @@ export function setup(mstream) {
       ...analyzed.filter((s) => !s.pinned).slice(0, taste.LIBRARY_SEED_CAP),
     ];
     const want = new Set(body.sources);
-    const wantNetwork = want.has('network') && config.program.discoveryP2p.enabled === true && !random;
+    // A random seed is no taste, so by default nothing walks for it — but
+    // the shelf walk never leaves this machine, and the Peer
+    // Recommendations page asks for leads off the single random pick
+    // (networkOnRandomSeed; its vector is the centroid, so every lead's
+    // seedHash is the pick). The federation fan-out sends the centroid to
+    // other servers: never for a random seed.
+    const wantNetwork = want.has('network') && config.program.discoveryP2p.enabled === true
+      && (!random || body.networkOnRandomSeed === true);
     const wantPeers = want.has('peers') && federationDiscoveryOn() && !random;
 
     const response = {
@@ -573,7 +618,7 @@ export function setup(mstream) {
     // must not hide an advertised source while a scan runs.
     if (analyzed.length === 0) {
       if (want.has('library')) { response.library = { tracks: [], albums: [], capped: false }; }
-      if (wantNetwork) { response.network = { results: [], searched: { peers: 0, tracks: 0 } }; }
+      if (wantNetwork) { response.network = emptyNetwork(body.limit.network === 0 ? null : 'scan-pending'); }
       if (wantPeers) { response.peers = { peers: [], searched: { peers: 0, unreachable: 0, mismatched: 0 } }; }
       return res.json(response);
     }
@@ -582,6 +627,7 @@ export function setup(mstream) {
     const ctx = {
       uid, filter, libIds, libSeeds, allSeeds: seeds, exclusions,
       limit: body.limit, newArtistsOnly: body.newArtistsOnly, seeds: analyzed,
+      networkPeers: body.networkPeers ?? null,
     };
 
     // Federation first (§3.1): its requests are in flight while the

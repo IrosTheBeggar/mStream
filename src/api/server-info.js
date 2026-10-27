@@ -99,7 +99,16 @@ export function buildFeatures() {
     // and clients gate on `>= n` with no version floors. A version fact —
     // clients show the page on `discovery === true && discoveryTaste >= 1`;
     // whether there is anything to seed from is the route's answer.
-    discoveryTaste: 1,
+    // 2 = the Peer Recommendations page's half: the networkPeers and
+    // networkOnRandomSeed body keys, network.reason, and peer.label + tile
+    // on network leads.
+    discoveryTaste: 2,
+    // The Peer Recommendations page's peer strip: GET
+    // /api/v1/discovery/p2p/peers (member-readable) and the async admin Add,
+    // POST /api/v1/admin/discovery/p2p/peer-dbs/add. A generation, like
+    // discoveryTaste; the page shows on `discovery && discoveryP2p &&
+    // discoveryTaste >= 2 && discoveryP2pPeers >= 1`.
+    discoveryP2pPeers: 1,
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.
