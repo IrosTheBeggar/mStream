@@ -398,6 +398,22 @@ describe("an Add's discount", () => {
     assert.ok(peerDbs.totalBytes() <= CAP_MB * 1024 * 1024);
   });
 
+  test('peer-dbs.json drops the evictees before their files go, so a kill between loses nothing', async (t) => {
+    await shelve('e', 200_000);
+    announce('n', 900_000);
+    const plan = peerDbs.planRoomFor(id('n'));
+    assert.deepEqual(plan.evictIds, [id('e')], 'precondition');
+    const evicteeFile = peerDbs.get(id('e')).path;
+    const named = [];
+    const rmSync = fs.rmSync;
+    t.mock.method(fs, 'rmSync', (file, opts) => {
+      if (file === evicteeFile) { named.push(registryIds().sort()); }
+      return rmSync(file, opts);
+    });
+    await peerDbs.fetchPeer(id('n'), { discount: plan.evictIds });
+    assert.deepEqual(named, [[id('n')]], "when E's file went, the registry on disk already named only N");
+  });
+
   test('without the discount the same fetch is refused for room', async () => {
     await shelve('e', 200_000);
     await shelve('p', 200_000, { pinned: true });
