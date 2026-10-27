@@ -1870,7 +1870,7 @@ select {
    list + outer input field; the additions below are limited to
    the two new pieces. */
 
-.dj-genre-mode {
+.dj-genre-mode, .genre-source {
   display: inline-flex;
   margin-top: 6px;
   border: 1px solid #444c56;
@@ -1879,7 +1879,7 @@ select {
   background: #1a1d23;
   align-self: flex-start;  /* don't stretch full width on the column flex */
 }
-.dj-genre-mode-btn {
+.dj-genre-mode-btn, .genre-source-btn {
   appearance: none;
   background: transparent;
   border: none;
@@ -1890,23 +1890,29 @@ select {
   line-height: 1.4;
   transition: background-color .12s ease, color .12s ease;
 }
-.dj-genre-mode-btn + .dj-genre-mode-btn {
+.dj-genre-mode-btn + .dj-genre-mode-btn, .genre-source-btn + .genre-source-btn {
   border-left: 1px solid #444c56;
 }
-.dj-genre-mode-btn[aria-pressed="true"] {
+.dj-genre-mode-btn[aria-pressed="true"], .genre-source-btn[aria-pressed="true"] {
   background: #fa832b;
   color: #111;
 }
-.dj-genre-mode-btn:hover:not([aria-pressed="true"]):not(:disabled) {
+.dj-genre-mode-btn:hover:not([aria-pressed="true"]):not(:disabled),
+.genre-source-btn:hover:not([aria-pressed="true"]) {
   background: #2a2f37;
 }
-.dj-genre-mode-btn:focus-visible {
+.dj-genre-mode-btn:focus-visible, .genre-source-btn:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: -2px;
 }
 .dj-genre-mode-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+/* The Genres panel's tags / generated switch shares the look above; it
+   sits at the top of the list, in line with the rows' text. */
+.genre-source {
+  margin: 10px 0 4px 20px;
 }
 
 /* Anchor for the suggestion dropdown — keep it relative so the

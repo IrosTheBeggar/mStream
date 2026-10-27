@@ -66,7 +66,7 @@ function sliceConst(name) {
   throw new Error(`could not find the end of const ${name}`);
 }
 
-const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
+const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre', 'genreSourceSwitch',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
@@ -80,7 +80,11 @@ const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath
 // routed browse call (browseApi) and the peer-aware art URL (artImgAttr).
 // albumCredit / albumSongsBody: the album-API series' card credit and
 // album-songs request helpers the album panels call.
-const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody'];
+// preferredGenreSource: the Genres panel's tags / generated choice (no
+// localStorage here, so tags; these canned servers send no `sources`, so
+// the panel draws as for a server that predates the filter).
+const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody',
+  'preferredGenreSource'];
 
 // Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
 // browseHead* …): the renderers and panels call it; with its gate never
@@ -134,6 +138,7 @@ function makeSandbox(api) {
     let fileExplorerArray = [];
     let peerContext = null;
     let browseGeneration = 0;
+    let genreSourceChoice = null;
     ${sliceConst('entityMap')}
     ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
