@@ -48,8 +48,18 @@
  *   restart                          same state dir and port (Add states go)
  *   pin-all / unpin <name>           the shelf's pins, live
  *   empty-shelf                      remove every shelf snapshot, live
- *   reset                            the network as staged, and restart
+ *   p2p-off                          the admin route's disable, live; a
+ *                                    restart keeps it (the route persisted it)
+ *   p2p-on                           discoveryP2p.enabled true in the config,
+ *                                    and restart
+ *   reset                            the network as staged, p2p on, and restart
  *   quit                             stop the server and the mock
+ *
+ * p2p-on stands in for a successful enable: the real one (the Peer
+ * Recommendations page's Turn on, POST /api/v1/admin/discovery/p2p/enabled
+ * {enabled:true}) answers 500 "failed to start the discovery network:
+ * p2p-sidecar switched off for this run (MSTREAM_TEST_P2P_NO_SIDECAR)" here,
+ * which is the live check's error path.
  *
  * Safety:
  *   - MSTREAM_TEST_P2P_NO_SIDECAR=1, and it refuses to start if
@@ -476,13 +486,17 @@ function writeConfig() {
   }, null, 2));
 }
 
-// The server rewrites config.json (its JWT secret), so a later change
-// edits the file as it stands.
-function setAddress(address) {
+// The server rewrites config.json (its JWT secret, the p2p switch), so a
+// later change edits the file as it stands, with the server down.
+function editConfig(edit) {
   const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
-  cfg.address = address;
+  edit(cfg);
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2));
 }
+const setAddress = (address) => editConfig((cfg) => { cfg.address = address; });
+// What a successful enable persists (the route forces collection on too;
+// the stage already has it on).
+const setP2pOn = () => editConfig((cfg) => { cfg.discoveryP2p.enabled = true; });
 
 let server = null;          // the running server's ChildProcess
 let adminToken = null;
@@ -685,8 +699,9 @@ const pageBody = (extra = {}) => ({
 });
 
 async function report() {
-  const view = (await api('GET', '/api/v1/discovery/p2p/peers', { token: adminToken })).body;
-  for (const p of view?.peers || []) {
+  const peers = await api('GET', '/api/v1/discovery/p2p/peers', { token: adminToken });
+  if (peers.status !== 200) { log(`  peers: ${peers.status} ${peers.body?.error ?? ''}`); }
+  for (const p of peers.body?.peers || []) {
     const where = p.onShelf ? `shelf${p.pinned ? ', pinned' : ''}` : 'catalog';
     const add = p.add ? `  add ${p.add.state}${p.add.code ? ` (${p.add.code})` : ''}` : '';
     log(`  ${p.label.padEnd(18)} ${p.endpointId.slice(0, 12)}…  hue ${String(p.hue).padStart(3)}  ${p.online ? 'online ' : 'offline'}  ${where}${add}`);
@@ -776,16 +791,28 @@ const CONTROLS = {
     }
     log(`removed ${held.map((e) => nameOf(e.endpointId)).join(', ') || 'nothing (the shelf was empty)'}`);
   },
+  'p2p-off': async () => {
+    const r = await api('POST', '/api/v1/admin/discovery/p2p/enabled', { token: adminToken, body: { enabled: false } });
+    log(`p2p off: ${r.status} ${JSON.stringify(r.body)}`);
+  },
+  'p2p-on': async () => {
+    await stopServer();
+    setP2pOn();
+    log('p2p on in the config');
+    await boot();
+    await ready('restarted');
+  },
   reset: async () => {
     await stopServer();
     stageNetwork();
+    setP2pOn();
     quietEngine429 = true;
-    log('the network is back as staged (Quiet Engine answers 429 once again)');
+    log('the network is back as staged, p2p on (Quiet Engine answers 429 once again)');
     await boot();
     await ready('reset');
   },
   quit: () => shutdown(0),
-  help: () => log('controls: offline <name> | online <name> | restart | pin-all | unpin <name> | empty-shelf | reset | quit'),
+  help: () => log('controls: offline <name> | online <name> | restart | pin-all | unpin <name> | empty-shelf | p2p-off | p2p-on | reset | quit'),
 };
 
 let shuttingDown = false;
