@@ -5723,7 +5723,9 @@ function peerRecsTurnOnDraw() {
 
 // The shares line; the collection line where the ping says collection is
 // off (turning the network on turns it on); the server's name and its
-// description; Turn on. Or the one line, or "Try again".
+// description; Turn on, and under it the server's words when it refused —
+// outside the slot typing rewrites, so the alert is drawn (and read) once.
+// Or the one line, or "Try again".
 function peerRecsTurnOnHtml(o) {
   if (o.mode === 'loading') { return ''; }
   if (o.mode === 'failed') {
@@ -5739,16 +5741,16 @@ function peerRecsTurnOnHtml(o) {
   return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.shares'))}</p>${collect}`
     + field('name', t('peerRecs.turnOn.name'), o.name, 64)
     + field('description', t('peerRecs.turnOn.description'), o.description, 180)
-    + `<div class="prec-on-acts" data-prec-on-slot="acts">${o.acts}</div></div>`;
+    + `<div class="prec-on-acts" data-prec-on-slot="acts">${o.acts}</div>`
+    + (o.error ? `<p class="prec-on-err" role="alert">${escapeHtml(o.error)}</p>` : '')
+    + '</div>';
 }
 
 // Turn on — shut while the fields are not what the server takes
-// (DISCOVERYPAGE.turnOnValid) and while it is turning on ("Turning on…") —
-// and the server's words under it when it refused.
+// (DISCOVERYPAGE.turnOnValid) and while it is turning on ("Turning on…").
 function peerRecsTurnOnActsHtml(o) {
   const ok = !o.busy && DISCOVERYPAGE.turnOnValid(o);
-  const btn = `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${ok ? '' : ' disabled'}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
-  return o.error ? `${btn}<p class="prec-on-err" role="alert">${escapeHtml(o.error)}</p>` : btn;
+  return `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${ok ? '' : ' disabled'}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
 }
 
 // A field typed in: its value kept (the form is drawn from it), and Turn

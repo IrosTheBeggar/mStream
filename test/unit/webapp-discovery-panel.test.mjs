@@ -4189,6 +4189,21 @@ describe('W7: the form', () => {
     assert.equal(box.calls.filter((c) => c.name === 'setEnabled').length, 2);
   });
 
+  test('the server\'s words are drawn once: Turn on shut and opened again while typing never writes the alert again (a screen reader would read it each time)', async () => {
+    const box = onBox({ setEnabled: () => { throw refused(500, 'failed to start the discovery network: no'); } });
+    await openPage(box);
+    box.click({ 'data-dp': 'precTurnOn' });
+    await settle();
+    const n = box.writes.length;
+    for (const value of ['', 'Attic', '', 'Attic Tapes']) { typeIn(box, 'name', value); }
+    const flips = box.writes.slice(n);
+    assert.equal(flips.length, 4, 'Turn on shut, opened, shut, opened — each written in place');
+    assert.ok(flips.every((w) => !w.html.includes('prec-on-err') && !w.html.includes('role="alert"')), 'the alert is not in what a flip writes');
+    const html = box.S.html();
+    assert.equal(countDrawn(html, { class: 'prec-on-err', role: 'alert' }), 1, 'the line stays, once');
+    assert.ok(html.indexOf('data-dp="precTurnOn"') < html.indexOf('prec-on-err'), 'under the button');
+  });
+
   test('a 503 (no sidecar to fetch) says the server\'s words too; no words at all: "Try again"', async () => {
     const no = onBox({ setEnabled: () => { throw refused(503, 'the p2p-sidecar binary is missing for this platform'); } });
     await openPage(no);
