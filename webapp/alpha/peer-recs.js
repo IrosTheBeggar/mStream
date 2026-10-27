@@ -309,6 +309,15 @@
     return out;
   }
 
+  // §2 item 18, between two peers answers: shelf.searchable went from more
+  // to 0 (the shelf emptied under the page). The leads on screen, and every
+  // tab's answer kept for the batch, were walked over peers no longer
+  // there: the page asks again, and the walk's empty-shelf draws "No peers
+  // yet". Nothing before the first answer, nothing from a failed poll.
+  function emptied(prev, next) {
+    return isObj(prev) && isObj(next) && searchableOf(prev) > 0 && searchableOf(next) === 0;
+  }
+
   // ── preview ────────────────────────────────────────────────────────────
   // The one plug-in that previews (§2 item 12): the first in the listing's
   // order (GET /api/v1/discovery/plugins `plugins`) whose capabilities
@@ -407,7 +416,7 @@
   return {
     POLL_MS, POLL_FAST_MS, RETRY_MS, RETRY_DEFAULT_MS, PREVIEW_CAPABILITY,
     nameKey, hueOf, tileColours, isEndpointId,
-    stripItems, pollDelay, addOutcome, landed,
+    stripItems, pollDelay, addOutcome, landed, emptied,
     previewProvider, retryDelayMs, artMatches, leadKey, nextIndex,
     copyText, copyListText, peerLine,
   };

@@ -5494,17 +5494,19 @@ function peerRecsStrip(poll) {
 // A poll's answer: the strip patched in place. The tab's peer gone from
 // the shelf goes back to All (R5: its answer for the batch, else asked);
 // an Add of this page's that landed — or a shelf that filled while "No
-// peers yet" shows — asks the tab again on the batch (R4). An Add by
-// someone else, or a rotation, only moves the strip.
+// peers yet" shows — asks the tab again on the batch (R4); a shelf that
+// emptied asks too, for its "No peers yet" (§2 item 18). An Add by someone
+// else, or a rotation, only moves the strip.
 function peerRecsTakePeers(answer, n) {
   const p = peerRecsView;
   const land = PEERRECS.landed(p.peers, answer, p.posted, peerRecsNoPeers());
+  const emptied = PEERRECS.emptied(p.peers, answer);
   for (const id of land.ids.concat(land.failed)) { p.posted.delete(id); }
   p.peers = answer;
   const strip = peerRecsStrip(n);
   p.local = strip.local;
   // the shelf moved under the batch: no tab's answer stands
-  if (land.reask) { p.answers = new Map(); }
+  if (land.reask || emptied) { p.answers = new Map(); }
   if (strip.fallback) { p.selected = null; }
   peerRecsPatchStrip();
   if (strip.fallback) {
@@ -5515,7 +5517,7 @@ function peerRecsTakePeers(answer, n) {
     } else {
       redoDiscovery({ batch: true });
     }
-  } else if (land.reask) {
+  } else if (land.reask || emptied) {
     peerRecsReask();
   }
 }

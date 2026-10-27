@@ -3526,6 +3526,29 @@ describe('Peer Recommendations: Add', () => {
     assert.equal(tasteCalls(empty.calls).length, m + 1, 'R4: 0 → 1 searchable while "No peers yet" shows');
   });
 
+  test('the shelf emptied under the page (§2 item 18): asked again, "No peers yet" — from All, or from a peer\'s tab', async () => {
+    for (const tab of ['', KITCHEN]) {
+      let shelf = PR_SHELF;
+      const base = prTaste();
+      const emptyShelf = prAnswer([], { network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'empty-shelf' } });
+      const box = prBox({ peers: () => peersOf({ shelf }), taste: (b) => (shelf.length ? base(b) : emptyShelf) });
+      await openPage(box);
+      if (tab) {
+        box.click({ 'data-dp': 'precTab', 'data-v': tab });
+        await flush(); await flush();
+      }
+      const n = tasteCalls(box.calls).length;
+      shelf = [];
+      box.runTimers();
+      await flush(); await flush();
+      const name = tab ? 'a peer\'s tab' : 'All';
+      assert.equal(tasteCalls(box.calls).length, n + 1, `${name}: asked again, never the answer kept for the batch`);
+      assert.equal(box.S.prec.selected, null, name);
+      assert.ok(box.S.html().includes('peerRecs.noPeers'), `${name}: "No peers yet"`);
+      assert.equal(drawnRows(box.S.html()).length, 0, `${name}: no lead from a peer that left`);
+    }
+  });
+
   test('the poll beats every 15 s, every 3 s while a row is being added', async () => {
     const box = prBox({ admin: true, peers: () => peersOf({ canAdd: true, states: { [STATIC]: { state: 'adding', code: null, at: PR_NOW } } }) });
     await openPage(box);

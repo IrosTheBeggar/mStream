@@ -489,6 +489,19 @@ describe('landed: when an Add has landed and the current tab is re-asked (R4)', 
     assert.equal(P.landed(one, one, [], true).reask, false, 'no change, no re-ask');
   });
 
+  test('emptied: shelf.searchable more → 0 only (§2 item 18: the page asks again for its "No peers yet")', () => {
+    const empty = peersAnswer({ canAdd: true, shelf: [] });
+    const one = peersAnswer({ canAdd: true, shelf: [held(BASEMENT, 'Basement Hi-Fi')] });
+    const full = peersAnswer({ canAdd: true });
+    assert.equal(P.emptied(one, empty), true);
+    assert.equal(P.emptied(full, empty), true);
+    assert.equal(P.emptied(empty, empty), false, 'already empty: nothing new');
+    assert.equal(P.emptied(full, one), false, 'a peer left, one stays: R5 and the strip, no re-ask');
+    assert.equal(P.emptied(empty, one), false, 'filling is R4\'s');
+    assert.equal(P.emptied(null, empty), false, 'nothing before the first answer');
+    assert.equal(P.emptied(one, null), false, 'a failed poll says nothing');
+  });
+
   test('a rotation swap or another admin\'s Add only changes the strip', () => {
     const before = peersAnswer({ canAdd: true });
     // rotation: Attic Tapes in, Kitchen Radio out; another admin's Lighthouse landed
