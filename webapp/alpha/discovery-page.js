@@ -5,11 +5,14 @@
 // song rows, the column slicing behind "Show more", the network rows and
 // the job badges on them, and which state the page (and each source) is in.
 //
-// Two pages share it (2026-10-11): 'play' (Discover — songs you can play
-// now, from your library and your connected servers) and 'explore' (the
-// p2p network's leads, songs you don't have). They share the window and the
-// visit's pins and dropped seeds; each asks only for its own sources
-// (buildRequests' `page`).
+// Two pages share it: 'play' (Discover — songs you can play now, from your
+// library and your connected servers) and 'peerRecs' (Peer
+// Recommendations, its own nav row — the p2p network's leads, songs you
+// don't have; docs/peer-recommendations-plan.md §4.1). They share the
+// window and the visit's pins and dropped seeds; each asks only for its own
+// sources (buildRequests' `page`). Peer Recommendations re-asks on the
+// batch on screen (batchRequest): a peer's tab narrows the walk on the
+// server.
 //
 // The route is stateless (2026-10-14): every call draws a NEW random batch
 // of the account's finished songs as seeds, so every open and every tap
@@ -32,8 +35,10 @@
 // The wire shapes are the server's (src/api/discovery-taste.js and the
 // TasteRequest / TasteResponse schemas in docs/openapi.yaml):
 //   network / peers   null = not available here (the flag is off, or a
-//                     random seed); asked and empty = { results: [] } /
-//                     { peers: [] } with `searched`
+//                     random seed — Peer Recommendations asks the network
+//                     on one too); asked and empty = { results: [] } /
+//                     { peers: [] } with `searched` (and, network, the
+//                     `reason` it is empty)
 //   rows              every network and peers row is a ready-to-send
 //                     recommendation (`source` stamped): it is kept RAW on
 //                     its view model so the recommendation window, the
@@ -49,8 +54,15 @@
   const WINDOWS = Object.freeze([7, 30, 90, 0]);   // days; 0 = all time
   const DEFAULT_WINDOW = 30;
   const SOURCES = Object.freeze(['library', 'network', 'peers']);
-  // 'play' = Discover (library + connected servers); 'explore' = the network.
-  const PAGES = Object.freeze(['play', 'explore']);
+  // 'play' = Discover (library + connected servers); 'peerRecs' = Peer
+  // Recommendations (the network).
+  const PAGES = Object.freeze(['play', 'peerRecs']);
+  // The hidden network page Peer Recommendations replaces. m.js still draws
+  // it until the page's own drawing lands (plan §4.1 W4: its draw code and
+  // its tests go together), so it is still read as it was — the
+  // generation-1 gate, "new artists only" — and otherwise as the network
+  // page. Not one of PAGES: nothing new reaches it.
+  const LEGACY_EXPLORE = 'explore';
   const PIN_CAP = 12;            // = LIMIT_CAPS.seeds: the peers call pins a whole batch
   const PIN_PATH_MAX = 2048;
   const EXCLUDE_CAP = 200;
@@ -60,6 +72,13 @@
   const LIMIT_DEFAULTS = Object.freeze({ seeds: 12, tracks: 24, albums: 8, network: 12, peers: 12 });
   const LIMIT_CAPS = Object.freeze({ seeds: 12, tracks: 50, albums: 24, network: 50, peers: 25 });
   const LIMIT_MINS = Object.freeze({ seeds: 1, tracks: 0, albums: 0, network: 0, peers: 0 });
+  // Peer Recommendations' `limit` (plan §3.5 R1): a whole seed batch, and
+  // the leads the page draws in full — two blocks of 16, no "Show more".
+  const PEER_LIMITS = Object.freeze({ seeds: 12, network: 32 });
+  // `networkPeers`: endpoint ids as the route takes them (64 lower-case
+  // hex), at most 50.
+  const ENDPOINT_ID = /^[0-9a-f]{64}$/;
+  const NETWORK_PEERS_MAX = 50;
   // POST /api/v1/discovery/plugin-jobs/lookup/batch takes 1–100.
   const LOOKUP_BATCH_MAX = 100;
   // A song column's first rows and each "Show more" step; an album strip's
@@ -199,14 +218,30 @@
 
   // ── flags and requests ─────────────────────────────────────────────────
 
+  // A flag's integer generation (a number, or a numeric string); NaN for
+  // anything else, which no `>=` passes.
+  function generation(v) {
+    const gen = typeof v === 'number' ? v : toInt(v);
+    return Number.isFinite(gen) ? gen : NaN;
+  }
+
   // The page exists where the ping says so (plan §2.10): discovery on and a
   // server that has the taste route. Never probed.
   // `discoveryTaste` is an integer generation (a later body shape ships as
   // 2), so anything ≥ 1 has the page.
   function pageAvailable(flags) {
     if (!isObj(flags) || flags.discovery !== true) { return false; }
-    const gen = typeof flags.discoveryTaste === 'number' ? flags.discoveryTaste : toInt(flags.discoveryTaste);
-    return Number.isFinite(gen) && gen >= 1;
+    return generation(flags.discoveryTaste) >= 1;
+  }
+
+  // Peer Recommendations exists where the ping says so (peer-recommendations
+  // plan §2 item 2): discovery and the p2p network on, the taste route's
+  // generation 2 (networkPeers, networkOnRandomSeed, network.reason,
+  // peer.label, tile) and the peers route (discoveryP2pPeers). An older
+  // server shows no entry at all — there is no reduced page. Never probed.
+  function peerRecsAvailable(flags) {
+    if (!pageAvailable(flags) || flags.discoveryP2p !== true) { return false; }
+    return generation(flags.discoveryTaste) >= 2 && generation(flags.discoveryP2pPeers) >= 1;
   }
 
   function cleanLimits(limits) {
@@ -230,9 +265,14 @@
   //                  separate peers call where federationDiscovery is on —
   //                  so the library renders without waiting on a connected
   //                  server's 4 s deadline
-  //   page 'explore' main = { sources: ['network'] } where discoveryP2p is
-  //                  on (both null where it is not: nothing to explore);
-  //                  never a peers call
+  //   page 'peerRecs'
+  //                  main = { sources: ['network'] } (peer-recommendations
+  //                  plan §3.5 R1) where peerRecsAvailable (both null where
+  //                  it is not); never a peers call. Its own keys:
+  //                  limit = PEER_LIMITS (opts.limits shapes the play page
+  //                  only), networkOnRandomSeed: true (an account with no
+  //                  finished song still gets leads, off its random pick)
+  //                  and networkPeers (below)
   //   window         7 | 30 | 90 | 0 (a <select>'s string too); anything
   //                  else sends DEFAULT_WINDOW — the body always names one
   //   pinPath        now playing (string; a leading '/' is stripped)
@@ -242,19 +282,22 @@
   //   passed         the random picks "Another pick" passed over this visit
   //                  (hashes): sent in `exclude` after the drops, which keep
   //                  their room — the newest that fit under EXCLUDE_CAP
-  //   newArtistsOnly the Explore page's toggle; the play page draws no
-  //                  control for it, so it never thins that page's rows
+  //   networkPeers   Peer Recommendations' selected tab ([endpointId]):
+  //                  lower-cased, kept only as 64 hex, de-duplicated, the
+  //                  first 50; the key is left out when none is left (All —
+  //                  the route answers 400 to [])
+  //   newArtistsOnly read by LEGACY_EXPLORE alone: no page draws a control
+  //                  for it, so every body sends false
   //   ignoreVPaths   m.js localIgnoreVPaths()
   //   limits         { seeds, tracks, albums, network, peers }, clamped to the caps
-  //   flags          { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
+  //   flags          { discovery, discoveryTaste, discoveryP2p, discoveryP2pPeers, federationDiscovery }
   // → { main, peers }: peers = { sources: ['peers'], … } or null; both null
   // where the page is off.
   function buildRequests(opts) {
     const o = opts || {};
     const flags = o.flags || {};
     const page = cleanPage(o.page);
-    if (!pageAvailable(flags)) { return { main: null, peers: null }; }
-    if (page === 'explore' && flags.discoveryP2p !== true) { return { main: null, peers: null }; }
+    if (!pageOpen(page, flags)) { return { main: null, peers: null }; }
 
     const w = cleanWindow(o.window);
     const body = { window: w === undefined ? DEFAULT_WINDOW : w };
@@ -275,19 +318,60 @@
     const ex = drops.concat(room > 0 ? passed.slice(Math.max(0, passed.length - room)) : []);
     if (ex.length) { body.exclude = ex; }
 
-    body.newArtistsOnly = page === 'explore' && o.newArtistsOnly === true;
+    body.newArtistsOnly = page === LEGACY_EXPLORE && o.newArtistsOnly === true;
 
     if (Array.isArray(o.ignoreVPaths)) {
       body.ignoreVPaths = o.ignoreVPaths
         .filter((v) => typeof v === 'string' && v.length > 0 && v.length <= VPATH_MAX)
         .slice(0, IGNORE_VPATHS_CAP);
     }
-    const limit = cleanLimits(o.limits);
-    if (limit) { body.limit = limit; }
+    if (page === 'peerRecs') {
+      body.limit = Object.assign({}, PEER_LIMITS);
+      body.networkOnRandomSeed = true;
+      const ids = cleanEndpoints(o.networkPeers);
+      if (ids.length) { body.networkPeers = ids; }
+    } else {
+      const limit = cleanLimits(o.limits);
+      if (limit) { body.limit = limit; }
+    }
 
-    const main = Object.assign({ sources: page === 'explore' ? ['network'] : ['library'] }, body);
+    const main = Object.assign({ sources: isNetworkPage(page) ? ['network'] : ['library'] }, body);
     const peers = page === 'play' && flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
     return { main, peers };
+  }
+
+  // `networkPeers` as the route takes it: each id lower-cased, kept only as
+  // 64 hex, de-duplicated, the first NETWORK_PEERS_MAX. [] for none.
+  function cleanEndpoints(list) {
+    const out = [];
+    for (const raw of arr(list)) {
+      if (out.length >= NETWORK_PEERS_MAX) { break; }
+      const id = typeof raw === 'string' ? raw.toLowerCase() : '';
+      if (ENDPOINT_ID.test(id) && out.indexOf(id) === -1) { out.push(id); }
+    }
+    return out;
+  }
+
+  // An answer's seeds as pins: every seed's path, in order, without the
+  // leading '/', de-duplicated, at most PIN_CAP (= the seed cap, so a whole
+  // batch fits).
+  function seedPins(response) {
+    const pins = [];
+    for (const s of seedsOf(response)) {
+      if (pins.length >= PIN_CAP) { break; }
+      const path = stripSlash(s.filepath);
+      if (!path || path.length > PIN_PATH_MAX || pins.indexOf(path) !== -1) { continue; }
+      pins.push(path);
+    }
+    return pins;
+  }
+
+  // `body` pinned to `pins`, with limit.seeds = their count: the server
+  // adds no seed of its own.
+  function pinnedTo(body, pins) {
+    const out = Object.assign({}, body, { pin: pins });
+    out.limit = Object.assign({}, isObj(body.limit) ? body.limit : {}, { seeds: pins.length });
+    return out;
   }
 
   // The peers call of one ask, built once the main answer has landed: the
@@ -303,23 +387,48 @@
   function peersRequest(peersBody, main) {
     if (!isObj(peersBody) || !isObj(main) || main.disabled === true) { return null; }
     if (main.seedSource === 'random') { return null; }
-    const pins = [];
-    for (const s of seedsOf(main)) {
-      if (pins.length >= PIN_CAP) { break; }
-      const path = stripSlash(s.filepath);
-      if (!path || path.length > PIN_PATH_MAX || pins.indexOf(path) !== -1) { continue; }
-      pins.push(path);
-    }
-    if (!pins.length) { return null; }
-    const body = Object.assign({}, peersBody, { pin: pins });
-    body.limit = Object.assign({}, isObj(peersBody.limit) ? peersBody.limit : {}, { seeds: pins.length });
-    return body;
+    const pins = seedPins(main);
+    return pins.length ? pinnedTo(peersBody, pins) : null;
   }
 
-  function cleanPage(v) { return PAGES.indexOf(v) !== -1 ? v : 'play'; }
+  // Peer Recommendations' re-ask on the batch on screen (peer-recommendations
+  // plan §3.5 R2, R4, R5): a strip tab (a peer, or All) and an Add that
+  // landed ask again pinned to EVERY seed of the batch's first answer — its
+  // random pick too: the page walks the network on it, and a pinned walk
+  // over an unchanged shelf gives the same rows — with limit.seeds = those
+  // pins, so the server draws no seed of its own and the chips stay true.
+  //   body    buildRequests' `main` for the page
+  //   batch   the batch's first answer
+  //   peerId  the tab: an endpoint id narrows the walk to that peer
+  //           (networkPeers: [id], cleaned as buildRequests cleans it);
+  //           anything else (All: null) leaves the key out
+  // → the body to send, or null: no body; the batch failed, was refused or
+  // has no seed with a path (the caller asks unpinned: a new batch).
+  function batchRequest(body, batch, peerId) {
+    if (!isObj(body) || !isObj(batch) || batch.disabled === true) { return null; }
+    const pins = seedPins(batch);
+    if (!pins.length) { return null; }
+    const out = pinnedTo(body, pins);
+    const ids = cleanEndpoints([peerId]);
+    if (ids.length) { out.networkPeers = ids; } else { delete out.networkPeers; }
+    return out;
+  }
+
+  function cleanPage(v) { return PAGES.indexOf(v) !== -1 || v === LEGACY_EXPLORE ? v : 'play'; }
+
+  // The pages that ask the network alone.
+  const isNetworkPage = (page) => page === 'peerRecs' || page === LEGACY_EXPLORE;
+
+  // Whether a page asks at all, by the ping's flags: Discover where the
+  // taste route is; Peer Recommendations behind its own gate; the legacy
+  // explore page where p2p is on.
+  function pageOpen(page, flags) {
+    if (page === 'peerRecs') { return peerRecsAvailable(flags); }
+    return pageAvailable(flags) && (page !== LEGACY_EXPLORE || flags.discoveryP2p === true);
+  }
 
   // The two answers as one response for the views below.
-  //   main       the library (or, on explore, network) answer: undefined = in flight, null =
+  //   main       the library (or, on Peer Recommendations, network) answer: undefined = in flight, null =
   //              failed, { disabled: true } = 403
   //   peersRes   the peers answer, same conventions
   //   peersAsked whether the peers call was made (buildRequests' `peers`)
@@ -447,7 +556,7 @@
     };
   }
 
-  // ── option lists (the bar's window, the plug-ins) ──────────────────────
+  // ── option lists (the bar's window) ────────────────────────────────────
 
   function windowOptions(current) {
     const cur = cleanWindow(current);
@@ -456,23 +565,6 @@
       label: w === 0 ? lbl('dpage.window.all') : lbl('dpage.window.days', { count: w }),
       selected: w === cur,
     }));
-  }
-
-  // "plug-ins on this server: Previews · Deezer  Get it · YouTube  Open
-  // elsewhere" over the network rows — one chip per plug-in capability a
-  // network row can use (the peer copy belongs to the peers rows; Get it
-  // needs jobs.allowed). → [{ key, params, name, title }].
-  function pluginChips(list, jobsAllowed) {
-    const out = [];
-    for (const p of arr(list)) {
-      if (!isObj(p) || !p.name || p.name === 'federation-copy') { continue; }
-      const caps = arr(p.capabilities);
-      const title = str(p.title) || str(p.name);
-      if (caps.indexOf('preview') !== -1) { out.push({ key: 'dpage.plugins.preview', params: {}, name: p.name, title }); }
-      if (caps.indexOf('acquire') !== -1 && jobsAllowed === true) { out.push({ key: 'dpage.plugins.getIt', params: {}, name: p.name, title }); }
-      if (caps.indexOf('links') !== -1) { out.push({ key: 'dpage.plugins.links', params: {}, name: p.name, title }); }
-    }
-    return out;
   }
 
   // ── library ────────────────────────────────────────────────────────────
@@ -581,41 +673,52 @@
       // 2026-10-19 ('' from an older peer, and on every network lead).
       albumArtist: str(raw.albumArtist),
       year,
-      subtitle: joinParts([artist, album, year == null ? '' : String(year)]),
+      // line two of the row: "Artist · Album" (no year, no server)
+      subtitle: joinParts([artist, album]),
       length: fmtLength(raw.duration),
       similarityPct: pct(raw.similarity),
     };
   }
 
-  // "From the network": p2p leads, metadata only. A row keeps the lead RAW
-  // (`raw` → VUEPLAYERCORE.openDiscoverModal(raw, 'p2p'), the batch lookup)
-  // and adds what the row draws. `newArtist` is the server's hint when a row
-  // carries one (`newArtist: true`; the taste route sends none today — with
-  // newArtistsOnly every row is one anyway). recKey / recKeys / jobs / badge
-  // are filled by jobBadges.
-  // → { rows, count, searched, line }; line = "3 servers searched"
+  // The generated tile the server stamped on a lead (src/state/
+  // discovery-peer-view.js leadTile): { key, hue, letter }, drawn as sent —
+  // its key and hue are never computed here (every client draws the same
+  // one, and art a preview earns spreads by `key`). null for a lead without
+  // one, or with a hue that is not a number.
+  function leadTileOf(raw) {
+    const t = raw.tile;
+    if (!isObj(t) || typeof t.hue !== 'number' || !Number.isFinite(t.hue)) { return null; }
+    return { key: str(t.key), hue: t.hue, letter: str(t.letter) };
+  }
+
+  // Peer Recommendations' rows: p2p leads, metadata only. A row keeps the
+  // lead RAW (`raw` → VUEPLAYERCORE.openDiscoverModal(raw, 'p2p', …), the
+  // plug-in routes) and adds what the row draws: the title, "Artist ·
+  // Album", the tile, and its peer — peerId (the lead's endpointId: what
+  // every strip and tab state keys on) and peerLabel (the server's label,
+  // drawn verbatim; the peer's name on a lead stamped without one).
+  // recKey / recKeys / jobs / badge are filled by jobBadges.
+  // → { rows, count, searched }
   function networkRows(response) {
     const net = isObj(response) && isObj(response.network) ? response.network : null;
-    if (!net) { return { rows: [], count: 0, searched: null, line: null }; }
+    if (!net) { return { rows: [], count: 0, searched: null }; }
     const ctx = { seeds: seedIndex(response), random: response.seedSource === 'random' };
     const rows = arr(net.results).filter(isObj).map((raw) => {
-      const peerName = isObj(raw.peer) ? str(raw.peer.name) : '';
-      const newArtist = raw.newArtist === true;
+      const peer = isObj(raw.peer) ? raw.peer : {};
       return Object.assign({ raw, source: 'p2p' }, leadFields(raw), {
         seedHash: raw.seedHash || null,
         because: becauseOf(raw.seedHash, ctx.seeds, ctx.random),
         // the seed's title for the window's match bar; null = not one seed
         matchSeed: matchSeedOf(raw.seedHash, ctx.seeds),
-        peerName,
-        onLabel: peerName ? lbl('dpage.network.onServer', { name: peerName }) : null,
-        newArtist,
-        newArtistLabel: newArtist ? lbl('dpage.network.newArtist') : null,
+        peerId: str(peer.endpointId) || null,
+        peerName: str(peer.name),
+        peerLabel: str(peer.label) || str(peer.name),
+        tile: leadTileOf(raw),
         recKey: null, recKeys: [], jobs: {}, badge: null,
       });
     });
     const searched = isObj(net.searched) ? net.searched : { peers: 0, tracks: 0 };
-    const n = toInt(searched.peers) || 0;
-    return { rows, count: rows.length, searched, line: lbl('dpage.network.searched', { count: n }) };
+    return { rows, count: rows.length, searched };
   }
 
   // ── peers (connected servers) ──────────────────────────────────────────
@@ -675,8 +778,6 @@
         const lead = leadFields(raw);
         const sim = Number(raw.similarity);
         return Object.assign({ raw, source: 'federation' }, lead, {
-          // line two of the row: "Artist · Album" (no year, no server)
-          subtitle: joinParts([lead.artist, lead.album]),
           similarity: raw.similarity == null || !Number.isFinite(sim) ? null : sim,
           peerId: peer.id != null ? peer.id : (g.id != null ? g.id : null),
           peerName: str(peer.name) || name,
@@ -1216,13 +1317,15 @@
   //   peers empty     'Nothing from your connected servers right now.' —
   //                   servers are paired but no playable row came back (all
   //                   offline, all on another model, or nothing new)
+  //   network         the network page's own (networkState)
   //   count           rows the source would draw (peers: playable rows only)
   function sourceState(name, response, flags, opts) {
     const absent = { status: 'absent', reason: null, count: 0 };
-    if (name === 'network' && (flags.discoveryP2p !== true || opts.page !== 'explore')) { return absent; }
-    if (name !== 'network' && opts.page === 'explore') { return absent; }
+    if (name === 'network' && (flags.discoveryP2p !== true || !isNetworkPage(opts.page))) { return absent; }
+    if (name !== 'network' && isNetworkPage(opts.page)) { return absent; }
     if (name === 'peers' && flags.federationDiscovery !== true) { return absent; }
     if (response === undefined) { return { status: 'loading', reason: null, count: 0 }; }
+    if (name === 'network') { return networkState(response); }
     if (!isObj(response)) { return { status: 'failed', reason: lbl('dpage.source.failed'), count: 0 }; }
     if (name === 'peers' && response.peersFailed === true) { return { status: 'failed', reason: lbl('dpage.source.failed'), count: 0 }; }
     // A random seed (nothing finished): the server asks no connected server,
@@ -1238,15 +1341,6 @@
       if (count) { return { status: 'ready', reason: null, count }; }
       return { status: 'empty', count: 0, reason: lbl(waiting ? 'dpage.source.waitingForScan' : 'dpage.library.nothing') };
     }
-    if (name === 'network') {
-      const count = arr(sec.results).length;
-      if (count) { return { status: 'ready', reason: null, count }; }
-      const searched = isObj(sec.searched) ? toInt(sec.searched.peers) || 0 : 0;
-      return {
-        status: 'empty', count: 0,
-        reason: waiting ? lbl('dpage.source.waitingForScan') : lbl(searched === 0 ? 'dpage.network.warmingUp' : 'dpage.network.nothingNew'),
-      };
-    }
     const groups = arr(sec.peers).filter(isObj);
     if (groups.length === 0) { return absent; }
     const count = groups
@@ -1256,28 +1350,70 @@
     return { status: 'empty', count: 0, reason: lbl(waiting ? 'dpage.source.waitingForScan' : 'dpage.peers.quiet') };
   }
 
+  // The network's state on its page (an answer in hand). An empty section
+  // says why (taste generation 2's `reason`; peer-recommendations plan §2
+  // item 18), and each state draws at most one line:
+  //   failed      the call failed, or the walk did (reason 'error'):
+  //               "Try again" alone (reason null)
+  //   notOnShelf  'not-on-shelf': no peer the tab asked for is on the shelf
+  //               any more — nothing drawn, the page goes back to All (R5)
+  //   empty       `why` names the state, `reason` its line:
+  //                 scanPending  no seed analyzed yet ('scan-pending')
+  //                 noPeers      'empty-shelf' / 'no-compatible': "No peers yet"
+  //                 nothingNew   'nothing-new', or no reason: "Nothing new"
+  //                              (and New seeds)
+  //   ready       leads to draw
+  function networkState(response) {
+    if (!isObj(response)) { return { status: 'failed', reason: null, count: 0 }; }
+    const sec = response.network;
+    if (sec === undefined) { return { status: 'loading', reason: null, count: 0 }; }
+    if (!isObj(sec)) { return { status: 'absent', reason: null, count: 0 }; }
+    const count = arr(sec.results).length;
+    if (count) { return { status: 'ready', reason: null, count }; }
+    const empty = (why, key) => ({ status: 'empty', why, reason: lbl(key), count: 0 });
+    if (response.notAnalyzed === true || sec.reason === 'scan-pending') { return empty('scanPending', 'dpage.source.waitingForScan'); }
+    if (sec.reason === 'error') { return { status: 'failed', reason: null, count: 0 }; }
+    if (sec.reason === 'not-on-shelf') { return { status: 'notOnShelf', reason: null, count: 0 }; }
+    if (sec.reason === 'empty-shelf' || sec.reason === 'no-compatible') { return empty('noPeers', 'peerRecs.noPeers'); }
+    return empty('nothingNew', 'peerRecs.nothingNew');
+  }
+
   // Which page to draw, and each source's state.
   //   response  mergeResponses' answer: undefined = in flight, null = failed,
   //             { disabled: true } = 403
-  //   flags     { discovery, discoveryTaste, discoveryP2p, federationDiscovery }
+  //   flags     { discovery, discoveryTaste, discoveryP2p, discoveryP2pPeers, federationDiscovery }
   //   opts      { page } — 'play' (default) draws library + peers (network
-  //             absent); 'explore' draws network alone
+  //             absent); 'peerRecs' draws network alone
   // → { state, reason, sources: { library, network, peers } }
   //   state     'off'             the ping does not advertise the page, or
   //                               the route said 403 (re-ping before
-  //                               naming a reason)
+  //                               naming a reason) — on Peer
+  //                               Recommendations also a history answer
+  //                               with network: null (p2p went off, R7);
+  //                               there it draws nothing (reason null): the
+  //                               page is left
   //             'loading'         no answer yet
   //             'failed'          the call failed (not a 403): try again
+  //                               (Peer Recommendations: "Try again" alone,
+  //                               reason null)
   //             'scanPending'     no seed is analyzed yet (seeds listed)
   //             'nothingFinished' a random seed stands in: nothing counted,
   //                               or every finished song was dropped this
-  //                               visit (reason dpage.state.allDropped)
+  //                               visit (reason dpage.state.allDropped).
+  //                               Never on Peer Recommendations while the
+  //                               answer has a network section: it walks
+  //                               the network on the random pick, so that
+  //                               answer is 'ready' (its leads, or the
+  //                               network's own empty state)
   //             'ready'
   function stateOf(response, flags, opts) {
     const f = isObj(flags) ? flags : {};
     const so = { page: cleanPage((opts || {}).page) };
+    const peerRecs = so.page === 'peerRecs';
     const absent = { status: 'absent', reason: null, count: 0 };
-    const off = !pageAvailable(f) || (isObj(response) && response.disabled === true);
+    const answered = isObj(response) && response.disabled !== true;
+    const netOff = peerRecs && answered && response.seedSource !== 'random' && response.network === null;
+    const off = !(peerRecs ? peerRecsAvailable(f) : pageAvailable(f)) || (isObj(response) && response.disabled === true) || netOff;
     const sources = off
       ? { library: absent, network: absent, peers: absent }
       : {
@@ -1287,11 +1423,12 @@
       };
     let state = 'ready';
     let reason = null;
-    if (off) { state = 'off'; reason = lbl('dpage.state.off'); }
+    if (off) { state = 'off'; reason = peerRecs ? null : lbl('dpage.state.off'); }
     else if (response === undefined) { state = 'loading'; }
-    else if (!isObj(response)) { state = 'failed'; reason = lbl('dpage.state.failed'); }
-    else if (response.notAnalyzed === true) { state = 'scanPending'; reason = lbl('dpage.state.scanPending'); }
-    else if (response.seedSource === 'random') {
+    else if (!isObj(response)) { state = 'failed'; reason = peerRecs ? null : lbl('dpage.state.failed'); }
+    else if (response.notAnalyzed === true || (peerRecs && isObj(response.network) && response.network.reason === 'scan-pending')) {
+      state = 'scanPending'; reason = lbl('dpage.state.scanPending');
+    } else if (response.seedSource === 'random' && !(peerRecs && isObj(response.network))) {
       state = 'nothingFinished';
       reason = lbl(arr(response.excluded).length ? 'dpage.state.allDropped' : 'dpage.state.nothingFinished');
     }
@@ -1300,11 +1437,11 @@
 
   return {
     WINDOWS, DEFAULT_WINDOW, SOURCES, PAGES, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
-    LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
+    LIMIT_DEFAULTS, LIMIT_CAPS, PEER_LIMITS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     storedWindow, dropSeed, restoreSeed, passPick, randomPick, noPickLeft,
-    pageAvailable, buildRequests, peersRequest, mergeResponses,
+    pageAvailable, peerRecsAvailable, buildRequests, peersRequest, batchRequest, mergeResponses,
     fmtLength,
-    seedChips, windowOptions, pluginChips,
+    seedChips, windowOptions,
     librarySections, networkRows,
     peerGroups, peerRowsOf, peerSongRows, peerAlbums, albumCreditOf, peerAlbumQuery, fedQueueMeta, pageLabels, pageSlice, columnBlocks,
     lookupChunks, jobBadges, peerAlbumBadges, anyLiveBadge, nameKey, normalizePeerPath, keepJobFor,

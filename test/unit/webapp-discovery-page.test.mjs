@@ -1,13 +1,15 @@
 /**
  * webapp/alpha/discovery-page.js — the Discover page's pure half, on node:
- * the request bodies of both pages (play: library + the peers call;
- * explore: network — flags drop sources, pins lose their leading '/', the
- * visit's dropped seeds travel as exclude, caps hold), the stored window
+ * the request bodies of both pages (play: library + the peers call; Peer
+ * Recommendations: network, its re-ask pinned to the batch on screen —
+ * flags drop sources, pins lose their leading '/', the visit's dropped
+ * seeds travel as exclude, caps hold), the stored window
  * and the visit's drop list, the seed chips, the library's album cards and
  * song rows, the connected servers' song rows and album cards, the labels
  * and the "Show more" column slicing, the network rows (raw rows kept for
- * the recommendation window, jobs badged through an injected
- * DISCOVERJOBS), and every page and source state. The route is stateless
+ * the recommendation window, the peer and the generated tile as the server
+ * stamped them, jobs badged through an injected DISCOVERJOBS), and every
+ * page and source state (the network's by its `reason`). The route is stateless
  * (2026-10-14): nothing here keeps or reuses an answer, and no body carries
  * remember / filter / staleDays.
  *
@@ -29,6 +31,7 @@ import { albumCredit as serverAlbumCredit, normalizePeerPath as serverNormalizeP
 import { buildLinks as serverBuildLinks } from '../../src/discovery-plugins/plugins/links.js';
 import { albumListing as serverAlbumListing } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import { nameKey as serverNameKey } from '../../src/db/name-key.js';
+import { peerLabels, leadTile } from '../../src/state/discovery-peer-view.js';
 
 const require = createRequire(import.meta.url);
 const D = require('../../webapp/alpha/discovery-page.js');
@@ -40,6 +43,9 @@ const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
 const ago = (days) => new Date(NOW - days * DAY).toISOString();
 const FLAGS = { discovery: true, discoveryTaste: 1, discoveryP2p: true, federationDiscovery: true };
+// Peer Recommendations' gate: taste generation 2 and the peers route.
+const PFLAGS = { ...FLAGS, discoveryTaste: 2, discoveryP2pPeers: 1 };
+const PEER_PAGE = { page: 'peerRecs' };
 
 // ── fixtures in the route's own shapes ──────────────────────────────────
 
@@ -119,7 +125,7 @@ const peersResponse = () => ({ ...historyResponse(), library: null, network: nul
 function labelsIn(value, out = [], seen = new Set()) {
   if (value === null || typeof value !== 'object' || seen.has(value)) { return out; }
   seen.add(value);
-  if (typeof value.key === 'string' && /^(dpage|discover)\./.test(value.key) && (value.params === undefined || typeof value.params === 'object')) {
+  if (typeof value.key === 'string' && /^(dpage|discover|peerRecs)\./.test(value.key) && (value.params === undefined || typeof value.params === 'object')) {
     out.push(value);
   }
   for (const [k, v] of Object.entries(value)) {
@@ -152,14 +158,22 @@ describe('the contract constants agree with the server', () => {
   });
 
   test('the pages and the page sizes', () => {
-    assert.deepEqual([...D.PAGES], ['play', 'explore']);
+    assert.deepEqual([...D.PAGES], ['play', 'peerRecs'], 'the hidden explore page is Peer Recommendations');
     assert.equal(D.PAGE_SIZE, 16);
     assert.equal(D.ALBUM_STRIP_MAX, 12);
     assert.ok(D.ALBUM_STRIP_MAX <= tasteQ.LIMIT_CAPS.albums, 'the strip can be filled in one ask');
   });
 
+  test('Peer Recommendations\' limits: a whole seed batch and 32 leads, inside the route\'s caps', () => {
+    assert.deepEqual({ ...D.PEER_LIMITS }, { seeds: 12, network: 32 });
+    assert.ok(Object.isFrozen(D.PEER_LIMITS));
+    assert.equal(D.PEER_LIMITS.seeds, tasteQ.SEED_CAP, 'a whole batch: its seeds pin a tab\'s re-ask');
+    assert.ok(D.PEER_LIMITS.network <= tasteQ.LIMIT_CAPS.network);
+    assert.equal(D.PEER_LIMITS.network, 2 * D.PAGE_SIZE, 'two blocks of 16, drawn in full');
+  });
+
   test('what the play-now page dropped is gone from the module', () => {
-    for (const gone of ['seedsLine', 'windowLabel', 'filterOptions', 'agoLabel', 'playedWhen', 'pickSource']) {
+    for (const gone of ['seedsLine', 'windowLabel', 'filterOptions', 'agoLabel', 'playedWhen', 'pickSource', 'pluginChips']) {
       assert.equal(D[gone], undefined, gone);
     }
   });
@@ -183,7 +197,7 @@ describe('buildRequests', () => {
 
   test('the play page: library alone, then peers — same seeds-shaping keys', () => {
     const { main, peers } = D.buildRequests({ window: 30, pinPath: '/Music/ALM/Manor.mp3', flags: FLAGS, ignoreVPaths: ['Podcasts'] });
-    assert.deepEqual(main.sources, ['library'], 'the network leads are the explore page\'s');
+    assert.deepEqual(main.sources, ['library'], 'the network leads are Peer Recommendations\'');
     assert.deepEqual(peers.sources, ['peers']);
     assert.deepEqual(main.pin, ['Music/ALM/Manor.mp3']);
     assert.deepEqual(strip(main), strip(peers));
@@ -192,13 +206,61 @@ describe('buildRequests', () => {
     assert.deepEqual(D.buildRequests({ flags: FLAGS, page: 'nope' }), D.buildRequests({ flags: FLAGS }));
   });
 
-  test('the explore page: network alone, never a peers call — and the same seeds-shaping keys', () => {
-    const play = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'] });
-    const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore' });
-    assert.deepEqual(explore.main.sources, ['network']);
-    assert.equal(explore.peers, null);
-    assert.deepEqual(strip(explore.main), strip(play.main), 'one window, pins and drop list across both pages');
-    assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null }, 'nothing to explore without p2p');
+  test('Peer Recommendations: the R1 body — the network alone, never a peers call, the play page\'s seeds-shaping keys', () => {
+    const opts = { window: 90, pinPath: '/Music/now.flac', exclude: ['h1'], passed: ['r1'], ignoreVPaths: ['Podcasts'] };
+    const { main, peers } = D.buildRequests({ ...opts, flags: PFLAGS, ...PEER_PAGE, newArtistsOnly: true, limits: { tracks: 48, network: 12, peers: 25 } });
+    assert.deepEqual(main, {
+      sources: ['network'], window: 90, pin: ['Music/now.flac'], exclude: ['h1', 'r1'], newArtistsOnly: false, ignoreVPaths: ['Podcasts'],
+      limit: { seeds: 12, network: 32 }, networkOnRandomSeed: true,
+    }, 'its own limits (opts.limits is the play page\'s), leads off a random pick too, no networkPeers for All');
+    assert.equal(peers, null);
+    const play = D.buildRequests({ ...opts, flags: PFLAGS }).main;
+    for (const k of ['window', 'pin', 'exclude', 'newArtistsOnly', 'ignoreVPaths']) { assert.deepEqual(main[k], play[k], k); }
+    assert.deepEqual(D.buildRequests({ flags: PFLAGS, ...PEER_PAGE }).main,
+      { sources: ['network'], window: 30, newArtistsOnly: false, limit: { seeds: 12, network: 32 }, networkOnRandomSeed: true }, 'a bare open');
+    assert.notEqual(D.buildRequests({ flags: PFLAGS, ...PEER_PAGE }).main.limit, D.PEER_LIMITS, 'a copy, never the frozen constant');
+  });
+
+  test('networkPeers: lower-cased, 64 hex only, de-duplicated, the first 50 — none left, no key', () => {
+    const id = (n) => n.toString(16).padStart(64, '0');
+    const A = 'ab'.repeat(32);
+    const sent = (networkPeers) => D.buildRequests({ flags: PFLAGS, ...PEER_PAGE, networkPeers }).main;
+    assert.deepEqual(sent([A]).networkPeers, [A]);
+    assert.deepEqual(sent([A.toUpperCase()]).networkPeers, [A], 'any case, sent lower-case (the route\'s lowercase())');
+    assert.deepEqual(sent([A, A.toUpperCase(), id(1), A]).networkPeers, [A, id(1)], 'de-duplicated after the fold, in order');
+    assert.deepEqual(sent(['ab'.repeat(31), 'ab'.repeat(33), ` ${A}`, 'zz'.repeat(32), 42, null, { id: A }, A]).networkPeers, [A],
+      'short, long, padded, non-hex and non-string ids dropped');
+    const many = Array.from({ length: 51 }, (_, i) => id(i + 1));
+    assert.deepEqual(sent(many).networkPeers, many.slice(0, 50), '51 ids: the first 50 (the route\'s max)');
+    for (const none of [[], ['nope'], undefined, null, A, {}]) {
+      assert.equal('networkPeers' in sent(none), false, `${JSON.stringify(none)}: the key left out (the route answers 400 to [])`);
+    }
+    assert.equal('networkPeers' in D.buildRequests({ flags: PFLAGS, networkPeers: [A] }).main, false, 'never on the play page');
+  });
+
+  test('Peer Recommendations without any one of its four flags: no bodies at all', () => {
+    const offs = [
+      { ...PFLAGS, discovery: false }, { ...PFLAGS, discoveryP2p: false }, { ...PFLAGS, discoveryP2p: 'true' },
+      { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discoveryTaste: undefined }, { ...PFLAGS, discoveryP2pPeers: 0 },
+      { ...PFLAGS, discoveryP2pPeers: undefined }, { ...PFLAGS, discoveryP2pPeers: true }, FLAGS, {}, null,
+    ];
+    for (const flags of offs) {
+      assert.deepEqual(D.buildRequests({ flags, ...PEER_PAGE }), { main: null, peers: null }, JSON.stringify(flags));
+      assert.equal(D.peerRecsAvailable(flags), false, JSON.stringify(flags));
+    }
+    for (const flags of [PFLAGS, { ...PFLAGS, discoveryTaste: '2', discoveryP2pPeers: '1' }, { ...PFLAGS, discoveryTaste: 3, discoveryP2pPeers: 2 }]) {
+      assert.equal(D.peerRecsAvailable(flags), true, JSON.stringify(flags));
+      assert.ok(D.buildRequests({ flags, ...PEER_PAGE }).main, 'a later generation, a numeric string: still the page');
+    }
+    assert.ok(D.buildRequests({ flags: FLAGS }).main, 'Discover keeps its own gate');
+  });
+
+  test('the hidden explore page m.js still draws (until its drawing goes): the network alone, the generation-1 gate, "new artists only"', () => {
+    const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore', newArtistsOnly: true, networkPeers: ['ab'.repeat(32)] });
+    assert.deepEqual(explore, { main: { sources: ['network'], window: 90, pin: ['a.mp3'], exclude: ['h1'], newArtistsOnly: true }, peers: null },
+      'no generation-2 key');
+    assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null });
+    assert.deepEqual(D.stateOf(historyResponse(), FLAGS, { page: 'explore' }).sources.network, { status: 'ready', reason: null, count: 3 });
   });
 
   test('flags drop sources: no federation discovery → no peers call; p2p never reaches the play page', () => {
@@ -251,11 +313,11 @@ describe('buildRequests', () => {
     assert.equal(D.buildRequests({ flags: FLAGS }).main.pin, undefined);
   });
 
-  test('"new artists only" is the Explore page\'s: the play page never sends it', () => {
-    const play = D.buildRequests({ newArtistsOnly: true, flags: FLAGS });
+  test('"new artists only": no page sends it — no control draws it any more', () => {
+    const play = D.buildRequests({ newArtistsOnly: true, flags: PFLAGS });
     assert.equal(play.main.newArtistsOnly, false);
     assert.equal(play.peers.newArtistsOnly, false, 'no hidden thinning of the connected servers\' rows');
-    assert.equal(D.buildRequests({ newArtistsOnly: true, flags: FLAGS, page: 'explore' }).main.newArtistsOnly, true);
+    assert.equal(D.buildRequests({ newArtistsOnly: true, flags: PFLAGS, ...PEER_PAGE }).main.newArtistsOnly, false);
     assert.equal(D.buildRequests({ newArtistsOnly: 'yes', flags: FLAGS, page: 'explore' }).main.newArtistsOnly, false);
   });
 
@@ -338,6 +400,66 @@ describe('peersRequest: the peers call seeds from the library answer\'s batch', 
     }
     const noLimit = D.buildRequests({ flags: FLAGS }).peers;
     assert.deepEqual(D.peersRequest(noLimit, main).limit, { seeds: 1 });
+  });
+});
+
+describe('batchRequest: Peer Recommendations re-asks on the batch on screen', () => {
+  const seed = (i, extra = {}) => ({ hash: `h${i}`, filepath: `Music/S/${i}.flac`, metadata: {}, pinned: false, analyzed: true, ...extra });
+  const KITCHEN = 'b2'.repeat(32);
+  const body = (networkPeers) => D.buildRequests({ flags: PFLAGS, ...PEER_PAGE, window: 7, pinPath: 'Music/S/0.flac', exclude: ['hx'], networkPeers }).main;
+  const batch = { seedSource: 'history', seeds: [seed(0, { pinned: true }), seed(1), seed(2)] };
+
+  test('a peer\'s tab: every seed of the batch pinned, limit.seeds = their count, networkPeers = that peer', () => {
+    const b = body();
+    const out = D.batchRequest(b, batch, KITCHEN);
+    assert.deepEqual(out, {
+      sources: ['network'], window: 7, pin: ['Music/S/0.flac', 'Music/S/1.flac', 'Music/S/2.flac'], exclude: ['hx'], newArtistsOnly: false,
+      limit: { seeds: 3, network: 32 }, networkOnRandomSeed: true, networkPeers: [KITCHEN],
+    });
+    assert.deepEqual(b.pin, ['Music/S/0.flac'], 'the built body is not touched');
+    assert.equal(b.limit.seeds, 12);
+    assert.equal('networkPeers' in b, false);
+    assert.deepEqual(D.batchRequest(b, batch, KITCHEN.toUpperCase()).networkPeers, [KITCHEN], 'cleaned as buildRequests cleans it');
+  });
+
+  test('All: the key left out — and taken off a body that carried one; an id that is no endpoint id is All', () => {
+    const narrowed = body([KITCHEN]);
+    assert.deepEqual(narrowed.networkPeers, [KITCHEN]);
+    for (const all of [null, undefined, '', 'all', 'b2'.repeat(31), 7]) {
+      const out = D.batchRequest(narrowed, batch, all);
+      assert.equal('networkPeers' in out, false, String(all));
+      assert.equal(out.limit.seeds, 3);
+    }
+    assert.deepEqual(narrowed.networkPeers, [KITCHEN], 'the built body is not touched');
+    assert.deepEqual(D.batchRequest(narrowed, batch, 'a1'.repeat(32)).networkPeers, ['a1'.repeat(32)], 'another tab replaces it');
+  });
+
+  test('a random answer\'s pick is pinned too (the page walks the network on it)', () => {
+    const random = { seedSource: 'random', fallback: true, seeds: [seed(9, { outcome: null })] };
+    const out = D.batchRequest(body(), random, KITCHEN);
+    assert.deepEqual(out.pin, ['Music/S/9.flac']);
+    assert.equal(out.limit.seeds, 1);
+    assert.equal(D.peersRequest(D.buildRequests({ flags: PFLAGS }).peers, random), null, 'unlike the connected servers\' call');
+  });
+
+  test('a full batch; past PIN_CAP (a malformed answer) the first ones; bad paths skipped', () => {
+    const full = Array.from({ length: 12 }, (_, i) => seed(i, { pinned: i === 0 }));
+    const all = D.batchRequest(body(), { seedSource: 'history', seeds: full }, null);
+    assert.deepEqual(all.pin, full.map((s) => s.filepath));
+    assert.equal(all.limit.seeds, 12);
+    const seeds = [seed(0, { filepath: '/Music/S/0.flac' }), seed(9, { filepath: '' }), seed(1, { filepath: 'Music/S/0.flac' }),
+      seed(8, { filepath: 'x'.repeat(2049) }), ...Array.from({ length: 12 }, (_, i) => seed(i + 2))];
+    const out = D.batchRequest(body(), { seedSource: 'history', seeds }, null);
+    assert.equal(out.pin.length, D.PIN_CAP);
+    assert.deepEqual(out.pin.slice(0, 2), ['Music/S/0.flac', 'Music/S/2.flac'], 'the leading / stripped, a duplicate, an empty and an over-long path skipped');
+  });
+
+  test('null: no body, or a batch that failed, was refused or has no seed with a path (the caller asks a new batch)', () => {
+    assert.equal(D.batchRequest(null, batch, KITCHEN), null);
+    assert.equal(D.batchRequest(undefined, batch, null), null);
+    for (const bad of [undefined, null, { disabled: true }, { seedSource: 'history', seeds: [] }, { seedSource: 'history', seeds: [seed(1, { filepath: '' })] }, { seedSource: 'history' }]) {
+      assert.equal(D.batchRequest(body(), bad, KITCHEN), null, JSON.stringify(bad));
+    }
   });
 });
 
@@ -568,43 +690,90 @@ const STUB = {
   jobKind: (job) => ((job.params && job.params.scope) === 'album' ? 'discover.tray.kindAlbum' : null),
 };
 
+// Peer Recommendations' leads as the taste route stamps them: three shelf
+// peers labelled by the peers route's own peerLabels (an unnamed one reads
+// 'mStream · 3f9a'), every lead's tile by its own leadTile.
+const EP = { basement: 'a1'.repeat(32), kitchen: 'b2'.repeat(32), mstream: '3f9a'.padEnd(64, '0') };
+const SHELF_LABELS = peerLabels({
+  shelf: [{ endpointId: EP.basement, name: 'Basement Hi-Fi' }, { endpointId: EP.mstream, name: '' }],
+  catalog: [{ from: EP.kitchen, payload: { name: 'Kitchen Radio' } }],
+});
+const LEADS_RAW = [
+  { seedIndex: 1, artist: 'Paper Lantern', title: 'Signal Fires', album: 'Night Ferry', year: 2021, duration: 200, similarity: 0.81234, exportId: 'k1', peer: { endpointId: EP.kitchen, name: 'Kitchen Radio' }, recordingMbid: null, isrc: null },
+  { seedIndex: 2, artist: 'Paper Lantern', title: 'Harbor Lights', album: 'Night Ferry', year: 2021, duration: 3725, similarity: 0.7, exportId: 'b1', peer: { endpointId: EP.basement, name: 'Basement Hi-Fi' }, recordingMbid: null, isrc: null },
+  { seedIndex: null, artist: '', title: 'Untitled', album: null, year: null, duration: null, similarity: 0.6, exportId: 'm1', peer: { endpointId: EP.mstream, name: null }, recordingMbid: null, isrc: null },
+];
+const leadsResponse = (over) => historyResponse({
+  network: { results: stampNetworkRows(LEADS_RAW, LIB_SEEDS, 32, SHELF_LABELS), searched: { peers: 3, tracks: 7421 }, reason: null },
+  library: null,
+  ...over,
+});
+
 describe('networkRows', () => {
-  test('raw rows kept as the route stamped them, plus what a row draws', () => {
-    const r = historyResponse();
+  test('raw rows kept as the route stamped them, plus what a row draws: "Artist · Album", the peer, the tile', () => {
+    const r = leadsResponse();
     const net = collect(D.networkRows(r));
     assert.equal(net.count, 3);
-    assert.deepEqual(net.line, { key: 'dpage.network.searched', params: { count: 3 } });
+    assert.deepEqual(net.searched, { peers: 3, tracks: 7421 });
+    assert.equal('line' in net, false, 'no "3 servers searched"');
     const [n1, n2, n3] = net.rows;
     assert.equal(n1.raw, r.network.results[0], 'the very object — openDiscoverModal(raw, "p2p")');
     assert.equal(n1.raw.source, 'p2p');
     assert.equal('seedIndex' in n1.raw, false);
     assert.equal(n1.source, 'p2p');
-    assert.equal(n1.title, 'Lead One');
-    assert.equal(n1.subtitle, 'Artist M · Album N1 · 2022');
+    assert.equal(n1.title, 'Signal Fires');
+    assert.equal(n1.subtitle, 'Paper Lantern · Night Ferry', 'no year');
     assert.equal(n1.similarityPct, 81);
     assert.equal(n1.length, '3:20');
+    assert.equal(n2.length, '1:02:05');
     assert.equal(n1.seedHash, 'h1');
     assert.deepEqual(n1.because, { key: 'dpage.because', params: { title: 'One' } });
     assert.equal(n1.matchSeed, 'One', 'the window\'s match bar names the seed this lead was matched against');
-    assert.deepEqual(n1.onLabel, { key: 'dpage.network.onServer', params: { name: 'Peer One' } });
-    assert.equal(n1.newArtist, false);
-    assert.equal(n2.onLabel, null);
-    assert.equal(n2.subtitle, 'Artist N · Album N2');
-    assert.equal(n2.length, '');
-    assert.equal(n3.length, '1:02:05');
+    assert.equal(n3.subtitle, '', 'no artist, no album');
     assert.equal(n3.seedHash, null);
     assert.equal(n3.because, null);
     assert.equal(n3.matchSeed, null);
-    for (const row of net.rows) { assert.equal(plugins.recommendationSchema.validate(row.raw).error, undefined, 'still a sendable recommendation'); }
+    for (const row of net.rows) {
+      for (const gone of ['onLabel', 'newArtist', 'newArtistLabel']) { assert.equal(gone in row, false, gone); }
+      assert.equal(plugins.recommendationSchema.validate(row.raw).error, undefined, 'still a sendable recommendation');
+    }
   });
 
-  test('the new-artist hint when a row carries one; nothing for an absent section', () => {
-    const r = historyResponse({ network: { results: [{ ...historyResponse().network.results[0], newArtist: true }], searched: { peers: 1, tracks: 10 } } });
-    const row = collect(D.networkRows(r)).rows[0];
-    assert.equal(row.newArtist, true);
-    assert.deepEqual(row.newArtistLabel, { key: 'dpage.network.newArtist', params: {} });
-    assert.deepEqual(D.networkRows(historyResponse({ network: null })), { rows: [], count: 0, searched: null, line: null });
+  test('the peer: its endpointId (what every strip state keys on) and the server\'s label, verbatim', () => {
+    const [n1, n2, n3] = D.networkRows(leadsResponse()).rows;
+    assert.deepEqual([n1.peerId, n2.peerId, n3.peerId], [EP.kitchen, EP.basement, EP.mstream]);
+    assert.deepEqual([n1.peerLabel, n2.peerLabel, n3.peerLabel], ['Kitchen Radio', 'Basement Hi-Fi', 'mStream · 3f9a'], 'the peers route\'s labels');
+    assert.equal(n3.peerLabel, SHELF_LABELS.get(EP.mstream));
+    assert.equal(n3.peerName, '', 'the catalogue name is data; the label is what is drawn');
+    const unlabelled = historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', peer: { endpointId: EP.kitchen, name: 'Kitchen Radio' } }] } });
+    assert.equal(D.networkRows(unlabelled).rows[0].peerLabel, 'Kitchen Radio', 'a lead stamped without a label: its peer\'s name');
+    const peerless = historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', peer: null }] } });
+    assert.deepEqual([D.networkRows(peerless).rows[0].peerId, D.networkRows(peerless).rows[0].peerLabel], [null, '']);
+  });
+
+  test('the tile: the server\'s own leadTile, drawn as sent — never computed here', () => {
+    const rows = D.networkRows(leadsResponse()).rows;
+    for (const [i, row] of rows.entries()) {
+      assert.deepEqual(row.tile, leadTile(LEADS_RAW[i]), row.title);
+      assert.deepEqual(row.tile, row.raw.tile);
+      assert.notEqual(row.tile, row.raw.tile, 'a copy');
+    }
+    assert.deepEqual(rows[0].tile, { key: 'paper lantern|night ferry', hue: 39, letter: 'P' }, 'the plan\'s §5.1 vector');
+    assert.equal(rows[0].tile.key, rows[1].tile.key, 'one album, one key: earned art spreads by it');
+    assert.deepEqual(rows[2].tile, { key: 'untitled', hue: leadTile({ title: 'Untitled' }).hue, letter: 'U' }, 'no artist or album: the title');
+    // a tile the server did not stamp, or one that cannot be drawn
+    const tileOf = (tile) => D.networkRows(historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', tile }] } })).rows[0].tile;
+    for (const bad of [undefined, null, 'tile', [1, 2], { key: 'k', letter: 'K' }, { key: 'k', hue: '39', letter: 'K' }, { key: 'k', hue: NaN, letter: 'K' }]) {
+      assert.equal(tileOf(bad), null, JSON.stringify(bad));
+    }
+    assert.deepEqual(tileOf({ key: 7, hue: 120, letter: null, extra: 'x' }), { key: '', hue: 120, letter: '' }, 'the three fields, strings as strings');
+    assert.ok(!/fnv|0x811c9dc5|0x01000193/i.test(SOURCE), 'no tile hash in the module');
+  });
+
+  test('nothing for an absent section', () => {
+    assert.deepEqual(D.networkRows(historyResponse({ network: null })), { rows: [], count: 0, searched: null });
     assert.equal(D.networkRows(undefined).rows.length, 0);
+    assert.equal(D.networkRows({ network: { results: [] } }).count, 0);
   });
 });
 
@@ -2372,18 +2541,35 @@ describe('stateOf', () => {
     assert.equal(D.stateOf({ disabled: true }, FLAGS).state, 'off');
   });
 
+  test('off on Peer Recommendations: any one of its four flags missing, a 403, or a history answer with network: null (R7) — no line', () => {
+    for (const flags of [FLAGS, { ...PFLAGS, discoveryP2p: false }, { ...PFLAGS, discoveryP2pPeers: 0 }, { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discovery: false }]) {
+      const s = D.stateOf(leadsResponse(), flags, PEER_PAGE);
+      assert.equal(s.state, 'off', JSON.stringify(flags));
+      assert.equal(s.reason, null, 'no off card: the page is left');
+      assert.deepEqual(Object.values(s.sources).map((x) => x.status), ['absent', 'absent', 'absent']);
+    }
+    assert.equal(D.stateOf({ disabled: true }, PFLAGS, PEER_PAGE).state, 'off');
+    const switchedOff = D.stateOf(leadsResponse({ network: null }), PFLAGS, PEER_PAGE);
+    assert.deepEqual([switchedOff.state, switchedOff.reason, switchedOff.sources.network.status], ['off', null, 'absent'], 'p2p went off');
+    assert.equal(D.stateOf(historyResponse({ network: null }), FLAGS).state, 'ready', 'Discover never asks the network');
+    assert.equal(D.stateOf(leadsResponse(), PFLAGS, PEER_PAGE).state, 'ready');
+  });
+
   test('loading and failed', () => {
     const loading = D.stateOf(undefined, FLAGS);
     assert.equal(loading.state, 'loading');
     assert.deepEqual([loading.sources.library.status, loading.sources.network.status, loading.sources.peers.status], ['loading', 'absent', 'loading']);
-    const exploring = D.stateOf(undefined, FLAGS, { page: 'explore' });
-    assert.deepEqual([exploring.sources.library.status, exploring.sources.network.status, exploring.sources.peers.status], ['absent', 'loading', 'absent']);
-    assert.equal(D.stateOf(undefined, { ...FLAGS, discoveryP2p: false }, { page: 'explore' }).sources.network.status, 'absent');
+    const peerRecs = D.stateOf(undefined, PFLAGS, PEER_PAGE);
+    assert.equal(peerRecs.state, 'loading');
+    assert.deepEqual([peerRecs.sources.library.status, peerRecs.sources.network.status, peerRecs.sources.peers.status], ['absent', 'loading', 'absent']);
     const failed = collect(D.stateOf(null, FLAGS));
     assert.equal(failed.state, 'failed');
     assert.equal(failed.reason.key, 'dpage.state.failed');
     assert.equal(failed.sources.library.status, 'failed');
     assert.equal('tabs' in failed, false, 'no segmented tabs');
+    const peerFailed = D.stateOf(null, PFLAGS, PEER_PAGE);
+    assert.deepEqual([peerFailed.state, peerFailed.reason], ['failed', null], 'Peer Recommendations: "Try again" alone');
+    assert.deepEqual(peerFailed.sources.network, { status: 'failed', reason: null, count: 0 });
   });
 
   test('a random seed: the server asks no connected server, so no peers column while that call is out', () => {
@@ -2392,13 +2578,27 @@ describe('stateOf', () => {
     assert.equal(D.stateOf(D.mergeResponses(historyResponse(), undefined, true), FLAGS).sources.peers.status, 'loading', 'a history seed: still asking');
   });
 
-  test('ready: the play page draws library + peers, the explore page the network', () => {
-    const s = D.stateOf(merged(), FLAGS);
+  test('ready: the play page draws library + peers, Peer Recommendations the network', () => {
+    const s = D.stateOf(merged(), PFLAGS);
     assert.equal(s.state, 'ready');
     assert.equal(s.reason, null);
     assert.deepEqual(Object.entries(s.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'ready', 6], ['network', 'absent', 0], ['peers', 'ready', 3]]);
-    const explore = D.stateOf(merged(), FLAGS, { page: 'explore' });
-    assert.deepEqual(Object.entries(explore.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'absent', 0], ['network', 'ready', 3], ['peers', 'absent', 0]]);
+    const peerRecs = D.stateOf(merged(), PFLAGS, PEER_PAGE);
+    assert.deepEqual([peerRecs.state, peerRecs.reason], ['ready', null]);
+    assert.deepEqual(Object.entries(peerRecs.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'absent', 0], ['network', 'ready', 3], ['peers', 'absent', 0]]);
+  });
+
+  test('a random seed with a network section is ready on Peer Recommendations (leads off the pick, S6) — never "finish a few songs"', () => {
+    const random = { seedSource: 'random', fallback: true, seeds: [seed('r', 'R', 'A', { outcome: null })] };
+    const s = collect(D.stateOf(leadsResponse(random), PFLAGS, PEER_PAGE));
+    assert.deepEqual([s.state, s.reason, s.sources.network.status, s.sources.network.count], ['ready', null, 'ready', 3]);
+    const dropped = D.stateOf(leadsResponse({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }), PFLAGS, PEER_PAGE);
+    assert.equal(dropped.state, 'ready', 'every finished song dropped: still the leads');
+    const empty = collect(D.stateOf(leadsResponse({ ...random, network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'empty-shelf' } }), PFLAGS, PEER_PAGE));
+    assert.deepEqual([empty.state, empty.sources.network.why], ['ready', 'noPeers'], 'the network\'s own empty state');
+    const none = D.stateOf(leadsResponse({ ...random, network: null }), PFLAGS, PEER_PAGE);
+    assert.deepEqual([none.state, none.sources.network.status], ['nothingFinished', 'absent'], 'no section on a random answer (unreachable behind the gate): not off');
+    assert.equal(D.stateOf(merged(random, null), PFLAGS).state, 'nothingFinished', 'Discover unchanged');
   });
 
   test('scanPending: no seed analyzed — the sources wait, the seeds are listed', () => {
@@ -2414,7 +2614,13 @@ describe('stateOf', () => {
       assert.equal(s.sources[k].status, 'empty');
       assert.equal(s.sources[k].reason.key, 'dpage.source.waitingForScan');
     }
-    assert.equal(collect(D.stateOf(r, FLAGS, { page: 'explore' })).sources.network.reason.key, 'dpage.source.waitingForScan');
+    const peer = collect(D.stateOf(r, PFLAGS, PEER_PAGE));
+    assert.deepEqual([peer.state, peer.reason.key], ['scanPending', 'dpage.state.scanPending'], 'Discover\'s scan-pending card');
+    assert.deepEqual(peer.sources.network, { status: 'empty', why: 'scanPending', reason: { key: 'dpage.source.waitingForScan', params: {} }, count: 0 });
+    // the route's early answer: the section comes back empty with reason 'scan-pending'
+    const early = leadsResponse({ seeds: [seed('u1', 'U', 'A', { analyzed: false })], network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'scan-pending' } });
+    assert.equal(D.stateOf(early, PFLAGS, PEER_PAGE).state, 'scanPending', 'by the network\'s reason alone');
+    assert.equal(D.stateOf({ ...early, seedSource: 'random' }, PFLAGS, PEER_PAGE).state, 'scanPending', 'a random pick with no vector too');
   });
 
   test('nothingFinished: a random seed — or every finished song dropped', () => {
@@ -2424,7 +2630,6 @@ describe('stateOf', () => {
     assert.equal(s.reason.key, 'dpage.state.nothingFinished');
     assert.equal(s.sources.peers.status, 'absent', 'no fan-out for a random seed: not drawn');
     assert.equal(s.sources.library.status, 'ready');
-    assert.equal(D.stateOf(merged(random, null), FLAGS, { page: 'explore' }).sources.network.status, 'absent');
     const dropped = collect(D.stateOf(merged({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }, null), FLAGS));
     assert.equal(dropped.reason.key, 'dpage.state.allDropped');
     assert.equal(dropped.sources.peers.status, 'failed');
@@ -2438,10 +2643,23 @@ describe('stateOf', () => {
     assert.deepEqual(lib, { status: 'empty', count: 0, reason: { key: 'dpage.library.nothing', params: {} } });
   });
 
-  test('the network explains its emptiness (explore page)', () => {
-    const net = (searchedPeers) => collect(D.stateOf(merged({ network: { results: [], searched: { peers: searchedPeers, tracks: 0 } } }), FLAGS, { page: 'explore' })).sources.network;
-    assert.deepEqual([net(0).status, net(0).reason.key], ['empty', 'dpage.network.warmingUp']);
-    assert.equal(net(3).reason.key, 'dpage.network.nothingNew');
+  test('the network names its emptiness by the server\'s reason (Peer Recommendations) — no guess from the counts', () => {
+    const net = (reason, searchedPeers = 3) => collect(D.stateOf(leadsResponse({ network: { results: [], searched: { peers: searchedPeers, tracks: 0 }, reason } }), PFLAGS, PEER_PAGE));
+    const empty = (why, key) => ({ status: 'empty', why, reason: { key, params: {} }, count: 0 });
+    for (const reason of ['empty-shelf', 'no-compatible']) {
+      assert.deepEqual(net(reason, 0).sources.network, empty('noPeers', 'peerRecs.noPeers'), reason);
+      assert.equal(net(reason, 0).state, 'ready', 'the page draws the source\'s state');
+    }
+    for (const reason of ['nothing-new', null, undefined, 'something-later']) {
+      assert.deepEqual(net(reason).sources.network, empty('nothingNew', 'peerRecs.nothingNew'), String(reason));
+    }
+    assert.deepEqual(net('nothing-new', 0).sources.network, empty('nothingNew', 'peerRecs.nothingNew'), 'no peer searched is not "warming up" any more');
+    assert.deepEqual(net('not-on-shelf', 0).sources.network, { status: 'notOnShelf', reason: null, count: 0 }, 'the tab\'s peer left the shelf: back to All (R5)');
+    assert.deepEqual(net('error').sources.network, { status: 'failed', reason: null, count: 0 }, 'the walk failed: "Try again" alone');
+    assert.deepEqual(net('scan-pending', 0).sources.network.why, 'scanPending');
+    assert.deepEqual(net('empty-shelf').sources.network.status, 'empty');
+    const ready = collect(D.stateOf(leadsResponse({ network: { ...leadsResponse().network, reason: 'empty-shelf' } }), PFLAGS, PEER_PAGE)).sources.network;
+    assert.deepEqual(ready, { status: 'ready', reason: null, count: 3 }, 'rows win over a reason');
   });
 
   test('connected servers: none paired → not drawn; paired but nothing playable → the quiet line', () => {
@@ -2460,25 +2678,19 @@ describe('stateOf', () => {
     const noFed = D.stateOf(D.mergeResponses(historyResponse(), undefined, false), { ...FLAGS, federationDiscovery: false });
     assert.equal(noFed.sources.peers.status, 'absent');
     assert.equal(noFed.sources.network.status, 'absent', 'never on the play page');
+    const peerRecs = D.stateOf(leadsResponse({ network: undefined }), PFLAGS, PEER_PAGE);
+    assert.equal(peerRecs.sources.network.status, 'loading');
+    assert.equal(D.stateOf(leadsResponse(), PFLAGS, { page: 'nope' }).sources.network.status, 'absent', 'an unknown page is Discover');
   });
 });
 
 // ── prefs and option lists ────────────────────────────────────────────
 
 describe('option lists', () => {
-  test('the window options, the plug-in chips', () => {
+  test('the window options', () => {
     const w = collect(D.windowOptions(90));
     assert.deepEqual(w.map((o) => [o.value, o.label.key, o.selected]), [[7, 'dpage.window.days', false], [30, 'dpage.window.days', false], [90, 'dpage.window.days', true], [0, 'dpage.window.all', false]]);
     assert.equal(D.windowOptions('0')[3].selected, true, 'a stored string selects');
-    const list = [
-      { name: 'deezer', title: 'Deezer', capabilities: ['preview'] },
-      { name: 'youtube', title: 'YouTube', capabilities: ['acquire', 'lookup'] },
-      { name: 'links', title: '', capabilities: ['links'] },
-      { name: 'federation-copy', title: 'Copy', capabilities: ['acquire'] },
-    ];
-    assert.deepEqual(collect(D.pluginChips(list, true)).map((c) => [c.key, c.title]),
-      [['dpage.plugins.preview', 'Deezer'], ['dpage.plugins.getIt', 'YouTube'], ['dpage.plugins.links', 'links']]);
-    assert.deepEqual(D.pluginChips(list, false).map((c) => c.key), ['dpage.plugins.preview', 'dpage.plugins.links'], 'Get it needs jobs.allowed');
   });
 });
 
@@ -2506,8 +2718,17 @@ describe('every key the page emits has an English value', () => {
 
   test('every literal dpage key in the module', () => {
     const literals = [...new Set([...SOURCE.matchAll(/'(dpage\.[A-Za-z.]+[A-Za-z])'/g)].map((m) => m[1]))];
-    assert.ok(literals.length > 30, `found ${literals.length}`);
+    assert.ok(literals.length > 20, `found ${literals.length}`);
     for (const key of literals) { assert.ok(EN[key] !== undefined, `${key} missing from en.json`); }
+    assert.deepEqual(literals.filter((k) => /^dpage\.(network|plugins)\./.test(k)), [], 'the explore page\'s copy is not the model\'s');
+  });
+
+  test('Peer Recommendations: the module names its two empty states with the page\'s own keys, and nothing more', () => {
+    const literals = [...new Set([...SOURCE.matchAll(/'(peerRecs\.[A-Za-z.]+[A-Za-z])'/g)].map((m) => m[1]))];
+    assert.deepEqual(literals.sort(), ['peerRecs.noPeers', 'peerRecs.nothingNew']);
+    assert.equal(EN['peerRecs.noPeers'], 'No peers yet');
+    assert.equal(EN['peerRecs.nothingNew'], 'Nothing new');
+    assert.ok(EMITTED.some((l) => l.key === 'peerRecs.noPeers') && EMITTED.some((l) => l.key === 'peerRecs.nothingNew'), 'both drawn by the tests above');
   });
 
   test('the play-now copy, exactly', () => {

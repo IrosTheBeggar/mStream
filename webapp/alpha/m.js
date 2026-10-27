@@ -4110,7 +4110,10 @@ function discoveryPanel(opts) {
   const o = opts || {};
   const keep = !!o.keep;
   const v = discoveryView;
-  const page = DISCOVERYPAGE.PAGES.indexOf(o.page) !== -1 ? o.page : (keep ? v.page : 'play');
+  // 'explore' is no longer one of DISCOVERYPAGE.PAGES, but its draw code
+  // below still answers to it until Peer Recommendations' replaces it.
+  const known = DISCOVERYPAGE.PAGES.indexOf(o.page) !== -1 || o.page === 'explore';
+  const page = known ? o.page : (keep ? v.page : 'play');
   programState = [{ state: 'discovery' }];
   if (peerContext) {
     // Local-only: home first (switchServer draws this page again).
@@ -4935,7 +4938,7 @@ function discoveryThinBarHtml(b) {
 function discoveryLeadTag(r) {
   const badge = discoveryView.badges.get(r.raw) || null;
   if (badge) { return discoveryBadgeHtml(badge); }
-  return r.newArtistLabel ? `<span class="dpage-tag dpage-new">${escapeHtml(discoveryT(r.newArtistLabel))}</span>` : '';
+  return r.raw && r.raw.newArtist === true ? `<span class="dpage-tag dpage-new">${escapeHtml(t('dpage.network.newArtist'))}</span>` : '';
 }
 
 // What the recommendation window's match bar names: the seed this row was
@@ -4949,23 +4952,38 @@ function discoveryNetworkHtml(res, s) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   const net = D.networkRows(res);
-  const sub = [t('dpage.network.sub'), net.line ? discoveryT(net.line) : ''];
+  const searched = net.searched ? Number(net.searched.peers) || 0 : 0;
+  const sub = [t('dpage.network.sub'), net.searched ? t('dpage.network.searched', { count: searched }) : ''];
   if (s.status !== 'ready') {
-    return discoverySectionHtml('network', t('dpage.network.title'), sub, discoveryEmptyHtml(s));
+    // This page's own empty lines (the model's are Peer Recommendations').
+    const empty = s.status === 'empty' && s.why !== 'scanPending'
+      ? Object.assign({}, s, { reason: { key: s.why === 'noPeers' ? 'dpage.network.warmingUp' : 'dpage.network.nothingNew', params: {} } })
+      : s;
+    return discoverySectionHtml('network', t('dpage.network.title'), sub, discoveryEmptyHtml(empty));
   }
   const rows = net.rows;
   v.shown.network = rows;
   let body = '';
-  const chips = v.plugins && v.plugins.available ? D.pluginChips(v.plugins.list, v.plugins.jobsAllowed) : [];
+  // One chip per plug-in capability a lead can use (the peer copy is the
+  // connected servers'; Get it needs jobs.allowed).
+  const chips = [];
+  for (const p of v.plugins && v.plugins.available && Array.isArray(v.plugins.list) ? v.plugins.list : []) {
+    if (!p || !p.name || p.name === 'federation-copy') { continue; }
+    const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
+    const title = p.title || p.name;
+    if (caps.includes('preview')) { chips.push({ key: 'dpage.plugins.preview', title }); }
+    if (caps.includes('acquire') && v.plugins.jobsAllowed === true) { chips.push({ key: 'dpage.plugins.getIt', title }); }
+    if (caps.includes('links')) { chips.push({ key: 'dpage.plugins.links', title }); }
+  }
   if (chips.length) {
     body += `<div class="dpage-plugins"><span>${escapeHtml(t('dpage.network.pluginsOn'))}</span>${chips.map((c) =>
-      `<span class="dpage-plugin"><b>${escapeHtml(t(c.key, c.params))}</b> · ${escapeHtml(c.title)}</span>`).join('')}</div>`;
+      `<span class="dpage-plugin"><b>${escapeHtml(t(c.key))}</b> · ${escapeHtml(c.title)}</span>`).join('')}</div>`;
   }
   body += '<div class="dpage-rows">';
   const open = escapeHtml(t('dpage.verb.openLead'));
   rows.forEach((r, i) => {
     const badge = v.badges.get(r.raw) || null;
-    const rest = [r.album, r.year == null ? '' : String(r.year), r.onLabel ? discoveryT(r.onLabel) : ''].filter(Boolean).join(' · ');
+    const rest = [r.album, r.year == null ? '' : String(r.year), r.peerName ? t('dpage.network.onServer', { name: r.peerName }) : ''].filter(Boolean).join(' · ');
     body += `<div class="discover-row dpage-row pointer" data-dp="lead" data-i="${i}"${r.because ? ` title="${escapeHtml(discoveryT(r.because))}"` : ''}>
       ${discoveryArtHtml(null)}
       <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}</div><div class="dpage-slot" data-pslot="n${i}">${discoveryProgressHtml(badge)}</div></div>
