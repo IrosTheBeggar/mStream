@@ -222,6 +222,28 @@ const MSTREAMAPI = (() => {
   mstreamModule.discoveryP2pAdd = (endpointId) => {
     return statusReq('POST', 'api/v1/admin/discovery/p2p/peer-dbs/add', { endpointId });
   };
+  // An admin's form to turn the network on (the page's turnOn mode, plan
+  // §4.1 W7) — the admin panel's own routes. Each throws like req()
+  // (err.status, err.body.error = the server's words): 405 = the admin API
+  // is locked, 403 = not an admin, or outside the admin IP gate. No client
+  // timeout: the enable may first download the sidecar.
+  // The status: { enabled, binaryFound, binaryFetchable, serverName,
+  // serverDescription, … }.
+  mstreamModule.discoveryP2pAdminStatus = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/admin/discovery/p2p/status');
+  };
+  // On also turns discovery data collection on; 503 = no sidecar for this
+  // platform, 500 = it did not start (the flag rolled back).
+  mstreamModule.discoveryP2pSetEnabled = (enabled) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/admin/discovery/p2p/enabled', { enabled: enabled === true });
+  };
+  // The server's name and description on the network (p2p on only).
+  mstreamModule.discoveryP2pSetName = (name) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/admin/discovery/p2p/name', { name });
+  };
+  mstreamModule.discoveryP2pSetDescription = (description) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/admin/discovery/p2p/description', { description });
+  };
 
   // Plug-in jobs (acquire / hand-off) and the collection destination they
   // copy into. Unlike the calls above these THROW (req's err.status +

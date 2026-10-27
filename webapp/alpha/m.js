@@ -811,14 +811,10 @@ async function init() {
     // Admins get the "Invite <peer> to federate" row in the recommendation
     // modal. Identity lives on the layered /api/ endpoint (ping is a frozen
     // flat contract); a server without /api/ or a failed call = not admin,
-    // and the row simply never shows.
+    // and the row simply never shows (applyServerInfo).
     MSTREAMAPI.serverInfo()
-      .then((info) => {
-        const admin = !!(info && info.user && info.user.admin === true);
-        MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
-        VUEPLAYERCORE.setAdmin(admin);
-      })
-      .catch(() => { MSTREAMAPI.currentServer.admin = false; VUEPLAYERCORE.setAdmin(false); });
+      .then(applyServerInfo)
+      .catch(() => applyServerInfo(null));
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
@@ -4037,7 +4033,20 @@ function applyDiscoveryPing(response) {
     discoveryPlugins: r.discoveryPlugins === true,
   };
   discoverySetEntry(DISCOVERYPAGE.pageAvailable(discoveryView.flags));
-  peerRecsSetEntry(DISCOVERYPAGE.peerRecsAvailable(discoveryView.flags));
+  peerRecsSetEntry(peerRecsEntryNow() !== null);
+}
+
+// GET /api's identity, once it answers (init(), after the ping): an admin
+// or not — the Downloads panel's "All accounts", the window's invite row —
+// and whether the admin API answers (its `admin` object, absent while
+// lockAdmin is on): Peer Recommendations' turn-on form, so its nav row is
+// read again. null = no answer: neither.
+function applyServerInfo(info) {
+  const admin = !!(info && info.user && info.user.admin === true);
+  MSTREAMAPI.currentServer.admin = admin;
+  MSTREAMAPI.currentServer.adminApi = !!(info && info.admin);
+  VUEPLAYERCORE.setAdmin(admin);
+  peerRecsSetEntry(peerRecsEntryNow() !== null);
 }
 
 // The nav entry and the now-playing panel's "Discover page →" link
@@ -4158,8 +4167,13 @@ function discoveryPanel(opts) {
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
   }
   // Peer Recommendations' own part: its strip's poll, its preview, a
-  // fresh visit's batch and tab (where the server has the page at all).
-  if (page === 'peerRecs' && DISCOVERYPAGE.peerRecsAvailable(v.flags)) { peerRecsOpen(keep); }
+  // fresh visit's batch and tab (where the server has the page at all) —
+  // or, for an admin who can turn the network on, the form that does.
+  if (page === 'peerRecs' && DISCOVERYPAGE.peerRecsAvailable(v.flags)) {
+    peerRecsOpen(keep);
+  } else if (page === 'peerRecs' && peerRecsEntryNow() === 'turnOn') {
+    return peerRecsTurnOnOpen();
+  }
   // No answer yet: the page's own loading state (title row, skeletons).
   renderDiscovery();
   return redoDiscovery();
@@ -4469,6 +4483,8 @@ function discoveryHideHead() {
 function renderDiscovery() {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
+  // Peer Recommendations' turnOn mode: its own block, never the page's
+  if (v.page === 'peerRecs' && peerRecsView.turnOn) { peerRecsTurnOnDraw(); return; }
   const root = document.getElementById('filelist');
   const head = document.getElementById('dpage-head');
   const res = discoveryResponse();
@@ -5235,6 +5251,9 @@ function discoveryPick() {
 // endpointId. A poll or a clip event writes slots in place (data-*slot,
 // data-prec-strip), never the page: the strip's scroll and the keyboard's
 // control stay where they were.
+// With the network off, an admin who can turn it on gets the page in its
+// turnOn mode instead (plan §4.1 W7, peerRecsTurnOn*): one block — the
+// form that turns the network on — and none of the above.
 const peerRecsView = {
   visit: 0,           // one per open (and leave): an older visit's answers are dropped
   peers: null,        // the last peers answer (null: none yet)
@@ -5263,6 +5282,10 @@ const peerRecsView = {
   unwatchClip: null,
   unwatchGate: null,
   onVisible: null,    // the visibilitychange listener while the page is up
+  turnOn: null,       // the turnOn mode's block while it is up: { mode: 'loading' |
+                      // 'failed' | 'unavailable' | 'form', name, description (the
+                      // fields as typed), from (as the server had them), busy,
+                      // error (the server's words), acts (Turn on, as last written) }
 };
 
 const PREC_ICONS = { network: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5.5" r="2.2"/><circle cx="5.5" cy="17.5" r="2.2"/><circle cx="18.5" cy="17.5" r="2.2"/><path d="M10.9 7.4 6.6 15.6M13.1 7.4l4.3 8.2M7.7 17.5h8.6"/></svg>', plus: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>', alert: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 6v8"/><circle cx="12" cy="18" r="1.1" fill="currentColor"/></svg>', play: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', pause: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>', next: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6l9 6-9 6zM16.5 6H19v12h-2.5z"/></svg>', close: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
@@ -5273,11 +5296,31 @@ function peerRecsPanel() {
   return discoveryPanel({ page: 'peerRecs' });
 }
 
-// The nav row comes and goes with the ping's gate
-// (DISCOVERYPAGE.peerRecsAvailable). Nothing else links the page.
+// The nav row comes and goes with the ping's gate, and the turn-on form's
+// (peerRecsEntryNow). Nothing else links the page.
 function peerRecsSetEntry(on) {
   const nav = document.getElementById('nav-peer-recs');
   if (nav) { nav.classList.toggle('super-hide', !on); }
+}
+
+// Who is asking (DISCOVERYPAGE.peerRecsEntry's `who`): an admin, and
+// whether the admin API answers — both from GET /api (applyServerInfo);
+// neither until it lands.
+function peerRecsWho() {
+  const s = MSTREAMAPI.currentServer;
+  return { admin: s.admin === true, adminApi: s.adminApi === true };
+}
+
+// What the nav row opens as the flags and the account stand now: 'page',
+// 'turnOn' (the form) or null (no row).
+function peerRecsEntryNow() {
+  return DISCOVERYPAGE.peerRecsEntry(discoveryView.flags, peerRecsWho());
+}
+
+// Leave the page for the file explorer, when it is up (R7: no off card).
+function peerRecsExit() {
+  if (!peerRecsOnScreen()) { return; }
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
 }
 
 // The answers map's key for a tab.
@@ -5317,9 +5360,14 @@ function peerRecsOpen(keep) {
 
 // The page left (setBrowserRootPanel: another panel, or the page drawn
 // again): the poll stops, the clip ends — the main player plays again if
-// the clip paused it — and the band goes. Nothing when it was not up.
+// the clip paused it — and the band goes. The turnOn mode's block goes
+// too: an answer still out for it draws nothing. Nothing when it was not up.
 function peerRecsLeave() {
   const p = peerRecsView;
+  if (p.turnOn) {
+    p.turnOn = null;
+    p.visit++;
+  }
   if (!p.polling && !p.unwatchClip) { return; }
   p.visit++;
   p.polling = false;
@@ -5564,8 +5612,10 @@ function peerRecsShow(res) {
 // answer ('taste'), a 403 from the strip's poll ('peers') or from a
 // preview's resolve ('clip'). One re-ping (its flags are the app's from
 // now on): off, or no answer, hides the nav row and leaves the page for
-// the file explorer — there is no off card. Still on: a taste answer
-// draws "Try again"; the rest stays as it is.
+// the file explorer — there is no off card — unless the account can turn
+// the network on again: then the page becomes the form (its turnOn
+// mode). Still on: a taste answer draws "Try again"; the rest stays as it
+// is.
 async function peerRecsOff(source) {
   const p = peerRecsView;
   const v = discoveryView;
@@ -5577,21 +5627,196 @@ async function peerRecsOff(source) {
   } catch (_) { /* no answer: off */ }
   p.checking = false;
   if (r) { applyDiscoveryPing(r); }
-  if (r && DISCOVERYPAGE.peerRecsAvailable(v.flags)) {
+  const entry = r ? peerRecsEntryNow() : null;
+  if (entry === 'page') {
     if (source === 'taste') {
       v.main = null;
       if (peerRecsOnScreen()) { renderDiscovery(); }
     }
     return;
   }
-  peerRecsSetEntry(false);
-  if (peerRecsOnScreen()) {
-    changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+  if (entry === 'turnOn') {
+    if (peerRecsOnScreen()) { discoveryPanel({ page: 'peerRecs' }); }
+    return;
   }
+  peerRecsSetEntry(false);
+  peerRecsExit();
+}
+
+// The page's turnOn mode (plan §4.1 W7): an admin who can turn the network
+// on, with it off. No bar, strip, poll, clip or band: one block. The admin
+// status first — already on (turned on meanwhile): the page; refused (405:
+// the admin API is locked; 403: not from here): the row goes and so does
+// the page, as R7; no sidecar for this platform and none to fetch: one
+// line; else the form, with the name and the description the server has.
+// A status that did not come: "Try again".
+async function peerRecsTurnOnOpen() {
+  const p = peerRecsView;
+  const visit = ++p.visit;
+  // an ask still out (this page's, Discover's) is no answer for the block
+  ++discoveryView.seq;
+  p.turnOn = { mode: 'loading', name: '', description: '', from: { name: '', description: '' }, busy: false, error: '', acts: '' };
+  peerRecsTurnOnDraw();
+  let status = null;
+  let code = 200;
+  try {
+    status = await MSTREAMAPI.discoveryP2pAdminStatus();
+  } catch (err) {
+    code = (err && err.status) || 0;
+  }
+  // no admin API from here (the account's, whatever is up now): no form
+  if (code === 403 || code === 405) {
+    MSTREAMAPI.currentServer.adminApi = false;
+    peerRecsSetEntry(peerRecsEntryNow() !== null);
+    if (visit === p.visit) { peerRecsExit(); }
+    return;
+  }
+  if (visit !== p.visit) { return; }
+  const o = p.turnOn;
+  if (code !== 200 || !status || typeof status !== 'object') {
+    o.mode = 'failed';
+  } else if (status.enabled === true) {
+    return peerRecsTurnedOn(visit);
+  } else if (status.binaryFound !== true && status.binaryFetchable !== true) {
+    o.mode = 'unavailable';
+  } else {
+    const text = (x) => (typeof x === 'string' ? x : '');
+    o.from = { name: text(status.serverName), description: text(status.serverDescription) };
+    o.name = o.from.name;
+    o.description = o.from.description;
+    o.mode = 'form';
+  }
+  if (peerRecsOnScreen()) { peerRecsTurnOnDraw(); }
+}
+
+// The block, whole (renderDiscovery hands the page over while the mode is
+// up): no bar in the host; the keyboard's button put back when a draw
+// replaced it.
+function peerRecsTurnOnDraw() {
+  const o = peerRecsView.turnOn;
+  const root = document.getElementById('filelist');
+  if (!o || !root) { return; }
+  discoveryHideHead();
+  const refocus = discoveryFocusedSelector();
+  o.acts = peerRecsTurnOnActsHtml(o);
+  root.innerHTML = `<div class="dpage dpage-page-peerRecs prec-on-page"${o.mode === 'loading' ? ' aria-busy="true"' : ''}>${peerRecsTurnOnHtml(o)}</div>`;
+  const el = root.querySelector('.dpage');
+  if (el) {
+    el.addEventListener('click', onDiscoveryClick);
+    el.addEventListener('input', peerRecsTurnOnInput);
+    el.addEventListener('keydown', peerRecsTurnOnKey);
+  }
+  if (refocus) { discoveryRefocus(refocus); }
+}
+
+// The shares line; the collection line where the ping says collection is
+// off (turning the network on turns it on); the server's name and its
+// description; Turn on. Or the one line, or "Try again".
+function peerRecsTurnOnHtml(o) {
+  if (o.mode === 'loading') { return ''; }
+  if (o.mode === 'failed') {
+    return `<div class="prec-retry"><button type="button" class="dpage-btn" data-dp="precOnRetry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
+  }
+  if (o.mode === 'unavailable') {
+    return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.unavailable'))}</p></div>`;
+  }
+  const off = o.busy ? ' disabled' : '';
+  const field = (key, label, value, max) => `<label class="prec-on-field"><span class="prec-on-label">${escapeHtml(label)}</span>`
+    + `<input type="text" class="prec-on-input browser-default" data-prec-on="${key}" maxlength="${max}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false"${off}></label>`;
+  const collect = discoveryView.flags.discovery !== true ? `<p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.collection'))}</p>` : '';
+  return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.shares'))}</p>${collect}`
+    + field('name', t('peerRecs.turnOn.name'), o.name, 64)
+    + field('description', t('peerRecs.turnOn.description'), o.description, 180)
+    + `<div class="prec-on-acts" data-prec-on-slot="acts">${o.acts}</div></div>`;
+}
+
+// Turn on — shut while the fields are not what the server takes
+// (DISCOVERYPAGE.turnOnValid) and while it is turning on ("Turning on…") —
+// and the server's words under it when it refused.
+function peerRecsTurnOnActsHtml(o) {
+  const ok = !o.busy && DISCOVERYPAGE.turnOnValid(o);
+  const btn = `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${ok ? '' : ' disabled'}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
+  return o.error ? `${btn}<p class="prec-on-err" role="alert">${escapeHtml(o.error)}</p>` : btn;
+}
+
+// A field typed in: its value kept (the form is drawn from it), and Turn
+// on as the fields now stand — written in place, only when it changed.
+function peerRecsTurnOnInput(ev) {
+  const o = peerRecsView.turnOn;
+  const el = ev.target;
+  const key = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-prec-on') : null;
+  if (!o || o.mode !== 'form' || o.busy || (key !== 'name' && key !== 'description')) { return; }
+  o[key] = String(el.value == null ? '' : el.value);
+  const acts = peerRecsTurnOnActsHtml(o);
+  if (acts === o.acts) { return; }
+  o.acts = acts;
+  peerRecsWrite('[data-prec-on-slot="acts"]', acts);
+}
+
+// Enter in a field turns the network on, as Turn on does.
+function peerRecsTurnOnKey(ev) {
+  const el = ev.target;
+  if (ev.key !== 'Enter' || !el || typeof el.getAttribute !== 'function' || !el.getAttribute('data-prec-on')) { return; }
+  ev.preventDefault();
+  peerRecsTurnOnSubmit();
+}
+
+// Turn on: "Turning on…" and the fields shut, then POST enabled — no
+// client timeout: the server may fetch the sidecar first. Refused: the
+// server's own words under the button, the form back. On: the name and
+// the description, each only when the form changed it — a failure is a
+// warning (the network stays on) — then the page (peerRecsTurnedOn). A
+// page left meanwhile draws nothing; what was sent is still saved.
+async function peerRecsTurnOnSubmit() {
+  const p = peerRecsView;
+  const o = p.turnOn;
+  if (!o || o.mode !== 'form' || o.busy || !DISCOVERYPAGE.turnOnValid(o)) { return; }
+  const visit = p.visit;
+  const name = o.name.trim();
+  const description = o.description.trim();
+  o.busy = true;
+  o.error = '';
+  peerRecsTurnOnDraw();
+  try {
+    await MSTREAMAPI.discoveryP2pSetEnabled(true);
+  } catch (err) {
+    if (visit !== p.visit) { return; }
+    const said = err && err.body && typeof err.body.error === 'string' ? err.body.error.trim() : '';
+    o.busy = false;
+    o.error = said || t('peerRecs.tryAgain');
+    peerRecsTurnOnDraw();
+    discoveryRefocus('[data-dp="precTurnOn"]');
+    return;
+  }
+  const warn = (key) => iziToast.warning({ title: escapeHtml(t(key)), position: 'topCenter', timeout: 6000 });
+  if (name !== o.from.name.trim()) {
+    await MSTREAMAPI.discoveryP2pSetName(name).catch(() => warn('peerRecs.turnOn.nameNotSaved'));
+  }
+  if (description !== o.from.description.trim()) {
+    await MSTREAMAPI.discoveryP2pSetDescription(description).catch(() => warn('peerRecs.turnOn.descriptionNotSaved'));
+  }
+  return peerRecsTurnedOn(visit);
+}
+
+// The network is on (the form's, or the status said so): one re-ping —
+// its flags the app's from now on — then the page in its own mode, a
+// fresh visit and its first ask (R1). Not the page after it (no answer, or
+// a gate the network alone does not open): the row as the flags stand,
+// and the file explorer. A page left meanwhile draws nothing.
+async function peerRecsTurnedOn(visit) {
+  let r = null;
+  try {
+    r = await MSTREAMAPI.ping();
+  } catch (_) { /* no answer: the flags as they were */ }
+  if (r) { applyDiscoveryPing(r); }
+  if (visit !== peerRecsView.visit || !peerRecsOnScreen()) { return; }
+  if (peerRecsEntryNow() === 'page') { return discoveryPanel({ page: 'peerRecs' }); }
+  peerRecsExit();
 }
 
 // The page's own controls (discoveryAction hands them over): a strip tab
-// or "+", a row's open button or play icon, Preview all, Copy list.
+// or "+", a row's open button or play icon, Preview all, Copy list — and
+// the turnOn mode's Turn on and Try again.
 function peerRecsAction(act, el) {
   const p = peerRecsView;
   const i = Number(el.getAttribute('data-i'));
@@ -5610,6 +5835,10 @@ function peerRecsAction(act, el) {
     peerRecsPreviewAll();
   } else if (act === 'precCopy') {
     peerRecsCopyList();
+  } else if (act === 'precTurnOn') {
+    peerRecsTurnOnSubmit();
+  } else if (act === 'precOnRetry' && p.turnOn) {
+    peerRecsTurnOnOpen();
   }
 }
 

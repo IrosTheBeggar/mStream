@@ -108,7 +108,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
-  'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry',
+  'localIgnoreVPaths', 'applyDiscoveryPing', 'applyServerInfo', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryOnScreen', 'discoveryNowPlayingPath',
   'discoveryLocalChoices', 'discoverySaveLocalChoice', 'discoveryPanel', 'redoDiscovery', 'redoDiscoveryPeers', 'discoveryOff',
@@ -232,7 +232,15 @@ function locatePath(html, path) {
 //   destination   MSTREAMAPI.discoveryDestination's `destination`
 //   admin         MSTREAMAPI.currentServer.admin
 //   clipboard     false: navigator.clipboard.writeText refuses
-function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false, peerArtUrl = null, compressArt = false, peers = null, add = null, destination = null, admin = false, clipboard = true } = {}) {
+// Its turnOn mode (W7):
+//   adminApi      MSTREAMAPI.currentServer.adminApi (GET /api's admin object)
+//   adminStatus() MSTREAMAPI.discoveryP2pAdminStatus: an answer (or a
+//                 promise); throw { status, body } for a refusal. Without
+//                 it: a 404
+//   setEnabled(enabled), setName(name), setDescription(description)
+//                 the POSTs' answers, the same way. Without them: ok
+//   tr            t() (default: the key echoed)
+function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false, peerArtUrl = null, compressArt = false, peers = null, add = null, destination = null, admin = false, clipboard = true, adminApi = false, adminStatus = null, setEnabled = null, setName = null, setDescription = null, tr = tStub } = {}) {
   const els = new Map();
   // the delegated handlers, by the root ('filelist' | 'dpage-head' |
   // 'dpage-band') whose drawn .dpage (the band's .prec-band) took them: a
@@ -369,6 +377,16 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
   const clipResults = {};
   const gateWatchers = [];
   const clipSnap = () => ({ ...clip, live: LIVE.includes(clip.status) });
+  // VUEPLAYERCORE.setAdmin's calls (applyServerInfo)
+  const adminSet = [];
+  // an admin call's answer: fn's value or promise, its throw a rejection
+  const answerOf = (fn, args, fallback) => {
+    try {
+      return fn ? Promise.resolve(fn(...args)) : fallback();
+    } catch (err) {
+      return Promise.reject(err);
+    }
+  };
   const clipEmit = (type, extra) => {
     const ev = { type, key: clip.key, state: clipSnap(), ...(extra || {}) };
     for (const fn of clipWatchers.slice()) { fn(ev); }
@@ -434,7 +452,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       setItem: (k, v) => { storage.set(k, String(v)); },
     },
     MSTREAMAPI: {
-      currentServer: { host: 'http://host/', token: 'TOK', admin },
+      currentServer: { host: 'http://host/', token: 'TOK', admin, adminApi },
       discoveryTaste: (body) => { calls.push({ name: 'taste', body }); return Promise.resolve(taste(body)); },
       ping: () => { calls.push({ name: 'ping' }); return ping ? Promise.resolve(ping) : Promise.reject(new Error('no ping')); },
       discoveryJobLookupBatch: (recs) => { calls.push({ name: 'lookup', body: recs }); return lookup ? Promise.resolve(lookup(recs)) : Promise.reject(new Error('no lookup')); },
@@ -448,6 +466,13 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       },
       discoveryP2pAdd: (endpointId) => { calls.push({ name: 'add', endpointId }); return Promise.resolve(add ? add(endpointId) : { status: 0, body: null }); },
       discoveryDestination: () => { calls.push({ name: 'destination' }); return Promise.resolve({ destination }); },
+      discoveryP2pAdminStatus: () => {
+        calls.push({ name: 'adminStatus' });
+        return answerOf(adminStatus, [], () => Promise.reject(Object.assign(new Error('no route'), { status: 404 })));
+      },
+      discoveryP2pSetEnabled: (enabled) => { calls.push({ name: 'setEnabled', enabled }); return answerOf(setEnabled, [enabled], () => Promise.resolve({ enabled })); },
+      discoveryP2pSetName: (name) => { calls.push({ name: 'setName', value: name }); return answerOf(setName, [name], () => Promise.resolve({ announced: false })); },
+      discoveryP2pSetDescription: (description) => { calls.push({ name: 'setDescription', value: description }); return answerOf(setDescription, [description], () => Promise.resolve({ announced: false })); },
       peerArtUrl: peerArtUrl || ((id, art, compress) => `http://host/peer/${id}/art/${art}?c=${compress}`),
       peer: {
         albumSongs: (id, body) => { calls.push({ name: 'peerAlbumSongs', id, body }); return albumSongs ? Promise.resolve(albumSongs(id, body)) : Promise.reject(new Error('no album')); },
@@ -469,6 +494,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
         return () => { w.live = false; };
       },
       refreshDiscoverJobs: () => Promise.resolve([]),
+      setAdmin: (on) => { adminSet.push(on); },
       watchKeepGate: (fn) => { gateWatchers.push(fn); return () => { const at = gateWatchers.indexOf(fn); if (at !== -1) { gateWatchers.splice(at, 1); } }; },
       clipToggle: (raw) => {
         clipCalls.push(['toggle', raw]);
@@ -503,7 +529,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     DISCOVERJOBS,
     PEERRECS,
     iziToast: { success: (o) => toasts.push(o), warning: (o) => toasts.push(o), info: (o) => toasts.push({ ...o, info: true }), error: (o) => toasts.push({ ...o, error: true }), show: (o) => toasts.push(o) },
-    t: tStub,
+    t: tr,
     getLoadingSvg: () => 'LOADING',
     sonicPathHideBanner: () => {},
     switchServer: () => { throw new Error('switchServer should not run on the local server'); },
@@ -634,7 +660,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     off: () => { clipStop('reset'); clipEmit('reset'); clipEmit('off'); },
     main: () => { clipStop('main'); },
   };
-  return { S, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer };
+  return { S, dispatch, locate, adminSet, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -3789,5 +3815,504 @@ describe('Peer Recommendations: wiring', () => {
     assert.match(touch, /\.prec-play::before, \.prec-band-toggle::before \{ content: ''; position: absolute; inset: -8px; \}/, '28 + 2 × 8 = 44');
     assert.match(touch, /\.prec-band-icon \{ width: 44px; height: 44px; \}/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\.prec-adding \.prec-circle::after/);
+  });
+});
+
+// ── W7: turn the network on (docs/peer-recommendations-plan.md §4.1 W7) ──
+// With p2p off, an admin whose admin API answers (GET /api's admin object:
+// lockAdmin off) gets the nav row, and the page is the form that turns the
+// network on. The admin status as src/api/admin.js answers it.
+const ON_STATUS = (over = {}) => ({
+  enabled: false, binaryFound: true, binaryFetchable: true, running: false, endpointId: null, ticket: null, joined: false, neighbors: 0,
+  knownPeers: 0, serverName: 'Kitchen <Radio>', serverDescription: 'Late & "loud"', ...over,
+});
+const OFF_FLAGS = { ...PR_FLAGS, discoveryP2p: false };
+const OFF_PING = { discovery: true, discoveryTaste: 2, discoveryP2p: false, discoveryP2pPeers: 1 };
+const ON_PING = { ...OFF_PING, discoveryP2p: true };
+const refused = (status, error) => Object.assign(new Error(`HTTP ${status}`), { status, body: error === undefined ? null : { error } });
+// an admin, the network off, the re-ping finding it on
+const onBox = (extra = {}) => prBox({ flags: OFF_FLAGS, admin: true, adminApi: true, adminStatus: () => ON_STATUS(), ping: ON_PING, ...extra });
+const callNames = (calls) => calls.map((c) => c.name);
+const fieldOf = (html, key) => findDrawn(html, { 'data-prec-on': key }, 'input');
+const turnOnBtn = (html) => findDrawn(html, { 'data-dp': 'precTurnOn' });
+// A field typed in (the drawn input's own input event) and Enter in it.
+const typeIn = (box, key, value) => {
+  box.locate({ 'data-prec-on': key }, 'input', ['filelist']);
+  box.dispatch('filelist', 'input', { target: { value, getAttribute: (n) => (n === 'data-prec-on' ? key : null) } });
+};
+const enterIn = (box, key) => {
+  box.locate({ 'data-prec-on': key }, 'input', ['filelist']);
+  let prevented = false;
+  box.dispatch('filelist', 'keydown', { key: 'Enter', preventDefault: () => { prevented = true; }, target: { getAttribute: (n) => (n === 'data-prec-on' ? key : null) } });
+  return prevented;
+};
+const settle = async () => { for (let i = 0; i < 8; i++) { await flush(); } };
+
+describe('W7: the nav row per role while the network is off', () => {
+  test('a member: no row; an admin whose admin API answers: the row; a locked admin: no row — read again when GET /api lands', () => {
+    const { S, els, api, adminSet } = makeSandbox({ taste: answer });
+    const row = () => !els.get('nav-peer-recs').classList.contains('super-hide');
+    S.applyDiscoveryPing(OFF_PING);
+    assert.equal(row(), false, 'before GET /api: nobody is an admin yet');
+    S.applyServerInfo({ user: { admin: true }, admin: { version: '6.30.0' } });
+    assert.equal(row(), true, 'an admin, lockAdmin off');
+    assert.deepEqual([api.currentServer.admin, api.currentServer.adminApi, adminSet.at(-1)], [true, true, true]);
+    S.applyServerInfo({ user: { admin: true } });
+    assert.equal(row(), false, 'a locked admin API: user.admin with no admin object');
+    assert.deepEqual([api.currentServer.admin, api.currentServer.adminApi], [true, false]);
+    S.applyServerInfo({ user: { admin: false }, admin: {} });
+    assert.equal(row(), false, 'a member');
+    S.applyServerInfo(null);
+    assert.equal(row(), false, 'no answer');
+    assert.deepEqual([api.currentServer.admin, api.currentServer.adminApi, adminSet.at(-1)], [false, false, false]);
+    S.applyDiscoveryPing(ON_PING);
+    assert.equal(row(), true, 'the network on: the page, for a member too');
+  });
+
+  test('the ping and GET /api in either order; collection off does not hide the admin\'s row (turning on turns it on)', () => {
+    const { S, els } = makeSandbox({ taste: answer });
+    const row = () => !els.get('nav-peer-recs').classList.contains('super-hide');
+    S.applyServerInfo({ user: { admin: true }, admin: {} });
+    S.applyDiscoveryPing({ ...OFF_PING, discovery: false });
+    assert.equal(row(), true);
+    assert.ok(els.get('nav-discover').classList.contains('super-hide'), 'Discover keeps its own gate');
+    for (const off of [{ discoveryTaste: 1 }, { discoveryP2pPeers: 0 }, { discoveryP2pPeers: undefined }]) {
+      S.applyDiscoveryPing({ ...OFF_PING, ...off });
+      assert.equal(row(), false, `an older server: ${JSON.stringify(off)}`);
+    }
+    S.applyDiscoveryPing({ ...OFF_PING, discoveryTaste: '2', discoveryP2pPeers: '1' });
+    assert.equal(row(), true, 'numeric strings count');
+  });
+
+  test('init() hands GET /api to applyServerInfo, a failure as null', () => {
+    assert.match(SRC, /\n {4}MSTREAMAPI\.serverInfo\(\)\n {6}\.then\(applyServerInfo\)\n {6}\.catch\(\(\) => applyServerInfo\(null\)\);\n/);
+  });
+
+  test('a member or a locked admin with the network off: the page asks nothing', async () => {
+    for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }]) {
+      const box = onBox(who);
+      await openPage(box);
+      assert.deepEqual(callNames(box.calls), [], JSON.stringify(who));
+      assert.ok(!box.S.html().includes('data-prec-on'));
+    }
+  });
+});
+
+describe('W7: opening the page as an admin with the network off', () => {
+  test('the form: the shares line, the server\'s name and description (escaped, 64 / 180), Turn on — no bar, strip, poll, clip or band', async () => {
+    const box = onBox();
+    await openPage(box);
+    const { S, calls, els, clip, title } = box;
+    assert.deepEqual(callNames(calls), ['adminStatus'], 'the status alone: no taste call, no peers poll, no plug-in read');
+    assert.deepEqual(S.state(), [{ state: 'peerRecs' }]);
+    assert.equal(title.innerHTML, 'panel.peerRecs');
+    const html = S.html();
+    assert.match(html, /^<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-on"><p class="prec-on-text">peerRecs\.turnOn\.shares<\/p><label class="prec-on-field">/);
+    assert.ok(!html.includes('peerRecs.turnOn.collection'), 'collection is on: no collection line');
+    const name = fieldOf(html, 'name');
+    const desc = fieldOf(html, 'description');
+    assert.deepEqual([name.attrs.value, name.attrs.maxlength, name.attrs.type], ['Kitchen <Radio>', '64', 'text']);
+    assert.deepEqual([desc.attrs.value, desc.attrs.maxlength], ['Late & "loud"', '180']);
+    assert.ok(html.includes('value="Kitchen &lt;Radio&gt;"') && html.includes('value="Late &amp; &quot;loud&quot;"'), 'escaped');
+    for (const f of [name, desc]) {
+      assert.ok(f.attrs.class.split(' ').includes('browser-default'), 'no materialize field');
+      assert.equal('disabled' in f.attrs, false);
+    }
+    assert.ok(html.indexOf('peerRecs.turnOn.name') < html.indexOf('data-prec-on="name"') && html.indexOf('data-prec-on="name"') < html.indexOf('peerRecs.turnOn.description'));
+    const btn = turnOnBtn(html);
+    assert.equal('disabled' in btn.attrs, false, 'the prefilled form is valid');
+    assert.match(html, /<div class="prec-on-acts" data-prec-on-slot="acts"><button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn">peerRecs\.turnOn\.button<\/button><\/div><\/div><\/div>$/);
+    for (const gone of ['data-prec-strip', 'data-aslot', 'dpage-bar', 'data-dp="refresh"', 'prec-songs', 'peerRecs.turnOn.unavailable', 'prec-on-err', '<h']) {
+      assert.ok(!html.includes(gone), gone);
+    }
+    assert.equal(S.head(), '');
+    assert.ok(els.get('dpage-head').classList.contains('super-hide'), 'no bar in the host');
+    assert.ok(els.get('dpage-band').classList.contains('super-hide'));
+    assert.deepEqual(clip.calls, [], 'no clip reset, nothing watched');
+    assert.equal(clip.watchers.length, 0);
+    assert.equal(box.liveTimers().length, 0, 'no poll');
+    assert.equal(box.docListeners.length, 0);
+  });
+
+  test('the collection line only where the ping says collection is off', async () => {
+    const box = onBox({ flags: { ...OFF_FLAGS, discovery: false } });
+    await openPage(box);
+    assert.match(box.S.html(), /<p class="prec-on-text">peerRecs\.turnOn\.shares<\/p><p class="prec-on-text">peerRecs\.turnOn\.collection<\/p><label/);
+  });
+
+  test('no sidecar for this platform and none to fetch: the one line; either one: the form', async () => {
+    const none = onBox({ adminStatus: () => ON_STATUS({ binaryFound: false, binaryFetchable: false }) });
+    await openPage(none);
+    assert.equal(none.S.html(), '<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-on"><p class="prec-on-text">peerRecs.turnOn.unavailable</p></div></div>');
+    for (const over of [{ binaryFound: false, binaryFetchable: true }, { binaryFound: true, binaryFetchable: false }]) {
+      const box = onBox({ adminStatus: () => ON_STATUS(over) });
+      await openPage(box);
+      assert.ok(fieldOf(box.S.html(), 'name'), JSON.stringify(over));
+      assert.ok(!box.S.html().includes('peerRecs.turnOn.unavailable'));
+    }
+  });
+
+  test('refused — 403 (no admin rights from here) or 405 (the admin API locked): the row goes, and so does the page', async () => {
+    for (const status of [403, 405]) {
+      const box = onBox({ adminStatus: () => { throw refused(status, status === 405 ? 'Admin API Disabled' : 'Admin access required'); } });
+      box.els.get('nav-peer-recs').classList.remove('super-hide');
+      await openPage(box);
+      assert.equal(box.api.currentServer.adminApi, false, `${status}`);
+      assert.ok(box.els.get('nav-peer-recs').classList.contains('super-hide'), `${status}: the row goes`);
+      assert.equal(box.views.at(-1), box.explorer, `${status}: the file explorer`);
+      assert.deepEqual(callNames(box.calls), ['adminStatus'], 'no re-ping, nothing else');
+      box.S.applyDiscoveryPing(OFF_PING);
+      assert.ok(box.els.get('nav-peer-recs').classList.contains('super-hide'), 'a later ping keeps it gone');
+    }
+  });
+
+  test('already on (turned on meanwhile): one re-ping, then the page — its first ask (R1)', async () => {
+    const box = onBox({ adminStatus: () => ON_STATUS({ enabled: true }) });
+    await openPage(box);
+    await settle();
+    const names = callNames(box.calls);
+    assert.deepEqual(names.slice(0, 2), ['adminStatus', 'ping']);
+    assert.equal(names.filter((n) => n === 'ping').length, 1);
+    assert.equal(box.S.view.flags.discoveryP2p, true);
+    assert.deepEqual(tasteCalls(box.calls), [{
+      sources: ['network'], window: 30, pin: ['music/Now/Playing.flac'], newArtistsOnly: false, ignoreVPaths: [],
+      limit: { seeds: 12, network: 32 }, networkOnRandomSeed: true,
+    }]);
+    assert.equal(peersCalls(box.calls), 1);
+    assert.equal(drawnRows(box.S.html()).length, 5);
+    assert.equal(box.S.prec.turnOn, null);
+  });
+
+  test('already on, but the re-ping does not open the page (no answer): no loop — the file explorer', async () => {
+    const box = onBox({ adminStatus: () => ON_STATUS({ enabled: true }), ping: null });
+    await openPage(box);
+    await settle();
+    assert.deepEqual(callNames(box.calls), ['adminStatus', 'ping']);
+    assert.equal(box.views.at(-1), box.explorer);
+  });
+
+  test('a status that did not come: "Try again" alone — it asks the status again', async () => {
+    let fail = true;
+    const box = onBox({ adminStatus: () => { if (fail) { throw refused(500); } return ON_STATUS(); } });
+    await openPage(box);
+    assert.equal(box.S.html(), '<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-retry"><button type="button" class="dpage-btn" data-dp="precOnRetry">dpage.verb.tryAgain</button></div></div>');
+    fail = false;
+    box.click({ 'data-dp': 'precOnRetry' });
+    await settle();
+    assert.deepEqual(callNames(box.calls), ['adminStatus', 'adminStatus']);
+    assert.ok(fieldOf(box.S.html(), 'name'));
+  });
+
+  test('while the status is out: an empty block, busy', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const box = onBox({ adminStatus: () => gate.then(() => ON_STATUS()) });
+    const run = box.S.peerRecsPanel();
+    assert.equal(box.S.html(), '<div class="dpage dpage-page-peerRecs prec-on-page" aria-busy="true"></div>');
+    release();
+    await run;
+    assert.ok(fieldOf(box.S.html(), 'name'));
+  });
+});
+
+describe('W7: the form', () => {
+  test('Turn on is shut while the fields are not what the server takes — written in place, never the whole block', async () => {
+    const box = onBox();
+    await openPage(box);
+    const { S, writes } = box;
+    const renders = box.renders();
+    const shut = () => 'disabled' in turnOnBtn(S.html()).attrs;
+    const steps = [
+      ['name', '', true], ['name', '   ', true], ['name', 'x'.repeat(65), true], ['name', 'x'.repeat(64), false],
+      ['name', 'a|b', true], ['name', 'Ünïcödé 台所', false], ['description', 'd'.repeat(181), true], ['description', 'd'.repeat(180), false],
+      ['description', 'tab\there', true], ['description', '', false],
+    ];
+    for (const [key, value, closed] of steps) {
+      typeIn(box, key, value);
+      assert.equal(shut(), closed, `${key} = ${JSON.stringify(value).slice(0, 20)}`);
+    }
+    assert.equal(box.renders(), renders, 'no whole-block draw while typing');
+    assert.ok(writes.length > 0 && writes.every((w) => w.root === 'filelist' && w.path.join() === '[data-prec-on-slot="acts"]'));
+    const n = writes.length;
+    typeIn(box, 'description', 'still fine');
+    assert.equal(writes.length, n, 'Turn on unchanged: nothing written');
+    assert.equal(fieldOf(S.html(), 'name').attrs.value, 'Kitchen <Radio>', 'the fields are the browser\'s: never redrawn under the caret');
+    typeIn(box, 'name', '');
+    box.click({ 'data-dp': 'precTurnOn' });
+    assert.equal(enterIn(box, 'name'), true, 'Enter is the form\'s');
+    await settle();
+    assert.ok(!callNames(box.calls).includes('setEnabled'), 'shut: neither a click nor Enter turns it on');
+  });
+
+  test('Turn on: "Turning on…" and the fields shut, POST enabled once — then the name (trimmed) only when changed, a re-ping, and the page\'s first ask', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const box = onBox({ setEnabled: () => gate.then(() => ({ enabled: true })) });
+    await openPage(box);
+    typeIn(box, 'name', '  Attic Tapes  ');
+    box.click({ 'data-dp': 'precTurnOn' });
+    await flush();
+    const busy = box.S.html();
+    const btn = turnOnBtn(busy);
+    assert.ok('disabled' in btn.attrs);
+    assert.ok(busy.includes('>peerRecs.turnOn.busy</button>'));
+    assert.ok('disabled' in fieldOf(busy, 'name').attrs && 'disabled' in fieldOf(busy, 'description').attrs, 'the fields shut');
+    assert.equal(fieldOf(busy, 'name').attrs.value, '  Attic Tapes  ', 'as typed');
+    box.click({ 'data-dp': 'precTurnOn' });
+    await flush();
+    assert.deepEqual(box.calls.filter((c) => c.name === 'setEnabled'), [{ name: 'setEnabled', enabled: true }], 'once, enabled: true');
+    release();
+    await settle();
+    const names = callNames(box.calls);
+    assert.deepEqual(names.slice(0, 4), ['adminStatus', 'setEnabled', 'setName', 'ping'], 'the name, then the re-ping');
+    assert.deepEqual(box.calls.find((c) => c.name === 'setName').value, 'Attic Tapes', 'trimmed');
+    assert.ok(!names.includes('setDescription'), 'the description was not changed');
+    assert.equal(box.S.view.flags.discoveryP2p, true, 'the re-ping\'s flags');
+    assert.equal(tasteCalls(box.calls).length, 1, 'the page\'s first ask');
+    assert.deepEqual(tasteCalls(box.calls)[0].limit, { seeds: 12, network: 32 });
+    assert.equal(peersCalls(box.calls), 1);
+    assert.equal(drawnRows(box.S.html()).length, 5, 'the page, in its own mode');
+    assert.ok(!box.S.html().includes('data-prec-on'));
+    assert.equal(box.S.prec.turnOn, null);
+    assert.ok(!box.els.get('nav-peer-recs').classList.contains('super-hide'));
+  });
+
+  test('only what changed is sent: the description alone, a cleared description, a name only re-spaced', async () => {
+    for (const [edits, sent] of [
+      [[['description', 'New blurb ']], [['setDescription', 'New blurb']]],
+      [[['description', '   ']], [['setDescription', '']]],
+      [[['name', ' Kitchen <Radio> ']], []],
+      [[['name', 'Attic'], ['description', 'Tapes']], [['setName', 'Attic'], ['setDescription', 'Tapes']]],
+    ]) {
+      const box = onBox();
+      await openPage(box);
+      for (const [key, value] of edits) { typeIn(box, key, value); }
+      box.click({ 'data-dp': 'precTurnOn' });
+      await settle();
+      assert.deepEqual(box.calls.filter((c) => c.name === 'setName' || c.name === 'setDescription').map((c) => [c.name, c.value]), sent, JSON.stringify(edits));
+      assert.equal(tasteCalls(box.calls).length, 1);
+    }
+  });
+
+  test('Enter in a field turns it on, as the button does', async () => {
+    const box = onBox();
+    await openPage(box);
+    typeIn(box, 'description', 'Night radio');
+    assert.equal(enterIn(box, 'description'), true);
+    await settle();
+    assert.deepEqual(callNames(box.calls).slice(0, 4), ['adminStatus', 'setEnabled', 'setDescription', 'ping']);
+  });
+
+  test('refused: the server\'s words on one line under the button, escaped — the form back as typed, the keyboard on Turn on', async () => {
+    const said = 'failed to start the discovery network: <b>sidecar</b> & "co" <img src=x onerror=alert(1)>';
+    const box = onBox({ setEnabled: () => { throw refused(500, said); } });
+    await openPage(box);
+    typeIn(box, 'name', 'Attic');
+    box.click({ 'data-dp': 'precTurnOn' });
+    await settle();
+    const html = box.S.html();
+    assert.ok(html.includes('<p class="prec-on-err" role="alert">failed to start the discovery network: &lt;b&gt;sidecar&lt;&#x2F;b&gt; &amp; &quot;co&quot; &lt;img src&#x3D;x onerror&#x3D;alert(1)&gt;</p>'));
+    assert.ok(!html.includes('<b>') && !html.includes('<img'), 'markup in the error stays text');
+    assert.equal(tagsOf(html).filter((el) => el.attrs.class === 'prec-on-err').length, 1, 'one line');
+    assert.ok(html.indexOf('data-dp="precTurnOn"') < html.indexOf('prec-on-err'), 'under the button');
+    const btn = turnOnBtn(html);
+    assert.equal('disabled' in btn.attrs, false);
+    assert.ok(html.includes('>peerRecs.turnOn.button</button>'));
+    assert.equal(fieldOf(html, 'name').attrs.value, 'Attic', 'as typed');
+    assert.equal('disabled' in fieldOf(html, 'name').attrs, false);
+    assert.equal(box.focused.at(-1), 'precTurnOn');
+    assert.deepEqual(callNames(box.calls), ['adminStatus', 'setEnabled'], 'no name, no re-ping, no page');
+    // the line stays while typing; the next press clears it
+    typeIn(box, 'name', 'Attic Tapes');
+    assert.ok(box.S.html().includes('prec-on-err'));
+    box.click({ 'data-dp': 'precTurnOn' });
+    assert.ok(!box.S.html().includes('prec-on-err'), 'the next press clears it');
+    assert.ok(box.S.html().includes('>peerRecs.turnOn.busy</button>'));
+    await settle();
+    assert.ok(box.S.html().includes('prec-on-err'), 'refused again');
+    assert.equal(box.calls.filter((c) => c.name === 'setEnabled').length, 2);
+  });
+
+  test('a 503 (no sidecar to fetch) says the server\'s words too; no words at all: "Try again"', async () => {
+    const no = onBox({ setEnabled: () => { throw refused(503, 'the p2p-sidecar binary is missing for this platform'); } });
+    await openPage(no);
+    no.click({ 'data-dp': 'precTurnOn' });
+    await settle();
+    assert.ok(no.S.html().includes('<p class="prec-on-err" role="alert">the p2p-sidecar binary is missing for this platform</p>'));
+    for (const err of [refused(0), refused(502), refused(500, '   '), new TypeError('Failed to fetch')]) {
+      const box = onBox({ setEnabled: () => { throw err; } });
+      await openPage(box);
+      box.click({ 'data-dp': 'precTurnOn' });
+      await settle();
+      assert.ok(box.S.html().includes('<p class="prec-on-err" role="alert">peerRecs.tryAgain</p>'), String(err.message));
+    }
+  });
+
+  test('the name or the description not saved: a warning each, escaped — the network stays on and the page opens', async () => {
+    const EN = JSON.parse(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8'));
+    const tr = (k, p) => (k.startsWith('peerRecs.turnOn.') && typeof EN[k] === 'string' ? EN[k] : tStub(k, p));
+    const box = onBox({ tr, setName: () => { throw refused(400, 'name: <bad>'); }, setDescription: () => Promise.reject(refused(500)) });
+    await openPage(box);
+    typeIn(box, 'name', 'Attic');
+    typeIn(box, 'description', 'Tapes');
+    box.click({ 'data-dp': 'precTurnOn' });
+    await settle();
+    const esc = (s) => s.replace(/'/g, '&#39;');
+    assert.deepEqual(box.toasts.map((x) => x.title), [esc(EN['peerRecs.turnOn.nameNotSaved']), esc(EN['peerRecs.turnOn.descriptionNotSaved'])]);
+    assert.ok(box.toasts.every((x) => !x.error && !x.info), 'warnings');
+    assert.ok(box.toasts.every((x) => !JSON.stringify(x).includes('<bad>')), 'the server\'s words are not toasted');
+    assert.equal(tasteCalls(box.calls).length, 1, 'the page opens');
+  });
+
+  test('leaving while it turns on: the answer draws nothing — what was sent is still saved, the flags still read', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const box = onBox({ setEnabled: () => gate.then(() => ({ enabled: true })) });
+    await openPage(box);
+    typeIn(box, 'name', 'Attic');
+    box.click({ 'data-dp': 'precTurnOn' });
+    await flush();
+    box.S.setState([{ state: 'allAlbums' }]);
+    box.S.setBrowserRootPanel('panel.albums');
+    box.els.get('filelist').innerHTML = 'ALBUMS';
+    const renders = box.renders();
+    const views = box.views.length;
+    release();
+    await settle();
+    assert.equal(box.S.html(), 'ALBUMS');
+    assert.equal(box.renders(), renders, 'nothing drawn over the albums');
+    assert.equal(box.views.length, views, 'no panel change');
+    assert.equal(tasteCalls(box.calls).length, 0);
+    assert.deepEqual(callNames(box.calls), ['adminStatus', 'setEnabled', 'setName', 'ping'], 'the name saved, the flags read');
+    assert.ok(!box.els.get('nav-peer-recs').classList.contains('super-hide'));
+  });
+
+  test('leaving while it is refused, or while the status is out: nothing drawn', async () => {
+    let refuse;
+    const gate = new Promise((_, r) => { refuse = r; });
+    const box = onBox({ setEnabled: () => gate });
+    await openPage(box);
+    box.click({ 'data-dp': 'precTurnOn' });
+    await flush();
+    box.S.setState([{ state: 'allAlbums' }]);
+    box.S.setBrowserRootPanel('panel.albums');
+    box.els.get('filelist').innerHTML = 'ALBUMS';
+    refuse(refused(500, 'no'));
+    await settle();
+    assert.equal(box.S.html(), 'ALBUMS');
+    for (const [label, answer] of [['the form', () => ON_STATUS()], ['a 405', () => { throw refused(405); }], ['already on', () => ON_STATUS({ enabled: true })]]) {
+      let release;
+      const slow = new Promise((r) => { release = r; });
+      const left = onBox({ adminStatus: () => slow.then(answer) });
+      left.els.get('nav-peer-recs').classList.remove('super-hide');
+      const run = left.S.peerRecsPanel();
+      left.S.setState([{ state: 'allAlbums' }]);
+      left.S.setBrowserRootPanel('panel.albums');
+      left.els.get('filelist').innerHTML = 'ALBUMS';
+      release();
+      await run;
+      await settle();
+      assert.equal(left.S.html(), 'ALBUMS', label);
+      assert.equal(left.views.length, 0, label);
+      assert.deepEqual(callNames(left.calls), ['adminStatus'], `${label}: nothing more asked`);
+      // a refusal is the account's, whatever is up: no row
+      assert.equal(left.els.get('nav-peer-recs').classList.contains('super-hide'), label === 'a 405', label);
+    }
+  });
+});
+
+describe('W7: switched off (R7) with the page up', () => {
+  const refusal = Object.assign(new Error('off'), { status: 403 });
+
+  test('an admin who can turn it back on: the form, in place of the page — the poll, the clip and the band end', async () => {
+    for (const [label, extra] of [
+      ['taste 403', { taste: () => ({ disabled: true }) }],
+      ['network null', { taste: () => ({ ...prAnswer(), network: null }) }],
+      ['peers 403', { peers: () => { throw refusal; } }],
+    ]) {
+      const box = prBox({ admin: true, adminApi: true, ping: OFF_PING, adminStatus: () => ON_STATUS(), ...extra });
+      await openPage(box);
+      await settle();
+      assert.equal(box.calls.filter((c) => c.name === 'ping').length, 1, `${label}: one re-ping`);
+      assert.equal(box.calls.filter((c) => c.name === 'adminStatus').length, 1, `${label}: the status`);
+      assert.ok(!box.els.get('nav-peer-recs').classList.contains('super-hide'), `${label}: the row stays`);
+      assert.equal(box.views.length, 0, `${label}: the page is not left`);
+      const html = box.S.html();
+      assert.ok(fieldOf(html, 'name') && turnOnBtn(html), `${label}: the form`);
+      assert.ok(!html.includes('data-prec-strip'));
+      assert.deepEqual(box.S.state(), [{ state: 'peerRecs' }]);
+      assert.equal(box.liveTimers().length, 0, `${label}: no poll`);
+      assert.equal(box.clip.watchers.length, 0);
+      assert.equal(box.docListeners.length, 0);
+      assert.ok(box.els.get('dpage-band').classList.contains('super-hide'));
+    }
+  });
+
+  test('a member, or a locked admin API: the row goes and the page is left, as before', async () => {
+    for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }]) {
+      const box = prBox({ ...who, ping: OFF_PING, adminStatus: () => ON_STATUS(), taste: () => ({ disabled: true }) });
+      box.els.get('nav-peer-recs').classList.remove('super-hide');
+      await openPage(box);
+      await settle();
+      assert.ok(box.els.get('nav-peer-recs').classList.contains('super-hide'), JSON.stringify(who));
+      assert.equal(box.views.at(-1), box.explorer);
+      assert.ok(!callNames(box.calls).includes('adminStatus'));
+    }
+  });
+});
+
+describe('W7: wiring', () => {
+  const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
+  const API_SRC = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8').replace(/\r\n/g, '\n');
+  const en = JSON.parse(fs.readFileSync(path.join(ROOT, 'webapp', 'locales', 'en.json'), 'utf8'));
+
+  // api.js over a stubbed fetch (as webapp-peer-recs-clip.test.mjs does)
+  function makeApi(answer) {
+    const sent = [];
+    const fetch = (url, init) => {
+      sent.push({ url, method: init.method, token: init.headers['x-access-token'], body: init.body ? JSON.parse(init.body) : undefined, signal: init.signal });
+      const a = typeof answer === 'function' ? answer(url) : answer;
+      return Promise.resolve({ ok: a.status >= 200 && a.status < 300, status: a.status, json: () => Promise.resolve(a.body) });
+    };
+    const api = new Function('fetch', 'localStorage', 'Cookies', 'document', 'window', `${API_SRC}\nreturn MSTREAMAPI;`)(fetch, {}, {}, {}, {});
+    api.currentServer.host = 'http://h/';
+    api.currentServer.token = 'tok';
+    return { api, sent };
+  }
+
+  test('api.js: the admin panel\'s routes — enabled is exactly { enabled: true }, no abort signal (no client timeout), a refusal thrown with its status and words', async () => {
+    const a = makeApi({ status: 200, body: { enabled: true } });
+    await a.api.discoveryP2pAdminStatus();
+    await a.api.discoveryP2pSetEnabled(true);
+    await a.api.discoveryP2pSetName('Attic');
+    await a.api.discoveryP2pSetDescription('');
+    assert.deepEqual(a.sent.map((s) => [s.method, s.url, s.body, s.token]), [
+      ['GET', 'http://h/api/v1/admin/discovery/p2p/status', undefined, 'tok'],
+      ['POST', 'http://h/api/v1/admin/discovery/p2p/enabled', { enabled: true }, 'tok'],
+      ['POST', 'http://h/api/v1/admin/discovery/p2p/name', { name: 'Attic' }, 'tok'],
+      ['POST', 'http://h/api/v1/admin/discovery/p2p/description', { description: '' }, 'tok'],
+    ]);
+    assert.ok(a.sent.every((s) => s.signal === undefined), 'nothing aborts it: the enable may download the sidecar first');
+    for (const [status, error] of [[405, 'Admin API Disabled'], [403, 'Admin access required'], [500, 'failed to start the discovery network: x']]) {
+      await assert.rejects(makeApi({ status, body: { error } }).api.discoveryP2pSetEnabled(true), (err) => err.status === status && err.body.error === error);
+    }
+    const off = makeApi({ status: 200, body: {} });
+    await off.api.discoveryP2pSetEnabled('yes');
+    assert.deepEqual(off.sent[0].body, { enabled: false }, 'only true turns it on');
+  });
+
+  test('en.json: every peerRecs.turnOn key m.js draws exists, and m.js draws every one', () => {
+    const drawn = [...new Set([...SRC.matchAll(/'(peerRecs\.turnOn\.[A-Za-z]+)'/g)].map((m) => m[1]))].sort();
+    const own = Object.keys(en).filter((k) => k.startsWith('peerRecs.turnOn.')).sort();
+    assert.deepEqual(drawn, own);
+    assert.equal(own.length, 9);
+  });
+
+  test('spa.css: one centred block that fits 390 px, the house fields, 44 px targets on touch', () => {
+    assert.match(css, /\.prec-on \{ box-sizing: border-box; width: calc\(100% - 32px\); max-width: 440px; margin: 32px auto 0 auto;[^}]*background: #23282f; \}/);
+    assert.match(css, /\.prec-on-input, \.prec-on-input\[type="text"\] \{ display: block; width: 100%; height: 32px;[^}]*background: #1a1e25;/);
+    assert.match(css, /\.prec-on-btn:disabled, \.prec-on-btn:disabled:hover \{ opacity: \.5;/);
+    assert.match(css, /@media \(pointer: coarse\) \{\n {2}\.prec-on-input, \.prec-on-input\[type="text"\], \.prec-on-btn, \.prec-on-page \.prec-retry \.dpage-btn \{ height: 44px; \}\n\}/);
+    assert.match(css, /\.prec-on-err \{[^}]*overflow-wrap: anywhere; \}/, 'a long server error wraps inside 390 px');
   });
 });

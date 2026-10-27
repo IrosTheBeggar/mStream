@@ -3509,6 +3509,26 @@ a.prec-band-credit:hover { color: #dfe3ea; }
   .prec-band-sub:has(.prec-band-credit) > :not(.prec-band-credit) { display: none; }
   .prec-band-credit { flex: 0 1 auto; min-width: 0; }
 }
+/* The turnOn mode (m.js peerRecsTurnOn*): an admin's form to turn the
+   network on. One centred block in the states' card look; its fields in
+   the window's input look (browser-default: no materialize underline), its
+   button the page's. */
+.prec-on { box-sizing: border-box; width: calc(100% - 32px); max-width: 440px; margin: 32px auto 0 auto; padding: 16px; border: 1px solid #444c56; border-radius: 6px; background: #23282f; }
+.prec-on-text { margin: 0 0 8px 0; font-size: 13px; line-height: 1.5; color: #b8bcc6; }
+.prec-on > .prec-on-text:last-child { margin-bottom: 0; }
+.prec-on-field { display: block; margin-top: 14px; }
+.prec-on-label { display: block; margin-bottom: 6px; font-size: 12px; line-height: 16px; color: #8a919e; }
+.prec-on-input, .prec-on-input[type="text"] { display: block; width: 100%; height: 32px; margin: 0; padding: 0 10px; box-sizing: border-box; border: 1px solid #444c56; border-radius: 4px; background: #1a1e25; color: #F5F7FA; font-size: 13px; box-shadow: none; }
+.prec-on-input[type="text"]:focus { outline: none; border-color: #4fb8a8; box-shadow: none; }
+.prec-on-input:disabled { opacity: .6; }
+.prec-on-acts { margin-top: 16px; }
+.prec-on-btn { min-width: 96px; }
+.prec-on .dpage-btn.pri:focus { background-color: #657ee4; }
+.prec-on-btn:disabled, .prec-on-btn:disabled:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }
+.prec-on-err { margin: 8px 0 0 0; font-size: 12px; line-height: 1.5; color: #ec8a90; overflow-wrap: anywhere; }
+@media (pointer: coarse) {
+  .prec-on-input, .prec-on-input[type="text"], .prec-on-btn, .prec-on-page .prec-retry .dpage-btn { height: 44px; }
+}
 
 /* the now-playing panel's "Discover page →": where the ping has the page */
 .discover-page-footer { display: none; }
