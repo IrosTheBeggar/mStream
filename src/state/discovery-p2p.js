@@ -121,6 +121,10 @@ let readyPromise = null;  // in-flight start() so concurrent callers share one s
 let startGen = 0;
 const pending = new Map(); // id -> { resolve, reject, timer }
 
+// Test switches, inert unless set: see the comment block in discovery-peer-dbs.js.
+const fakeFetchDir = () => process.env.MSTREAM_TEST_P2P_FAKE_FETCH_DIR || null;
+const noSidecar = () => process.env.MSTREAM_TEST_P2P_NO_SIDECAR === '1';
+
 // A binary already on disk — a nested-clone cargo build (see below), an
 // operator-placed prebuilt in bin/p2p-sidecar/, or a previously fetched
 // managed install (see p2p-sidecar-bootstrap.js; the binaries left git in
@@ -139,6 +143,7 @@ function devBuildPath() {
 }
 
 export function resolveSidecarBinary() {
+  if (noSidecar()) { return null; }
   const name = `p2p-sidecar-${process.platform}-${process.arch}${libcSuffix}${ext}`;
   const prebuilt = path.join(appRoot, 'bin', 'p2p-sidecar', name);
   const localBuild = devBuildPath();
@@ -164,6 +169,12 @@ export function dataDir() {
 }
 
 export function isRunning() { return proc !== null && endpointId !== null; }
+
+// Can fetch() download right now without spawning anything first? The
+// sidecar is up, or the fake fetch stands in for it. The Add's pre-check
+// (discovery-peer-add.js) asks this: fetch() on a stopped stack would start
+// the sidecar, or first download it.
+export function canFetch() { return isRunning() || fakeFetchDir() !== null; }
 
 export function getEndpointId() { return endpointId; }
 
@@ -223,6 +234,11 @@ export function killSidecarForRestart() {
 // platforms' binaries forever. Failures reject with the bootstrap's own
 // actionable cause (checksum refused, no build published, download failed).
 async function acquireSidecarBinary() {
+  // resolveSidecarBinary() answering null is not enough on its own: the
+  // managed install below would still find (or fetch) the pinned binary.
+  if (noSidecar()) {
+    throw new Error('p2p-sidecar switched off for this run (MSTREAM_TEST_P2P_NO_SIDECAR)');
+  }
   const bin = resolveSidecarBinary();
 
   // The dev build is the one deliberate pin override: the development loop,
@@ -429,11 +445,40 @@ export async function publish(filePath) {
 //             GC-swept within ~15min. forget() releases it. Leave off for
 //             one-off pulls where only the exported file matters.
 export async function fetch(addressing, outDir, { maxBytes, hold } = {}) {
+  if (fakeFetchDir() !== null) { return fakeFetch(fakeFetchDir(), addressing, outDir, maxBytes); }
   await start();
   const params = { ...addressing, outDir };
   if (Number.isFinite(maxBytes) && maxBytes > 0) { params.maxBytes = Math.floor(maxBytes); }
   if (hold === true) { params.hold = true; }
   return rpc('fetch', params, FETCH_TIMEOUT_MS);
+}
+
+// fetch() under MSTREAM_TEST_P2P_FAKE_FETCH_DIR: no sidecar, no network.
+// The blob for `hash` is <dir>/<hash>.db, landed where the sidecar exports
+// it (<outDir>/<first 16 hex>.db). <hash>.delay-ms holds the download open
+// that many ms; <hash>.fail makes it reject like an unreachable provider.
+// maxBytes is enforced the way sidecars ≥ v1.0.4 do: nothing lands.
+async function fakeFetch(dir, { hash } = {}, outDir, maxBytes) {
+  if (typeof hash !== 'string' || hash === '') {
+    throw new Error('fetch failed: the fake fetch serves { hash } addressing only');
+  }
+  const blob = path.join(dir, hash);
+  const delayMs = Number(await fs.promises.readFile(`${blob}.delay-ms`, 'utf8').catch(() => 0));
+  if (delayMs > 0) { await new Promise((resolve) => setTimeout(resolve, delayMs)); }
+  if (fs.existsSync(`${blob}.fail`)) { throw new Error('fetch failed: dial timed out'); }
+  let size;
+  try {
+    size = (await fs.promises.stat(`${blob}.db`)).size;
+  } catch (err) {
+    throw new Error(`fetch failed: no provider has ${hash.slice(0, 12)}…`, { cause: err });
+  }
+  if (Number.isFinite(maxBytes) && maxBytes > 0 && size > maxBytes) {
+    throw new Error(`fetch failed: blob is ${size} bytes, over the ${Math.floor(maxBytes)}-byte ceiling`);
+  }
+  await fs.promises.mkdir(outDir, { recursive: true });
+  const dest = path.join(outDir, `${hash.slice(0, 16)}.db`);
+  await fs.promises.copyFile(`${blob}.db`, dest);
+  return { hash, size, path: dest };
 }
 
 export async function status() {
