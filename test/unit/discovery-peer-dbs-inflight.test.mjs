@@ -465,6 +465,22 @@ describe('onShelfChange', () => {
     assert.deepEqual(changes, ['landed', 'pinned', 'pinned', 'removed'], 'no-ops do not fire');
   });
 
+  test('a download that ends without landing is released, after it stops reserving', async () => {
+    announce('a', 700_000);
+    announce('b', 500_000);
+    const changes = [];
+    const off = peerDbs.onShelfChange((c) => changes.push({ ...c, plan: peerDbs.planRoomFor(id('b')) }));
+    fake.failNext.set(hashOf('a'), new Error('p2p-sidecar request timed out (fetch)'));
+    try {
+      await assert.rejects(peerDbs.fetchPeer(id('a')), { code: 'offline' });
+      await peerDbs.fetchPeer(id('b'));
+    } finally {
+      off();
+    }
+    assert.deepEqual(changes.map((c) => [c.endpointId, c.change]), [[id('a'), 'released'], [id('b'), 'landed']]);
+    assert.deepEqual(changes[0].plan, { fits: true, evictIds: [] }, 'a listener re-planning sees the room free');
+  });
+
   test('a throwing listener does not break the shelf', async () => {
     const off = peerDbs.onShelfChange(() => { throw new Error('listener bug'); });
     try {
