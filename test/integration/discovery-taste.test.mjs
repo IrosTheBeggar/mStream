@@ -29,6 +29,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
+import { makeSnapshotFile, writeShelf } from '../helpers/p2p-shelf.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
@@ -129,38 +130,16 @@ function seedVectors(srv) {
   }
 }
 
-// A peer snapshot in the exact export format (the discovery-p2p suite's
+// A peer snapshot in the exact export format (the shared helper's
 // makeSnapshotFile, original layout) and the shelf registry that lists it.
 function makeSnapshot(filePath, tracks) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const sdb = new DatabaseSync(filePath);
-  try {
-    sdb.exec(`
-      PRAGMA user_version = 1;
-      CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-      CREATE TABLE tracks (
-        export_id TEXT NOT NULL, recording_mbid TEXT, acoustid_id TEXT,
-        artist TEXT, title TEXT, duration REAL,
-        model_id TEXT, model_version TEXT, embedding BLOB,
-        bpm INTEGER, musical_key TEXT, danceability REAL,
-        genre_tags TEXT, mood_tags TEXT
-      );`);
-    const meta = sdb.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
-    for (const [k, v] of [['format', 'mstream-discovery-snapshot'], ['format_version', '1'],
-      ['source_schema_version', '2'], ['embedding_model_id', 'test-fake'], ['embedding_model_version', '1'],
-      ['row_count', String(tracks.length)]]) { meta.run(k, v); }
-    const ins = sdb.prepare(`
-      INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding)
-      VALUES (?, NULL, ?, ?, 180, 'test-fake', '1', ?)`);
-    for (const t of tracks) { ins.run(`anon:${t.title}`, t.artist, t.title, blob(vec(...t.vec))); }
-  } finally {
-    sdb.close();
-  }
+  makeSnapshotFile(filePath, { modelId: 'test-fake', tracks: tracks.map((t) => ({ ...t, vec: vec(...t.vec) })) });
 }
 
 const SHELF = { x: 'a'.repeat(64), y: 'b'.repeat(64) };
 function stageShelf(srv) {
-  const peerDir = path.join(srv.tmpDir, 'db', 'discovery-peers');
+  const dbDir = path.join(srv.tmpDir, 'db');
+  const peerDir = path.join(dbDir, 'discovery-peers');
   makeSnapshot(path.join(peerDir, 'x.db'), [
     { artist: 'Icarus', title: 'Rise', vec: [0.95, 0.312, 0, 0] },        // owned here → never a lead
     { artist: 'Shelf Artist', title: 'New One', vec: [0.9, 0.3, 0.3, 0] },
@@ -169,15 +148,11 @@ function stageShelf(srv) {
   makeSnapshot(path.join(peerDir, 'y.db'), [
     { artist: 'shelf artist', title: 'new one', vec: [0.8, 0.2, 0.5, 0] }, // the same song, worse match
   ]);
-  const p2pDir = path.join(srv.tmpDir, 'db', 'discovery-p2p');
-  fs.mkdirSync(p2pDir, { recursive: true });
   const entry = (id, file, rows, name) => ({
     endpointId: id, hash: id, path: path.join(peerDir, file), snapshotSeq: 1, modelId: 'test-fake',
     rowCount: rows, sizeBytes: 4096, name, fetchedAt: new Date().toISOString(),
   });
-  fs.writeFileSync(path.join(p2pDir, 'peer-dbs.json'), JSON.stringify([
-    entry(SHELF.x, 'x.db', 3, 'Peer X'), entry(SHELF.y, 'y.db', 1, 'Peer Y'),
-  ]));
+  writeShelf(dbDir, [entry(SHELF.x, 'x.db', 3, 'Peer X'), entry(SHELF.y, 'y.db', 1, 'Peer Y')]);
 }
 
 function readHashes(srv) {
