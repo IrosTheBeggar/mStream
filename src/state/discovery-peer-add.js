@@ -195,6 +195,12 @@ export function createPeerAdder({
     if (!heard && seederCountOf(entry.payload.hash || '') === 0) {
       return { code: 'offline', why: 'not heard from lately, and no live peer holds its snapshot' };
     }
+    // Room is planned on the announced size, which every mStream server
+    // announces. Without one, nothing says what to swap out, and the
+    // download's only ceiling would be the headroom left as it stands.
+    if (!(entry.payload.size > 0)) {
+      return { code: 'bad-snapshot', why: 'the peer announces no snapshot size, so no room can be planned for it' };
+    }
     const plan = planRoomFor(endpointId);
     if (!plan) {
       return { status: 404, error: 'not-in-catalog', code: 'gone', why: 'the peer is not in the catalog' };
