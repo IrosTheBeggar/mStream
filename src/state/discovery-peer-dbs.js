@@ -550,32 +550,22 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
     throw shelfError('bad-snapshot', `peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
-  // From here to save() is one synchronous block: the replaced copy, the
+  // From here to the end is one synchronous block: the replaced copy, the
   // discount and the new record reach peer-dbs.json in a single write, so a
-  // kill can never leave the shelf over its cap at rest. (A file that write
-  // never named is swept at the next boot — sweepOrphans.)
+  // kill can never leave the shelf over its cap at rest. That write comes
+  // BEFORE any old file is deleted: a kill before it leaves the shelf as it
+  // was, a kill after it leaves files the registry no longer names, and the
+  // next boot sweeps both kinds (sweepOrphans). Deleting first would lose
+  // the evictees and the newcomer together.
   //
-  // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
-  // unpin the old blob so the sidecar store's GC reclaims it.
-  if (current && current.path !== fetched.path) {
-    dropConnection(endpointId);
-    try { fs.rmSync(current.path, { force: true }); } catch (_err) { /* best effort */ }
-    if (current.hash && current.hash !== fetched.hash) {
-      discoveryP2p.forget(current.hash)
-        .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
-    }
-  }
   // The swap: every discount snapshot still held and still unpinned leaves
-  // now — exactly the bytes the checks above counted as gone. The rotation
-  // ledger records it like a rotation eviction (a past member, so candidate
-  // order prefers never-held peers over it).
+  // now — exactly the bytes the checks above counted as gone.
   const swappedOut = [];
   for (const id of discount) {
     const victim = registry.get(id);
     if (id === endpointId || !victim || victim.pinned === true) { continue; }
-    dropEntry(victim);
-    recordEviction(id);
-    swappedOut.push(id);
+    registry.delete(id);
+    swappedOut.push(victim);
   }
 
   const record = {
@@ -597,8 +587,23 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   };
   registry.set(endpointId, record);
   save();
-  for (const id of swappedOut) {
-    winston.info(`[discovery-peer-dbs] add ${endpointId.slice(0, 12)}… swapped out ${id.slice(0, 12)}…`);
+  // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
+  // unpin the old blob so the sidecar store's GC reclaims it.
+  if (current && current.path !== fetched.path) {
+    dropConnection(endpointId);
+    try { fs.rmSync(current.path, { force: true }); } catch (_err) { /* best effort */ }
+    if (current.hash && current.hash !== fetched.hash) {
+      discoveryP2p.forget(current.hash)
+        .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
+    }
+  }
+  // The evictees' files and blobs go the same way. The rotation ledger
+  // records each like a rotation eviction (a past member, so candidate order
+  // prefers never-held peers over it).
+  for (const victim of swappedOut) {
+    dropEntry(victim);
+    recordEviction(victim.endpointId);
+    winston.info(`[discovery-peer-dbs] add ${endpointId.slice(0, 12)}… swapped out ${victim.endpointId.slice(0, 12)}…`);
   }
   const sizeLabel = record.sizeBytes >= 1048576
     ? `${Math.round(record.sizeBytes / 1048576)}MB` : `${Math.round(record.sizeBytes / 1024)}KB`;
@@ -608,7 +613,7 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   clearFetchBackoff(endpointId);
   // We now hold (and therefore seed) this snapshot — tell the network.
   pushHolds();
-  for (const id of swappedOut) { shelfChanged(id, 'removed'); }
+  for (const victim of swappedOut) { shelfChanged(victim.endpointId, 'removed'); }
   shelfChanged(endpointId, 'landed');
   return record;
 }
