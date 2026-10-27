@@ -142,6 +142,15 @@ describe('the turn-on form', () => {
       assert.ok(FILES[lang]['peerRecs.turnOn.busy'].endsWith('…'), `${lang}.json: busy ends in …`);
     });
   }
+
+  test('ja / ko / zh: the shares line says "audio" in the file\'s own word', () => {
+    for (const [lang, word] of [['ja', 'オーディオ'], ['ko', '오디오'], ['zh', '音频']]) {
+      const elsewhere = Object.entries(FILES[lang]).filter(([k, v]) => k !== 'peerRecs.turnOn.shares' && typeof v === 'string' && v.includes(word));
+      assert.ok(elsewhere.length > 0, `${lang}.json already says ${word}`);
+      assert.ok(FILES[lang]['peerRecs.turnOn.shares'].includes(word), `${lang}.json: the shares line says ${word}`);
+    }
+    assert.ok(!FILES.ja['peerRecs.turnOn.shares'].includes('音声'), 'ja: not 音声 (voice, speech)');
+  });
 });
 
 describe('the Discover keys the page reuses', () => {

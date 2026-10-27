@@ -659,7 +659,7 @@
   "peerRecs.getIt": "入手…",
   "peerRecs.copy": "コピー",
   "peerRecs.noPreview": "試聴なし",
-  "peerRecs.turnOn.shares": "音声は含めず、ライブラリのメタデータだけを、このサーバーの名前と説明とともに公開のディスカバリーネットワークで共有します。",
+  "peerRecs.turnOn.shares": "オーディオは含めず、ライブラリのメタデータだけを、このサーバーの名前と説明とともに公開のディスカバリーネットワークで共有します。",
   "peerRecs.turnOn.collection": "ディスカバリーデータの収集もオンになります。",
   "peerRecs.turnOn.name": "サーバー名",
   "peerRecs.turnOn.description": "説明",
