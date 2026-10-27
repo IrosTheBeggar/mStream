@@ -5335,6 +5335,14 @@ function peerRecsLeave() {
   peerRecsBandHide();
 }
 
+// The phone's Now Playing tab hid the browser column, the band with it
+// (spa.js toggleThing): a clip never plays out of sight of its attribution
+// (plan §2 item 14), so it ends — the main player plays again if the clip
+// paused it. The page stays up, its poll too.
+function peerRecsCovered() {
+  if (peerRecsOnScreen()) { VUEPLAYERCORE.clipStop('leave'); }
+}
+
 // The preview plug-in (the first listed that previews: no play icons, no
 // Preview all, no band without one) and the band's Get it… (§3.6: an
 // acquire plug-in other than the connected servers' copy, this account

@@ -3677,6 +3677,31 @@ describe('Peer Recommendations: leaving it', () => {
     assert.equal(peersCalls(disc.calls), 0);
   });
 
+  test('the phone\'s Now Playing tab hides the column, the band with it: the clip ends, the page stays up (spa.js toggleThing)', async () => {
+    const box = prBox();
+    await openPage(box);
+    const { S, click, clip, els } = box;
+    click({ 'data-dp': 'precPlay', 'data-i': 0 });
+    clip.play(PREVIEW);
+    S.peerRecsCovered();
+    assert.deepEqual(clip.calls.at(-1), ['stop', 'leave']);
+    assert.ok(els.get('dpage-band').classList.contains('super-hide'));
+    assert.equal(playOf(S.html(), 0).attrs.class, 'prec-play');
+    assert.deepEqual(S.state(), [{ state: 'peerRecs' }]);
+    assert.equal(clip.watchers.length, 1, 'still watched');
+    assert.equal(box.liveTimers().length, 1, 'the poll goes on');
+    S.peerRecsCovered();
+    assert.ok(els.get('dpage-band').classList.contains('super-hide'), 'nothing live: nothing to end');
+    // another panel: nothing of the page's to stop
+    S.setState([{ state: 'allAlbums' }]);
+    S.setBrowserRootPanel('panel.albums');
+    const m = clip.calls.length;
+    S.peerRecsCovered();
+    assert.equal(clip.calls.length, m);
+    const spa = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.js'), 'utf8');
+    assert.match(spa, /if \(bool === false\) \{\n\s*document\.getElementById\('browser'\)\.classList\.add\('hide-on-small-only'\);\n(?:\s*\/\/[^\n]*\n)?\s*if \(typeof peerRecsCovered === 'function'\) \{ peerRecsCovered\(\); \}/);
+  });
+
   test('from Peer Recommendations to Discover: the page left, Discover drawn', async () => {
     const box = prBox();
     await openPage(box);
