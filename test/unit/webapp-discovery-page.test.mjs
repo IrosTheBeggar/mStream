@@ -911,7 +911,11 @@ const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverMod
   'dmKeepLeftOut', 'dmLandShown', 'dmLandings', 'dmLandChoose', 'dmLandHold', 'dmFolderLandingSent', 'dmFolderInto', 'dmFolderPlaceOk', 'dmFolderCap',
   'dmFolderCapFailed', 'dmJobLanded', 'dmIntoLoad', 'dmIntoCrumbs', 'dmIntoLibraries', 'dmIntoLibrary', 'dmIntoInto', 'dmIntoUp', 'dmIntoNewFolder',
   'dmIntoNaming', 'dmIntoBraced', 'dmIntoMissing', 'dmMirrorFoot', 'dmIntoStraight', 'dmPickerLibraries', 'dmPickerLandsAt', 'dmDestFocus',
-  'dmKeepGateChanged'];
+  'dmKeepGateChanged',
+  // opened from Peer Recommendations (plan §2 item 15): its tile and peer
+  // line, the one Preview control bound to the page's clip, Get it… chips
+  'dmPeerRecs', 'dmArt', 'dmFederateVisible', 'dmTile', 'dmArtStyle', 'dmClipProvider', 'dmClipOf', 'dmClipOn', 'dmClipBusy', 'dmClipNone', 'dmClipPreview', 'dmClipClock',
+  'dmClipPct', 'dmClipToggle', 'clipProvider', 'dmGetItChips', 'dmGetIt', 'dmPeerJobsPoll', 'dmAnyJobLive'];
 // Find elsewhere's own load (stubbed in every other window: it asks the
 // links plug-in, and the harness's `realLinks` lets it)
 const LINKS_METHODS = ['dmLoadLinks', 'ensureDiscoverPlugins', 'discoverLinksPlugin'];
@@ -942,22 +946,30 @@ const STAGE_READS = () => readsOf({
   localAlbums: { albums: ['Night Market', 'Ferry Lines', 'Cold Open'].map((n) => peerAlbumItem(n)) },
 });
 
+// The page's pure helpers, as the window reads them (tile colours, the
+// lead key, the preview plug-in).
+const PR = require('../../webapp/alpha/peer-recs.js');
 function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, destination = DEST, available = true, realLinks = false, doc: docOver = {} } = {}) {
   const body = `
     let discoverModalGen = 0;
     let discoverModalOpener = null;
     let discoverKeepPresses = 0;
+    let discoverPeerJobsTimer = null;
     const discoverGateWatchers = [];
     function onDiscoverModalKey() {}
     ${VP_SRC.match(/\n {2}const FOLDER_TAGS_MAX = \d+;/)[0]}
     ${vpModuleFn('dmAttrValue')}
     ${vpModuleFn('blankDiscoverModal')}
+    ${vpModuleFn('blankDiscoverClip')}
+    ${vpModuleFn('dmTileOf')}
+    ${vpModuleFn('dmPeerLineOf')}
     ${vpModuleFn('dmNameKey')}
     ${vpModuleFn('dmOpenerOf')}
     ${vpModuleFn('dmFocusBack')}
     ${vpModuleFn('dmLinksNameAlbum')}
     ${vpModuleFn('dmCapital')}
     return {
+      blankClip: blankDiscoverClip,
       methods: { ${WINDOW_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       links: { ${LINKS_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       blank: blankDiscoverModal,
@@ -976,18 +988,23 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); } };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
-  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', body)(
-    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); });
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'PEERRECS', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', body)(
+    J, D, PR, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); });
   const loads = [];
   const starts = [];
   const cancels = [];
   const copied = [];
+  // the toast key each copy asked for (undefined = the copy's own)
+  const copiedAs = [];
+  // the page's clip toggles the window's Preview made (vp.js clipToggle)
+  const toggles = [];
   // $nextTick's callbacks, run by the test (ticks.splice(0).forEach(f => f()))
   const ticks = [];
   const vm = {
-    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank() },
+    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank(), clip: mod.blankClip() },
     $refs: {}, $nextTick(cb) { if (cb) { ticks.push(cb); } }, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
-    stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); },
+    stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track, as) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); copiedAs.push(as); },
+    clipToggle(raw, opts) { toggles.push({ raw, opts }); },
     dmLoadLinks: async () => { loads.push('links'); },
     dmLoadJobs: async () => { loads.push('jobs'); },
     dmLoadFederate: async () => { loads.push('federate'); },
@@ -998,7 +1015,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     ...mod.methods,
     ...(realLinks ? mod.links : {}),
   };
-  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, queued, explored, cancels, gateWatchers: mod.gateWatchers };
+  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, copiedAs, toggles, queued, explored, cancels, gateWatchers: mod.gateWatchers };
 }
 const subText = (vm, row) => vm.dmText(row.sub);
 const copyJob = (over) => ({ id: 41, plugin: 'federation-copy', key: 'album:06676dc1', state: 'running', progress: 0.4, statusText: 'song 1 of 3 · Rooftop Cypher', params: { scope: 'album' }, recommendation: tapesRow(STAGE_B, '02 - Late Train Verse'), ...over });
@@ -5778,5 +5795,321 @@ describe('the window\'s counts and a folder\'s credits that disagree (the 2026-1
     const p = vm.dmDestPath('folder');
     assert.deepEqual([pathLine(p), p.files], ['copies › ‹album artist› › Borrowed Tapes', null]);
     assert.equal(p.slotNote, '‹album artist› comes from each song’s own tags, so these songs can land in more than one folder.');
+  });
+});
+
+// ── vp.js: the recommendation window opened from Peer Recommendations ───
+// (plan §2 item 15, §4.1 "PT (W3)"): leads as the taste route stamps them
+// (leadsResponse), the peer line as PEERRECS.peerLine reads it from a peers
+// answer, the window's Preview bound to discover.clip (vp.js's own clip,
+// stubbed here: the window only reads it; test/unit/webapp-peer-recs-clip
+// drives it).
+describe('the window opened from Peer Recommendations (vp.js, plan §2 item 15)', () => {
+  const DEEZER = { name: 'deezer', title: 'Deezer', capabilities: ['preview'] };
+  const YT = { name: 'youtube', title: 'YouTube', capabilities: ['acquire'], scopes: ['song'] };
+  const LINKS = { name: 'links', title: 'Open elsewhere', capabilities: ['links'] };
+  const PLUGINS = [DEEZER, YT, LINKS];
+  const PEERS = { canAdd: false, shelf: { held: 2, searchable: 2, running: true }, peers: [
+    { endpointId: EP.kitchen, name: 'Kitchen Radio', label: 'Kitchen Radio', monogram: 'KR', hue: 25, online: true, onShelf: true, pinned: false, rowCount: 10, add: null },
+    { endpointId: EP.mstream, name: '', label: 'mStream · 3f9a', monogram: 'mS', hue: 140, online: false, onShelf: true, pinned: false, rowCount: 10, add: null },
+  ] };
+  // Signal Fires (Kitchen Radio, online), Harbor Lights (the same album's
+  // tile), the untitled lead (mStream · 3f9a, offline)
+  const leads = () => leadsResponse().network.results;
+  const open = async (lead, over = {}, opts = {}) => {
+    const w = makeWindow({ plugins: PLUGINS, ...over });
+    await w.vm.openDiscoverModal(lead, 'p2p', { from: 'peerRecs', peer: PR.peerLine(lead, PEERS), ...opts });
+    return w;
+  };
+  const DEEZER_PREVIEW = { provider: 'deezer', url: 'https://cdn.example/1.mp3', seconds: 30, title: 'Signal Fires', artist: 'Paper Lantern', album: 'Night Ferry',
+    link: 'https://www.deezer.com/track/1', artwork: 'https://cdn.example/night-ferry.jpg', attribution: 'Preview from Deezer', match: 0.97 };
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
+  const pageBlock = win.slice(win.indexOf('<template v-if="dmPeerRecs()">'), win.indexOf('<template v-else>', win.indexOf('<template v-if="dmPeerRecs()">')));
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
+  test('the header: "Artist · Album" and the peer line alone — its dot only while the peer is online; no ISRC, no year, no length, no %', async () => {
+    const [signal, , untitled] = leads();
+    const isrc = { ...signal, isrc: 'USRC17607839' };
+    const { vm, toggles } = await open(isrc);
+    assert.equal(vm.discover.modal.from, 'peerRecs');
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], ['Signal Fires', 'Paper Lantern · Night Ferry'], 'no 2021, no 3:20');
+    assert.deepEqual(vm.dmMetaParts(), [{ kind: 'status', dot: 'ok', text: 'Kitchen Radio' }], 'no ISRC, no "81% match"');
+    assert.deepEqual(toggles, [], 'opening plays nothing');
+    const off = await open(untitled);
+    assert.deepEqual([off.vm.dmHeadTitle(), off.vm.dmSubtitle()], ['Untitled', '']);
+    assert.deepEqual(off.vm.dmMetaParts(), [{ kind: 'status', dot: 'none', text: 'mStream · 3f9a' }], 'the label verbatim; an offline peer has no dot');
+    // without the page's line: the label the lead carries, no dot
+    const w = makeWindow({ plugins: PLUGINS });
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs' });
+    assert.deepEqual(w.vm.dmMetaParts(), [{ kind: 'status', dot: 'none', text: 'Kitchen Radio' }]);
+    await w.vm.openDiscoverModal({ ...signal, peer: { endpointId: EP.kitchen, name: null } }, 'p2p', { from: 'peerRecs' });
+    assert.deepEqual(w.vm.dmMetaParts(), [], 'nothing to name: no line');
+    assert.match(CSS, /\.dmodal-status i\.dmodal-dot-none \{ display: none; \}/);
+  });
+
+  test('the tile until a preview earns the album\'s art: dmArt is clip.art for the lead\'s tile key, never a tile\'s artwork', async () => {
+    const [signal, harbor, untitled] = leads();
+    const { vm } = await open(signal);
+    const c = PR.tileColours(39);
+    assert.deepEqual(vm.discover.modal.tile, { key: 'paper lantern|night ferry', hue: 39, letter: 'P' }, 'the server\'s tile, as sent');
+    assert.equal(vm.dmArt(), null);
+    assert.deepEqual(vm.dmTile(), { letter: 'P', field: c.field, ink: c.ink });
+    assert.deepEqual(vm.dmArtStyle(), { background: 'hsl(39, 22%, 24%)', color: 'hsl(39, 30%, 72%)' });
+    vm.discover.modal.previews = { deezer: { status: 'ready', preview: DEEZER_PREVIEW } };
+    assert.equal(vm.dmArt(), null, 'a preview tile\'s artwork is Discover\'s, not the page\'s');
+    vm.discover.clip.art['someone else|other album'] = 'https://cdn.example/other.jpg';
+    assert.equal(vm.dmArt(), null, 'another album\'s art');
+    vm.discover.clip.art['paper lantern|night ferry'] = DEEZER_PREVIEW.artwork;
+    assert.deepEqual([vm.dmArt(), vm.dmTile(), vm.dmArtStyle()], [DEEZER_PREVIEW.artwork, null, null], 'an <img>, never a background');
+    const other = await open(harbor);
+    other.vm.discover.clip.art['paper lantern|night ferry'] = DEEZER_PREVIEW.artwork;
+    assert.equal(other.vm.dmArt(), DEEZER_PREVIEW.artwork, 'every lead of the album shares it');
+    // the page's tile when it hands one, else the lead's; one that cannot be drawn is none
+    const handed = await open(signal, {}, { tile: { key: 'k', hue: 200, letter: 'Z' } });
+    assert.deepEqual(handed.vm.discover.modal.tile, { key: 'k', hue: 200, letter: 'Z' });
+    const bad = await open(signal, {}, { tile: { key: 'k', hue: '200', letter: 'Z' } });
+    assert.equal(bad.vm.discover.modal.tile.hue, 39);
+    const bare = await open({ ...untitled, tile: undefined });
+    assert.deepEqual([bare.vm.dmTile(), bare.vm.dmArtStyle()], [null, null], 'no tile: the note glyph');
+    assert.match(win, /<img v-else-if="dmPeerRecs\(\) && dmArt\(\)" class="dmodal-art-img" :src="dmArt\(\)" alt="" referrerpolicy="no-referrer">/);
+    assert.match(win, /'dmodal-tile': dmTile\(\) \}" :style="dmArtStyle\(\)">/);
+    assert.match(CSS, /\.dmodal-art\.dmodal-tile \{ border: 0; font-size: 32px; line-height: 1; font-weight: 600; \}/);
+  });
+
+  test('Preview follows discover.clip only while the clip is this lead; else what the visit\'s resolves answered for it', async () => {
+    const [signal, harbor] = leads();
+    const { vm, toggles } = await open(signal);
+    const c = vm.discover.clip;
+    assert.equal(vm.dmClipProvider(), DEEZER, 'the first preview plug-in');
+    const idle = () => [vm.dmClipOn(), vm.dmClipBusy(), vm.dmClipNone(), vm.dmClipPreview(), vm.dmClipClock(), vm.dmClipPct()];
+    assert.deepEqual(idle(), [false, false, '', null, ['0:00', '0:30'], 0]);
+    // the page plays another lead: not this window's
+    Object.assign(c, { key: PR.leadKey(harbor), raw: harbor, status: 'playing', preview: DEEZER_PREVIEW, at: 12, seconds: 30 });
+    assert.deepEqual(idle(), [false, false, '', null, ['0:00', '0:30'], 0]);
+    // this lead: asked, waiting out a 429, playing, paused
+    Object.assign(c, { key: PR.leadKey(signal), raw: signal, status: 'resolving', preview: null, at: 0 });
+    assert.deepEqual([vm.dmClipBusy(), vm.dmClipPreview()], [true, null], 'no attribution before a resolve');
+    c.status = 'waiting';
+    assert.equal(vm.dmClipBusy(), true);
+    Object.assign(c, { status: 'playing', preview: DEEZER_PREVIEW, at: 12.25, seconds: 30 });
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipBusy(), vm.dmClipClock(), vm.dmClipPct()], [true, false, ['0:12', '0:30'], 41]);
+    assert.deepEqual(vm.dmClipPreview(), { text: 'Preview from Deezer', link: 'https://www.deezer.com/track/1' }, 'the server\'s words, verbatim');
+    c.status = 'paused';
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipClock()[0]], [false, '0:12']);
+    for (const link of ['http://www.deezer.com/track/1', 'javascript:alert(1)', '', null]) {
+      c.preview = { ...DEEZER_PREVIEW, link };
+      assert.deepEqual(vm.dmClipPreview(), { text: 'Preview from Deezer', link: null }, `${link}: plain words, no link`);
+    }
+    c.preview = { ...DEEZER_PREVIEW, attribution: 'Provided courtesy of iTunes', link: 'https://music.apple.com/x' };
+    assert.equal(vm.dmClipPreview().text, 'Provided courtesy of iTunes');
+    Object.assign(c, { status: 'none', preview: null });
+    assert.equal(vm.dmClipNone(), 'none');
+    c.status = 'failed';
+    assert.equal(vm.dmClipNone(), 'failed', 'this press only: the control stays live');
+    // the clip moved on: the visit's answers for this lead
+    Object.assign(c, { key: PR.leadKey(harbor), status: 'playing' });
+    c.results[PR.leadKey(signal)] = { status: 'ready', preview: DEEZER_PREVIEW };
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipNone(), vm.dmClipPreview().text], [false, '', 'Preview from Deezer'], 'resolved earlier: its attribution');
+    c.results[PR.leadKey(signal)] = { status: 'none', preview: null };
+    assert.equal(vm.dmClipNone(), 'none');
+    vm.dmClipToggle();
+    assert.deepEqual(toggles, [], 'no preview for the visit: the control is inert');
+    delete c.results[PR.leadKey(signal)];
+    vm.dmClipToggle();
+    assert.equal(toggles.length, 1);
+    assert.equal(toggles[0].raw, vm.discover.modal.track, 'the page\'s own play icon, on this lead');
+    assert.deepEqual(toggles[0].opts, { tile: vm.discover.modal.tile });
+    // no preview plug-in: no section
+    const bare = await open(signal, { plugins: [YT, LINKS] });
+    assert.equal(bare.vm.dmClipProvider(), null);
+    assert.match(pageBlock, /<section v-if="dmClipProvider\(\)" class="dmodal-section">/);
+  });
+
+  test('Get it…: one chip per acquire plug-in, titled by it; a press starts the best match at once; the job shows on the chip', async () => {
+    const [signal] = leads();
+    const { vm, starts, loads } = await open(signal);
+    assert.ok(loads.includes('jobs'), 'the one lookup when it opens');
+    const m = vm.discover.modal;
+    const chip = () => vm.dmGetItChips()[0];
+    assert.deepEqual(vm.dmGetItChips(), [{ plugin: YT, state: 'idle', icon: 'download', aria: 'YouTube', press: true }]);
+    await vm.dmGetIt(chip());
+    assert.deepEqual(starts, [{ plugin: 'youtube', choice: null, scope: undefined }], 'the server\'s best match: no lookup card, no choice');
+    m.jobBusy.youtube = true;
+    assert.deepEqual([chip().state, chip().press], ['busy', false]);
+    m.jobBusy.youtube = false;
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'running', progress: 0.5 };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['live', 'download', 'YouTube: downloading', false]);
+    await vm.dmGetIt(chip());
+    assert.equal(starts.length, 1, 'a live job is not started again');
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'queued' };
+    assert.deepEqual([chip().state, chip().icon], ['live', 'clock']);
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'done', result: { downloaded: { filepath: 'collection/Paper Lantern/Signal Fires.mp3' } } };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['done', 'check', 'YouTube: done', false]);
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'failed', error: 'no match' };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['failed', 'warn', 'YouTube: failed', true], 'a failed job is pressed again');
+    delete m.jobs.youtube;
+    // a start the server refused: failed; one refused for a moved destination is idle again
+    m.jobErrors.youtube = 'The server did not take that — try again';
+    m.jobRefusals.youtube = { status: 500, error: '' };
+    assert.equal(chip().state, 'failed');
+    m.jobRefusals.youtube = { status: 409, error: 'destination_changed' };
+    assert.deepEqual([chip().state, chip().press], ['idle', true]);
+    // offered only where a file can land, to an account that may start jobs, never the peer copy
+    assert.deepEqual((await open(signal, { destination: null })).vm.dmGetItChips(), []);
+    assert.deepEqual((await open(signal, { jobsAllowed: false })).vm.dmGetItChips(), []);
+    assert.deepEqual((await open(signal, { plugins: [DEEZER, COPY] })).vm.dmGetItChips(), []);
+    assert.match(pageBlock, /<h3 class="dmodal-label">\{\{ tt\('peerRecs\.getIt'\) \}\}<\/h3><\/div>/, 'its heading, no hint');
+    assert.match(pageBlock, /<button v-for="c in dmGetItChips\(\)" :key="c\.plugin\.name" type="button" class="dm-getit"[^>]*:aria-label="c\.aria" v-on:click="dmGetIt\(c\)"><dm-icon :name="c\.icon" :size="14"><\/dm-icon>\{\{ c\.plugin\.title \}\}<\/button>/);
+  });
+
+  test('Get it…: a start refused for a moved destination reads it again and leaves the chip idle; the window follows its live job by id every 1.5 s', async () => {
+    const [signal] = leads();
+    const MOVED = { vpath: 'copies', base: '', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' };
+    const calls = { destination: 0, starts: [], jobs: [], batch: [] };
+    const api = {
+      // the saved place until a start is refused for it, then the new one
+      discoveryDestination: async () => { calls.destination += 1; return { destination: calls.starts.length ? MOVED : DEST }; },
+      discoveryJobLookupBatch: async (recs) => { calls.batch.push(recs); return { results: [{ key: 'song:k', keys: { song: 'song:k' }, jobs: [] }] }; },
+      discoveryJobStart: async (name, rec, choice, scope, destination) => {
+        calls.starts.push({ name, destination });
+        if (calls.starts.length === 1) { throw httpError(409, { error: 'destination_changed', destination: MOVED }); }
+        return { job: { id: 5, plugin: name, key: 'song:k', state: 'running', progress: 0.1 } };
+      },
+      discoveryJob: async (id) => { calls.jobs.push(id); return { job: { id, plugin: 'youtube', key: 'song:k', state: calls.jobs.length > 1 ? 'done' : 'running', result: { downloaded: { filepath: 'copies/a.mp3' } } } }; },
+    };
+    const w = makeWindow({ reads: api, plugins: PLUGINS });
+    const timers = [];
+    const methods = new Function('DISCOVERJOBS', 'MSTREAMAPI', 'document', 'setTimeout', 'clearTimeout',
+      `let discoverPeerJobsTimer = null;\nreturn { ${['dmLoadJobs', 'dmJobStart', 'dmDestRefused', 'dmLoadDestination', 'dmDestShown', 'dmErrorText', 'dmPeerJobsPoll'].map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(
+      J, { ...api, currentServer: { host: '' } }, { hidden: false }, (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, () => {});
+    Object.assign(w.vm, methods, { ensureDiscoverPlugins: async () => w.vm.discover.plugins.list, noteDiscoverJob() {}, dmKeepGateChanged() {}, dmHoldFocus() {} });
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS) });
+    await flush();
+    assert.equal(calls.batch.length, 1, 'one batch lookup when it opens');
+    assert.deepEqual(calls.batch[0].map((r) => [r.title, r.source]), [['Signal Fires', 'p2p']], 'one row: the lead');
+    await w.vm.dmGetIt(w.vm.dmGetItChips()[0]);
+    assert.deepEqual(calls.starts, [{ name: 'youtube', destination: { vpath: DEST.vpath, base: DEST.base, layout: DEST.layout } }], 'the destination it knew');
+    await flush();
+    assert.equal(calls.destination, 2, 'read again');
+    assert.deepEqual([w.vm.dmGetItChips()[0].state, w.vm.discover.dest.view.destination], ['idle', MOVED], 'idle again, on the new place');
+    assert.equal(timers.length, 0, 'nothing live: no poll');
+    await w.vm.dmGetIt(w.vm.dmGetItChips()[0]);
+    assert.deepEqual(calls.starts[1].destination, { vpath: 'copies', base: '', layout: '{{ARTIST}}/{{ALBUM}}' });
+    assert.equal(w.vm.dmGetItChips()[0].state, 'live');
+    assert.deepEqual(timers.map((t) => t.ms), [1500]);
+    await timers.shift().fn();
+    assert.deepEqual([calls.jobs, w.vm.dmGetItChips()[0].state, timers.length], [[5], 'live', 1], 'by id, and again while it runs');
+    await timers.shift().fn();
+    assert.deepEqual([calls.jobs, w.vm.dmGetItChips()[0].state, timers.length], [[5, 5], 'done', 0], 'done: the poll stops');
+    assert.match(vpMethodSrc('scheduleDiscoverJobsPoll'), /const fast = this\.dmAnyJobLive\(\) && this\.discover\.modal\.from !== 'peerRecs';/, 'the strip keeps its slower beat meanwhile');
+    assert.match(vpMethodSrc('closeDiscoverModal'), /if \(discoverPeerJobsTimer\) \{ clearTimeout\(discoverPeerJobsTimer\); discoverPeerJobsTimer = null; \}/);
+  });
+
+  test('its own Copy row: "Artist - Title" (the title alone without an artist), and the toast says "Copied"', async () => {
+    const [signal, , untitled] = leads();
+    const { vm, copied, copiedAs } = await open(signal);
+    vm.dmCopyTitle();
+    assert.deepEqual([copied, copiedAs], [['Paper Lantern - Signal Fires'], ['peerRecs.copied']]);
+    const lead = makeWindow({ plugins: PLUGINS });
+    await lead.vm.openDiscoverModal({ title: 'Lead', artist: 'Mo', peer: { endpointId: 'e1' } }, 'p2p');
+    lead.vm.dmCopyTitle();
+    assert.deepEqual(lead.copiedAs, [undefined], 'Discover\'s copy keeps its own toast');
+    // the copy itself (vp.js copyDiscoverP2p), the page's rule (PEERRECS.copyText)
+    const toasts = [];
+    const writes = [];
+    const copy = new Function('navigator', 'iziToast', 't', `return (${vpMethodSrc('copyDiscoverP2p')});`)(
+      { clipboard: { writeText: async (s) => { writes.push(s); } } }, { success: (o) => toasts.push(o), info: (o) => toasts.push(o) }, tEn);
+    for (const t of [signal, untitled, { artist: 'Mo', title: '' }, { artist: '  Mo ', title: ' Lead ' }, { artist: null, title: null }]) {
+      await copy(t);
+      assert.equal(writes[writes.length - 1], PR.copyText(t), JSON.stringify(t));
+    }
+    assert.deepEqual(writes.slice(0, 3), ['Paper Lantern - Signal Fires', 'Untitled', 'Mo'], 'never "- Untitled"');
+    assert.deepEqual([toasts[0].title, toasts[0].message], [EN['discover.network.copied'], 'Paper Lantern - Signal Fires']);
+    toasts.length = 0;
+    await copy(signal, 'peerRecs.copied');
+    assert.deepEqual(toasts, [{ title: 'Copied', position: 'topCenter', timeout: 2500 }], 'one word');
+    assert.match(win, /<section v-if="dmPeerRecs\(\)" class="dmodal-section dm-copy-row">\s*<button type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"><\/dm-icon>\{\{ tt\('peerRecs\.copy'\) \}\}<\/button>/);
+    assert.ok(win.indexOf('dm-copy-row') > win.indexOf('<section v-if="dmFindVisible()"'), 'after Find elsewhere');
+  });
+
+  test('the trim list: no invite row, no hints, no "Search", no destination bar, no lookup card, no preview tiles', async () => {
+    const [signal] = leads();
+    const { vm, loads } = await open(signal, {}, {});
+    vm.discover.admin = true;
+    await vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS) });
+    assert.ok(!loads.includes('federate'), 'an admin\'s window asks nothing about federating');
+    assert.equal(vm.dmFederateVisible(), false);
+    // Find elsewhere: the links alone, once they answered
+    const m = vm.discover.modal;
+    m.loading = true;
+    assert.equal(vm.dmFindVisible(), false, 'no "Looking up…"');
+    Object.assign(m, { loading: false, error: true });
+    assert.equal(vm.dmFindVisible(), false, 'no "Couldn\'t look up links"');
+    Object.assign(m, { error: false, links: [] });
+    assert.equal(vm.dmFindVisible(), false, 'no links: no section (Copy has its own row)');
+    m.links = [{ id: 'search-musicbrainz', kind: 'search', label: 'Search MusicBrainz', url: 'https://musicbrainz.org/' }];
+    assert.equal(vm.dmFindVisible(), true);
+    for (const key of ['discover.modal.getItLiveHint', 'discover.modal.getItSub', 'discover.modal.inviteTitle', 'discover.modal.findHint', 'discover.modal.search', 'discover.modal.copyTitle']) {
+      assert.ok(!pageBlock.includes(key), key);
+    }
+    for (const part of ['<dm-dest', 'dm-lookup-row', 'dm-job-row', 'dmFederateVisible', 'discoverPreviewPlugins', 'dmodal-hint']) { assert.ok(!pageBlock.includes(part), part); }
+    assert.match(win, /<span v-if="!dmPeerRecs\(\) && !discover\.modal\.loading && discover\.modal\.links\.length" class="dmodal-hint">\{\{ tt\('discover\.modal\.findHint'\) \}\}/);
+    assert.match(win, /<span v-if="!dmPeerRecs\(\) && dmLinks\('search'\)\.length" class="dm-chips-lead" aria-hidden="true">/);
+    assert.match(win, /<button v-if="!dmPeerRecs\(\)" type="button" class="dm-chip" v-on:click="dmCopyTitle">/);
+    assert.match(win, /<template v-else>\s*<!-- 30-second previews[\s\S]*?<section v-if="dmGetItRows\(\)\.length \|\| dmFederateVisible\(\)" class="dmodal-section">[\s\S]*?<\/section>\s*<\/template>/, 'Discover\'s tiles and Get it, for every other window');
+    // the attribution links out without a referrer; every key it draws is in en.json
+    assert.match(pageBlock, /<a v-if="dmClipPreview\(\) && dmClipPreview\(\)\.link" class="dm-clip-attrib" :href="dmClipPreview\(\)\.link" target="_blank" rel="noopener noreferrer">\{\{ dmClipPreview\(\)\.text \}\}<\/a>/);
+    const keys = [...pageBlock.matchAll(/'((?:peerRecs|discover|dpage)\.[\w.]+)'/g)].map((x) => x[1]);
+    assert.deepEqual([...new Set(keys)].sort(), ['peerRecs.a11y.pauseSong', 'peerRecs.a11y.position', 'peerRecs.a11y.previewSong', 'peerRecs.getIt', 'peerRecs.noPreview', 'peerRecs.preview']);
+    for (const k of [...keys, 'peerRecs.copy', 'peerRecs.copied']) { assert.equal(typeof EN[k], 'string', k); }
+  });
+
+  test('plug-ins off and a member: a lead\'s window still opens, and nothing is copied; Discover\'s lead copies as before', async () => {
+    const [signal] = leads();
+    const { vm, copied, loads } = await open(signal, { available: false, plugins: [] });
+    assert.deepEqual([vm.discover.modal.open, vm.discover.modal.from, copied], [true, 'peerRecs', []]);
+    assert.deepEqual(loads, [], 'no links, no jobs, no invite');
+    assert.deepEqual([vm.dmClipProvider(), vm.dmGetItChips(), vm.dmFindVisible(), vm.dmMetaParts()[0].text], [null, [], false, 'Kitchen Radio'], 'the header and Copy alone');
+    const disc = makeWindow({ available: false, plugins: [] });
+    await disc.vm.openDiscoverModal(signal, 'p2p', { seedTitle: 'One' });
+    assert.deepEqual([disc.vm.discover.modal.open, disc.copied], [false, ['Paper Lantern - Signal Fires']]);
+  });
+
+  test('focus starts on Close and goes back to the row\'s open button', async () => {
+    const [signal] = leads();
+    const w = makeWindow({ plugins: PLUGINS });
+    const row = { tagName: 'BUTTON', isConnected: true, focused: 0, getAttribute: (n) => ({ 'data-dp': 'precOpen', 'data-i': '3' })[n] ?? null, hasAttribute: () => false, closest: () => null, focus() { row.focused += 1; } };
+    let close = 0;
+    w.vm.$refs.dmodalClose = { focus() { close += 1; } };
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS), opener: row });
+    w.ticks.splice(0).forEach((f) => f());
+    assert.equal(close, 1);
+    w.vm.closeDiscoverModal();
+    w.ticks.splice(0).forEach((f) => f());
+    assert.equal(row.focused, 1);
+    assert.equal(w.vm.discover.modal.from, null, 'closed: the blank window');
+  });
+
+  test('Discover\'s and the now-playing panel\'s windows are unchanged', async () => {
+    const lead = { title: 'Lead', artist: 'Mo', album: 'Lead Album', year: 2020, duration: 200, isrc: 'USRC17607839', similarity: 0.5, peer: { endpointId: 'e1', name: 'Kitchen Radio', label: 'Kitchen Radio' }, tile: { key: 'mo|lead album', hue: 10, letter: 'M' } };
+    for (const opts of [{ seedPlain: 'your recent listening' }, undefined]) {
+      const w = makeWindow({ plugins: PLUGINS });
+      w.vm.discover.admin = true;
+      await w.vm.openDiscoverModal(lead, 'p2p', opts);
+      const m = w.vm.discover.modal;
+      assert.deepEqual([m.from, m.tile, m.peerLine], [null, null, null]);
+      assert.equal(w.vm.dmSubtitle(), 'Mo · Lead Album · 2020 · 3:20');
+      assert.deepEqual(w.vm.dmMetaParts()[0], { kind: 'isrc', text: 'USRC17607839' });
+      assert.match(w.vm.dmMetaParts()[1].text, /^50% match to /);
+      assert.ok(w.loads.includes('federate'), 'the admin\'s invite row');
+      assert.deepEqual([w.vm.dmTile(), w.vm.dmArt(), w.vm.dmArtStyle()], [null, null, null]);
+      m.previews = { deezer: { status: 'ready', preview: DEEZER_PREVIEW } };
+      assert.deepEqual([w.vm.dmArt(), w.vm.dmArtStyle()], [DEEZER_PREVIEW.artwork, { backgroundImage: `url(${DEEZER_PREVIEW.artwork})` }], 'a preview\'s artwork as before');
+      assert.equal(w.vm.dmFindVisible(), true, 'Find elsewhere with Copy title, links or none');
+      assert.deepEqual(w.vm.dmGetItRows().map((r) => r.plugin.name), ['youtube'], 'Get it\'s rows');
+      w.vm.dmCopyTitle();
+      assert.deepEqual(w.copiedAs, [undefined]);
+    }
   });
 });

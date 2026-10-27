@@ -103,6 +103,26 @@ const MSTREAMAPI = (() => {
     }
   }
 
+  // A call whose caller reads the answer by its status (Peer
+  // Recommendations' Add and preview, docs/peer-recommendations-plan.md
+  // §3.3, §5.5): → { status, body } — body the parsed JSON, else null;
+  // status 0 when nothing answered. Never throws.
+  async function statusReq(type, route, body) {
+    try {
+      const res = await fetch(mstreamModule.currentServer.host + route, {
+        method: type,
+        headers: {
+          'Content-Type': 'application/json',
+          'x-access-token': mstreamModule.currentServer.token
+        },
+        body: body ? JSON.stringify(body) : undefined
+      });
+      return { status: res.status, body: await res.json().catch(() => null) };
+    } catch (_) {
+      return { status: 0, body: null };
+    }
+  }
+
   mstreamModule.discoverySimilar = (filePath, limit) => {
     return discoveryReq('api/v1/discovery/local/similar/tracks', { filePath, limit: limit || 5 });
   };
@@ -178,6 +198,29 @@ const MSTREAMAPI = (() => {
   // know). Same degrade contract as the calls above.
   mstreamModule.discoveryPluginResolve = (name, recommendation) => {
     return discoveryReq('api/v1/discovery/plugins/' + encodeURIComponent(name) + '/resolve', { recommendation });
+  };
+  // The same resolve with its status: Peer Recommendations' clip, whose 429
+  // waits and is asked once more and whose 403 switches it off (vp.js
+  // clipSend). → { status, body }, never throws.
+  mstreamModule.discoveryPreview = (name, recommendation) => {
+    return statusReq('POST', 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/resolve', { recommendation });
+  };
+
+  // Peer Recommendations (docs/peer-recommendations-plan.md §3.2–§3.3).
+  // Reveal via the ping's discoveryP2pPeers >= 1, never a probe.
+  // The peer strip: the shelf's peers, online or not, and for an admin the
+  // catalogue's addable ones with their Add states. Throws like req()
+  // (err.status 403 = the network switched off, or not an account; 404 =
+  // an older server).
+  mstreamModule.discoveryP2pPeers = () => {
+    return req('GET', mstreamModule.currentServer.host + 'api/v1/discovery/p2p/peers');
+  };
+  // An admin's Add: fetch that peer's snapshot onto the shelf, making room
+  // if it is full. → { status, body }, never throws: 202 adding; 200 done,
+  // or failed with a code; 404 / 409 / 403 / 405; 0 = no answer
+  // (PEERRECS.addOutcome reads it; the server's words are never drawn).
+  mstreamModule.discoveryP2pAdd = (endpointId) => {
+    return statusReq('POST', 'api/v1/admin/discovery/p2p/peer-dbs/add', { endpointId });
   };
 
   // Plug-in jobs (acquire / hand-off) and the collection destination they

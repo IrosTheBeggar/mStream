@@ -2369,6 +2369,56 @@ select {
 .dmodal-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--t4); flex-shrink: 0; }
 .dmodal-status i.dmodal-dot-ok { background: var(--ok); }
 .dmodal-status i.dmodal-dot-off { background: var(--err); }
+/* Peer Recommendations: an offline peer's line has no dot */
+.dmodal-status i.dmodal-dot-none { display: none; }
+/* Peer Recommendations' header: the server's tile — its letter on its
+   hue's colours (inline, PEERRECS.tileColours) — until a preview earns the
+   album's art, an <img> drawn without a referrer */
+.dmodal-art.dmodal-tile { border: 0; font-size: 32px; line-height: 1; font-weight: 600; }
+.dmodal-art-img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+/* Its Preview: one control (the page's play icon), the clip's position,
+   then the provider's attribution or "No preview" */
+.dm-clip { display: flex; align-items: center; gap: 12px; }
+.dm-clip-btn {
+  position: relative; width: 40px; height: 40px; flex: none; padding: 0; border: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; background: var(--src); color: var(--ink); cursor: pointer;
+}
+.dm-clip-btn:focus { background: var(--src); color: var(--ink); }
+.dm-clip-btn:hover { background: var(--src-2); color: var(--ink); }
+/* being asked for (or a 429's wait): a ring turns around it */
+.dm-clip-btn.is-busy::after {
+  content: ''; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--src-2);
+  animation: dm-clip-spin .9s linear infinite;
+}
+@keyframes dm-clip-spin { to { transform: rotate(360deg); } }
+/* no preview for this lead this visit: quiet, and inert */
+.dm-clip-btn.is-none, .dm-clip-btn.is-none:focus, .dm-clip-btn.is-none:hover { background: var(--btn); color: var(--t4); cursor: default; }
+.dm-clip-body { flex: 1 1 auto; min-width: 0; }
+.dm-clip-time { display: flex; align-items: center; gap: 10px; font-size: 11.5px; line-height: 16px; color: var(--t4); font-variant-numeric: tabular-nums; }
+.dm-clip-bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
+.dm-clip-bar i { display: block; height: 100%; background: var(--src); }
+.dm-clip-attrib { display: inline-block; margin-top: 4px; font-size: 12px; line-height: 16px; color: var(--src-2); text-decoration: none; }
+a.dm-clip-attrib:hover { text-decoration: underline; }
+.dm-clip-attrib.dm-clip-none { color: var(--t4); }
+/* Its Get it…: one outlined chip per plug-in, a job's state on its icon */
+.dm-getit, .dm-getit:focus {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; margin: 0; box-sizing: border-box;
+  border: 1px solid rgba(79, 184, 168, .6); border-radius: 4px; background: transparent; color: var(--src-2);
+  font-size: 12.5px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.dm-getit:hover { background: rgba(79, 184, 168, .1); color: var(--src-2); }
+.dm-getit svg { flex-shrink: 0; }
+.dm-getit[aria-disabled="true"], .dm-getit[aria-disabled="true"]:hover { background: transparent; cursor: default; }
+.dm-getit-busy, .dm-getit-busy:hover { cursor: progress; opacity: .6; }
+.dm-getit-live > svg { animation: dm-getit-pulse 1.4s ease-in-out infinite; }
+@keyframes dm-getit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.dm-getit-done, .dm-getit-done:focus, .dm-getit-done:hover { border-color: var(--bord); color: var(--t2); }
+.dm-getit-done > svg { color: var(--ok); }
+.dm-getit-failed > svg { color: var(--errt); }
+@media (prefers-reduced-motion: reduce) {
+  .dm-clip-btn.is-busy::after { animation: none; border-color: var(--src-2); opacity: .5; }
+  .dm-getit-live > svg { animation: none; }
+}
 /* Sections */
 .dmodal-section { border-top: 1px solid var(--div); padding: 12px 20px 14px; }
 .dmodal-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -2645,6 +2695,8 @@ select {
   .dmodal-hint { text-align: left; }
   .dm-btn, .dm-link, .dm-link:focus, .dm-chip, .dm-chip:focus { height: 44px; }
   .dm-btn.dm-btn-icon { width: 44px; }
+  .dm-getit, .dm-getit:focus { height: 44px; }
+  .dm-clip-btn { width: 44px; height: 44px; }
 }
 @media (max-width: 480px) {
   .dm-tiles { grid-template-columns: minmax(0, 1fr); }
