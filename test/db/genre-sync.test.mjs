@@ -15,6 +15,8 @@
  *   - idempotence; stale-link removal when predictions change; healing
  *     after a scanner-style track_genres wipe.
  *   - inactive-model rows / unknown hashes / malformed JSON are skipped.
+ *   - modelGenresMode 'untagged' (the default): tagged tracks get no model
+ *     links and lose old ones; 'all' links every track; removeModelGenres.
  */
 
 import { describe, test, before, after, beforeEach } from 'node:test';
@@ -26,7 +28,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { SCHEMA_VERSION, MIGRATIONS } from '../../src/db/schema.js';
 import { applyAllMigrations } from '../helpers/apply-migrations.mjs';
-import { parseGenreTags, reconcileModelGenres } from '../../src/db/genre-sync.js';
+import { parseGenreTags, reconcileModelGenres, removeModelGenres } from '../../src/db/genre-sync.js';
 import { initDiscoveryDb, closeDiscoveryDb } from '../../src/db/discovery-db.js';
 
 const MODEL = 'test-model';
@@ -180,14 +182,14 @@ describe('reconcileModelGenres', () => {
     db.close();
   });
 
-  test("tag wins on collision — the pair keeps source='tag'", () => {
+  test("tag wins on collision — the pair keeps source='tag' ('all' mode)", () => {
     const db = freshMain();
     db.exec(`
       INSERT INTO genres (name) VALUES ('Synthwave');
       INSERT INTO track_genres (track_id, genre_id, source) VALUES (100, 1, 'tag');
     `);
     seedDiscoveryRow('h1', ['Electronic---Synthwave']);
-    reconcileModelGenres(db, ddb, MODEL);
+    reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
 
     const link = db.prepare(
       'SELECT source FROM track_genres tg JOIN genres g ON g.id = tg.genre_id WHERE tg.track_id = 100 AND g.name = ?'
@@ -207,18 +209,18 @@ describe('reconcileModelGenres', () => {
     db.close();
   });
 
-  test('removes stale model links when predictions change, keeps tag links', () => {
+  test("removes stale model links when predictions change, keeps tag links ('all' mode)", () => {
     const db = freshMain();
     db.exec(`
       INSERT INTO genres (name) VALUES ('Rock');
       INSERT INTO track_genres (track_id, genre_id, source) VALUES (100, 1, 'tag');
     `);
     seedDiscoveryRow('h1', ['Electronic---Synthwave']);
-    reconcileModelGenres(db, ddb, MODEL);
+    reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
 
     ddb.exec('DELETE FROM discovery_tracks');
     seedDiscoveryRow('h1', ['Electronic---Chillwave']);
-    const stats = reconcileModelGenres(db, ddb, MODEL);
+    const stats = reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
 
     assert.deepEqual(modelLinks(db, 100), ['Chillwave', 'Electronic']);
     assert.ok(stats.linksRemoved >= 1, 'Synthwave link dropped');
@@ -279,6 +281,96 @@ describe('reconcileModelGenres', () => {
     assert.deepEqual(modelLinks(db, 103), ['Rock'], 'healthy rows still process');
     assert.deepEqual(modelLinks(db, 100), [], 'malformed row leaves its tracks alone');
     assert.equal(stats.rows, 1, 'only the healthy, mapped row counts');
+    db.close();
+  });
+});
+
+// ── which tracks: modelGenresMode ───────────────────────────────────────────
+
+describe("modelGenresMode 'untagged' (the default)", () => {
+  // Track 100 and 102 are two files of one song (hash h1).
+  function tagRock(db, ...trackIds) {
+    db.exec("INSERT INTO genres (name) VALUES ('Rock')");
+    const gid = db.prepare("SELECT id FROM genres WHERE name = 'Rock'").get().id;
+    for (const id of trackIds) {
+      db.prepare("INSERT INTO track_genres (track_id, genre_id, source) VALUES (?, ?, 'tag')").run(id, gid);
+    }
+  }
+
+  test('a tagged file gets no model links; its untagged copy does', () => {
+    const db = freshMain();
+    tagRock(db, 100);
+    seedDiscoveryRow('h1', ['Electronic---Synthwave']);
+    reconcileModelGenres(db, ddb, MODEL);
+
+    assert.deepEqual(modelLinks(db, 100), []);
+    assert.deepEqual(modelLinks(db, 102), ['Electronic', 'Synthwave']);
+    db.close();
+  });
+
+  test('creates no genre row when every file of the song is tagged', () => {
+    const db = freshMain();
+    tagRock(db, 100, 102);
+    seedDiscoveryRow('h1', ['Electronic---Synthwave']);
+    const stats = reconcileModelGenres(db, ddb, MODEL);
+
+    assert.equal(stats.genresCreated, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM genres WHERE name = 'Synthwave'").get().n, 0);
+    db.close();
+  });
+
+  test('a file tagged after the model filled it loses its model links', () => {
+    const db = freshMain();
+    seedDiscoveryRow('h1', ['Ambient']);
+    reconcileModelGenres(db, ddb, MODEL);
+    assert.deepEqual(modelLinks(db, 100), ['Ambient']);
+
+    tagRock(db, 100);
+    const stats = reconcileModelGenres(db, ddb, MODEL);
+    assert.deepEqual(modelLinks(db, 100), []);
+    assert.deepEqual(modelLinks(db, 102), ['Ambient'], 'the untagged copy keeps its link');
+    assert.equal(stats.linksRemoved, 1);
+    db.close();
+  });
+
+  test('the purge runs even when no discovery row is under the active model', () => {
+    const db = freshMain();
+    seedDiscoveryRow('h1', ['Ambient']);
+    reconcileModelGenres(db, ddb, MODEL);
+
+    tagRock(db, 100);
+    reconcileModelGenres(db, ddb, 'other-model');
+    assert.deepEqual(modelLinks(db, 100), [], 'tagged: removed');
+    assert.deepEqual(modelLinks(db, 102), ['Ambient'], 'untagged: left for the new pin');
+    db.close();
+  });
+
+  test("switching from 'all' keeps model links only on untagged files", () => {
+    const db = freshMain();
+    tagRock(db, 100);
+    seedDiscoveryRow('h1', ['Electronic---Synthwave']);
+    reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
+    assert.deepEqual(modelLinks(db, 100), ['Electronic', 'Synthwave']);
+
+    reconcileModelGenres(db, ddb, MODEL);
+    assert.deepEqual(modelLinks(db, 100), []);
+    assert.deepEqual(modelLinks(db, 102), ['Electronic', 'Synthwave']);
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM track_genres WHERE track_id = 100 AND source = 'tag'").get().n, 1,
+      'the tag link stays');
+    db.close();
+  });
+
+  test('removeModelGenres drops model links only', () => {
+    const db = freshMain();
+    tagRock(db, 100);
+    seedDiscoveryRow('h1', ['Ambient']);
+    reconcileModelGenres(db, ddb, MODEL, { mode: 'all' });
+
+    assert.equal(removeModelGenres(db), 2);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM track_genres WHERE source = 'model'").get().n, 0);
+    assert.equal(db.prepare("SELECT COUNT(*) AS n FROM track_genres WHERE source = 'tag'").get().n, 1);
+    assert.equal(removeModelGenres(db), 0, 'nothing left to remove');
     db.close();
   });
 });

@@ -26,6 +26,13 @@
 // DELETEs rows it owns (source='model'). Tracks whose canonical hash has
 // no row under the ACTIVE model are left untouched (mid model-migration
 // their links would otherwise flap: removed now, re-added after re-embed).
+//
+// Which tracks (scanOptions.modelGenresMode): 'untagged', the default, gives
+// model genres only to tracks with no tag-sourced genre at all — a tagged
+// library's genre vocabulary stays the user's, and a track that gains a
+// genre tag loses its model links on the next sync. 'all' links every
+// analysed track, alongside its tags (up to five styles plus their
+// parents). Turning modelGenres off removes every model link.
 
 import winston from 'winston';
 import * as config from '../state/config.js';
@@ -69,16 +76,36 @@ export function parseGenreTags(json) {
  * @param {DatabaseSync} mainDb   mstream.db (writes happen here)
  * @param {DatabaseSync} ddb      discovery.db (read-only use)
  * @param {string}       modelId  active model pin — only its rows sync
+ * @param {object}       [opts]
+ * @param {'untagged'|'all'} [opts.mode='untagged']  which tracks get links
  * @returns stats { rows, tracks, linksAdded, linksRemoved, genresCreated }
  */
-export function reconcileModelGenres(mainDb, ddb, modelId) {
+export function reconcileModelGenres(mainDb, ddb, modelId, { mode = 'untagged' } = {}) {
   const stats = { rows: 0, tracks: 0, linksAdded: 0, linksRemoved: 0, genresCreated: 0 };
+  const untaggedOnly = mode !== 'all';
 
   const discRows = ddb.prepare(`
     SELECT audio_hash, genre_tags FROM discovery_tracks
     WHERE embedding IS NOT NULL AND model_id = ? AND genre_tags IS NOT NULL
   `).all(modelId);
-  if (discRows.length === 0) { return stats; }
+
+  // 'untagged': model links on a track that carries tag genres go, whatever
+  // its discovery row says (tagged since the model filled it, or left over
+  // from 'all') — checked up front so a clean library opens no write.
+  const purgeTagged = untaggedOnly && mainDb.prepare(`
+    SELECT 1 FROM track_genres m
+     WHERE m.source = 'model'
+       AND EXISTS (SELECT 1 FROM track_genres t WHERE t.track_id = m.track_id AND t.source = 'tag')
+     LIMIT 1
+  `).get() !== undefined;
+  if (discRows.length === 0 && !purgeTagged) { return stats; }
+
+  const tagged = new Set();
+  if (untaggedOnly) {
+    for (const r of mainDb.prepare("SELECT DISTINCT track_id FROM track_genres WHERE source = 'tag'").all()) {
+      tagged.add(r.track_id);
+    }
+  }
 
   // hash → [track ids]: duplicate files share one canonical hash and all
   // get the same links. One pass instead of per-row COALESCE lookups
@@ -139,8 +166,14 @@ export function reconcileModelGenres(mainDb, ddb, modelId) {
       if (entries === null) { continue; }   // malformed payload — leave links as-is
       stats.rows++;
 
+      // Tagged tracks are the purge's below. With none of the hash's files
+      // eligible, no genre row is created either — one that nothing links
+      // would only be reaped by the scanner's orphan sweep and re-made here.
+      const eligible = untaggedOnly ? trackIds.filter((id) => !tagged.has(id)) : trackIds;
+      if (eligible.length === 0) { continue; }
+
       const desired = new Set(entries.map(ensureGenre));
-      for (const trackId of trackIds) {
+      for (const trackId of eligible) {
         stats.tracks++;
         const existing = modelLinks.get(trackId) || new Set();
         for (const gid of desired) {
@@ -155,6 +188,13 @@ export function reconcileModelGenres(mainDb, ddb, modelId) {
         }
       }
     }
+    if (purgeTagged) {
+      stats.linksRemoved += mainDb.prepare(`
+        DELETE FROM track_genres
+         WHERE source = 'model'
+           AND track_id IN (SELECT track_id FROM track_genres WHERE source = 'tag')
+      `).run().changes;
+    }
     mainDb.exec('COMMIT');
   } catch (err) {
     mainDb.exec('ROLLBACK');
@@ -165,6 +205,16 @@ export function reconcileModelGenres(mainDb, ddb, modelId) {
 }
 
 /**
+ * Drop every model link — modelGenres turned off. Returns the count.
+ * The read comes first because the drain hook calls this after every scan
+ * batch that changed the DB; the usual answer is "none left".
+ */
+export function removeModelGenres(mainDb) {
+  if (!mainDb.prepare("SELECT 1 FROM track_genres WHERE source = 'model' LIMIT 1").get()) { return 0; }
+  return mainDb.prepare("DELETE FROM track_genres WHERE source = 'model'").run().changes;
+}
+
+/**
  * Production entry point — config-gated, resolves the managed handles.
  * Returns the reconcile stats, or null when the feature (or a store) is
  * unavailable. Callers wrap in try/catch and log; this never throws for
@@ -172,13 +222,22 @@ export function reconcileModelGenres(mainDb, ddb, modelId) {
  */
 export function syncModelGenres() {
   const scanOpts = config.program?.scanOptions;
-  if (scanOpts?.collectDiscoveryData !== true || scanOpts?.modelGenres !== true) { return null; }
+  if (scanOpts?.modelGenres === false) {
+    // Off means off: links an earlier run made go now, not track by track
+    // as re-parses happen to wipe them.
+    const mainDb = db.getDB();
+    if (!mainDb) { return null; }
+    const removed = removeModelGenres(mainDb);
+    if (removed) { winston.info(`model-genre sync: modelGenres is off — removed ${removed} links`); }
+    return { rows: 0, tracks: 0, linksAdded: 0, linksRemoved: removed, genresCreated: 0 };
+  }
+  if (scanOpts?.collectDiscoveryData !== true) { return null; }
   const mainDb = db.getDB();
   const ddb = discoveryDb.openDiscoveryDbIfExists();
   if (!mainDb || !ddb) { return null; }
 
   const started = Date.now();
-  const stats = reconcileModelGenres(mainDb, ddb, scanOpts.discoveryModel);
+  const stats = reconcileModelGenres(mainDb, ddb, scanOpts.discoveryModel, { mode: scanOpts.modelGenresMode });
   if (stats.linksAdded || stats.linksRemoved || stats.genresCreated) {
     winston.info(
       `model-genre sync: +${stats.linksAdded}/-${stats.linksRemoved} links, `
