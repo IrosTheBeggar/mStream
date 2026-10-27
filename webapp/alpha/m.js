@@ -5753,9 +5753,12 @@ function peerRecsTurnOnInput(ev) {
   peerRecsWrite('[data-prec-on-slot="acts"]', acts);
 }
 
-// Enter in a field turns the network on, as Turn on does.
+// Enter in a field turns the network on, as Turn on does — not the Enter
+// that confirms an IME conversion (ja, ko, zh: isComposing, or Safari's
+// keyCode 229), which is the field's.
 function peerRecsTurnOnKey(ev) {
   const el = ev.target;
+  if (ev.isComposing || ev.keyCode === 229) { return; }
   if (ev.key !== 'Enter' || !el || typeof el.getAttribute !== 'function' || !el.getAttribute('data-prec-on')) { return; }
   ev.preventDefault();
   peerRecsTurnOnSubmit();

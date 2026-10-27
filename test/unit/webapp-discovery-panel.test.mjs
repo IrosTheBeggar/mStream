@@ -3840,10 +3840,10 @@ const typeIn = (box, key, value) => {
   box.locate({ 'data-prec-on': key }, 'input', ['filelist']);
   box.dispatch('filelist', 'input', { target: { value, getAttribute: (n) => (n === 'data-prec-on' ? key : null) } });
 };
-const enterIn = (box, key) => {
+const enterIn = (box, key, extra = {}) => {
   box.locate({ 'data-prec-on': key }, 'input', ['filelist']);
   let prevented = false;
-  box.dispatch('filelist', 'keydown', { key: 'Enter', preventDefault: () => { prevented = true; }, target: { getAttribute: (n) => (n === 'data-prec-on' ? key : null) } });
+  box.dispatch('filelist', 'keydown', { key: 'Enter', ...extra, preventDefault: () => { prevented = true; }, target: { getAttribute: (n) => (n === 'data-prec-on' ? key : null) } });
   return prevented;
 };
 const settle = async () => { for (let i = 0; i < 8; i++) { await flush(); } };
@@ -4101,6 +4101,22 @@ describe('W7: the form', () => {
     assert.equal(enterIn(box, 'description'), true);
     await settle();
     assert.deepEqual(callNames(box.calls).slice(0, 4), ['adminStatus', 'setEnabled', 'setDescription', 'ping']);
+  });
+
+  test('the Enter that confirms an IME conversion (ja / ko / zh) is the IME\'s: it turns nothing on', async () => {
+    const box = onBox();
+    await openPage(box);
+    typeIn(box, 'name', '台所');
+    // Chrome / Firefox: isComposing; Safari: keyCode 229
+    for (const extra of [{ isComposing: true }, { keyCode: 229 }, { isComposing: true, keyCode: 229 }]) {
+      assert.equal(enterIn(box, 'name', extra), false, `${JSON.stringify(extra)}: the browser's`);
+      await settle();
+      assert.ok(!callNames(box.calls).includes('setEnabled'), JSON.stringify(extra));
+      assert.ok(fieldOf(box.S.html(), 'name'), 'the form stays');
+    }
+    assert.equal(enterIn(box, 'name', { isComposing: false, keyCode: 13 }), true, 'the conversion done: Enter turns it on');
+    await settle();
+    assert.equal(box.calls.filter((c) => c.name === 'setEnabled').length, 1);
   });
 
   test('refused: the server\'s words on one line under the button, escaped — the form back as typed, the keyboard on Turn on', async () => {
