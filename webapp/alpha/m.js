@@ -5605,14 +5605,16 @@ function peerRecsAction(act, el) {
 }
 
 // A row's play icon: its lead's clip — paused, resumed or dropped when it
-// already is the clip (VUEPLAYERCORE.clipToggle), else started with the
-// tab's leads after it for ⏭. It opens nothing.
+// is the live clip (VUEPLAYERCORE.clipToggle), else started with the
+// tab's leads after it for ⏭ (its own clip that ended or failed too). It
+// opens nothing.
 function peerRecsPlay(i) {
   const p = peerRecsView;
   const rows = discoveryView.shown.network;
   const r = rows[i];
   if (!r || !p.provider || peerRecsClipOf(r.raw) === 'none') { return; }
-  if (VUEPLAYERCORE.clipState().key !== PEERRECS.leadKey(r.raw)) {
+  const s = VUEPLAYERCORE.clipState();
+  if (!s.live || s.key !== PEERRECS.leadKey(r.raw)) {
     p.seq = { mode: 'one', list: rows.map((x) => x.raw), index: i, prefetched: -1 };
   }
   VUEPLAYERCORE.clipToggle(r.raw);
@@ -5652,9 +5654,12 @@ function peerRecsAdvance() {
 // The clip's events (VUEPLAYERCORE.watchClip, while the page is up): the
 // band and the play icons follow it; Preview all moves on when a clip
 // ends or has no preview, asks the next one ahead once (20 s in), and
-// ends on a failed one rather than run into the provider's limiter.
+// ends on a failed one rather than run into the provider's limiter. A
+// clip the window started is no lead of the page's list: the list goes
+// (Preview all with it; ⏭ takes the tab's leads after that clip's).
 function peerRecsOnClip(ev) {
   const p = peerRecsView;
+  if (ev.type === 'resolving' && p.seq && PEERRECS.leadKey(p.seq.list[p.seq.index]) !== ev.key) { p.seq = null; }
   const seq = p.seq;
   const all = !!seq && seq.mode === 'all';
   const s = ev.state;

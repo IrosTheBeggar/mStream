@@ -3296,6 +3296,45 @@ describe('Peer Recommendations: the band', () => {
     assert.equal(playOf(S.html(), 0).attrs.class, 'prec-play');
   });
 
+  test('the clip\'s list follows the clip: its lead pressed again once it ended or failed; a clip the window started (⏭ goes on from it, its no-preview is the window\'s to say)', async () => {
+    const box = prBox();
+    await openPage(box);
+    const { click, bandClick, clip, toasts, vpc } = box;
+    const said = () => toasts.filter((o) => o.title === 'peerRecs.noPreview').length;
+    click({ 'data-dp': 'precPlay', 'data-i': 0 });
+    clip.fail();
+    click({ 'data-dp': 'precPlay', 'data-i': 0 });
+    clip.fail();
+    assert.equal(said(), 2, 'a failed press, then the same lead again: said both times');
+    click({ 'data-dp': 'precPlay', 'data-i': 1 });
+    clip.play(PREVIEW);
+    clip.end();
+    click({ 'data-dp': 'precPlay', 'data-i': 1 });
+    clip.play(PREVIEW);
+    bandClick({ 'data-dp': 'bandNext' });
+    assert.deepEqual(clip.calls.at(-1), ['start', PR_LEADS[2]], 'played out, then again: ⏭ goes on from it');
+    // a row's clip, then the window's Preview on another lead (dmClipToggle)
+    click({ 'data-dp': 'precPlay', 'data-i': 0 });
+    clip.play(PREVIEW);
+    vpc.clipToggle(PR_LEADS[2]);
+    clip.play(PREVIEW);
+    bandClick({ 'data-dp': 'bandNext' });
+    assert.deepEqual(clip.calls.at(-1), ['start', PR_LEADS[3]], 'the lead after the window\'s');
+    clip.play(PREVIEW);
+    vpc.clipToggle(PR_LEADS[4]);
+    clip.fail();
+    assert.equal(said(), 2, 'the window says it');
+    // Preview all, then the window's Preview: the chain ends with the window's clip
+    click({ 'data-dp': 'precAll' });
+    clip.play(PREVIEW);
+    vpc.clipToggle(PR_LEADS[3]);
+    clip.play(PREVIEW);
+    const starts = clip.calls.filter((c) => c[0] === 'start').length;
+    clip.end();
+    assert.equal(clip.calls.filter((c) => c[0] === 'start').length, starts, 'no next');
+    assert.equal(findDrawn(box.S.html(), { 'data-dp': 'precAll' }).attrs['aria-pressed'], 'false');
+  });
+
   test('Get it… only with the gate — an acquire plug-in (not the connected servers\' copy), jobs allowed, a destination — and it opens the window', async () => {
     const cases = [
       [{ plugins: GET_IT, destination: 'copies' }, true],
