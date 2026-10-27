@@ -5520,7 +5520,8 @@ function peerRecsSelect(id) {
 // One of the page's answers (redoDiscovery). A refusal, or no network on a
 // history answer, is the network switched off (R7); a tab whose peer left
 // the shelf goes back to All (R5); else it is drawn and kept for its tab —
-// the first of a batch as the batch.
+// the first of a batch as the batch. A walk that failed (reason 'error',
+// "Try again") is kept for no tab: tapped again, the tab asks again.
 function peerRecsAnswer(res, tab) {
   const v = discoveryView;
   const p = peerRecsView;
@@ -5535,7 +5536,7 @@ function peerRecsAnswer(res, tab) {
   }
   if (answered) {
     if (!p.batch) { p.batch = res; }
-    p.answers.set(tab, res);
+    if (res.network && res.network.reason === 'error') { p.answers.delete(tab); } else { p.answers.set(tab, res); }
   }
   peerRecsShow(res);
 }

@@ -3007,6 +3007,27 @@ describe('Peer Recommendations: tabs', () => {
     assert.equal(drawnRows(box.S.html()).length, 5, 'All\'s leads');
   });
 
+  test('a walk that failed (reason error) is no answer for its tab: tapped again, the tab asks again', async () => {
+    let failing = true;
+    const base = prTaste();
+    const box = prBox({ taste: (b) => (b.networkPeers && failing ? prAnswer([], { network: { results: [], searched: { peers: 1, tracks: 0 }, reason: 'error' } }) : base(b)) });
+    await openPage(box);
+    box.click({ 'data-dp': 'precTab', 'data-v': KITCHEN });
+    await flush(); await flush();
+    assert.ok(findDrawn(box.S.html(), { 'data-dp': 'retry' }), '"Try again"');
+    failing = false;
+    box.click({ 'data-dp': 'precTab', 'data-v': '' });
+    const n = tasteCalls(box.calls).length;
+    box.click({ 'data-dp': 'precTab', 'data-v': KITCHEN });
+    await flush(); await flush();
+    assert.equal(tasteCalls(box.calls).length, n + 1, 'asked again');
+    assert.deepEqual(tasteCalls(box.calls).at(-1).networkPeers, [KITCHEN]);
+    assert.ok(box.S.html().includes('Long Exposure') && !findDrawn(box.S.html(), { 'data-dp': 'retry' }));
+    box.click({ 'data-dp': 'precTab', 'data-v': '' });
+    box.click({ 'data-dp': 'precTab', 'data-v': KITCHEN });
+    assert.equal(tasteCalls(box.calls).length, n + 1, 'its answer now kept');
+  });
+
   test('the tab\'s peer gone from the shelf in a poll (R5): All again', async () => {
     let answer = peersOf();
     const box = prBox({ peers: () => answer });
