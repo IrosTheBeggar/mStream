@@ -290,6 +290,20 @@ describe('the aside player: one element, the main player paused once and resumed
     song.resolve(ok(SIGNAL));
     await s.step();
     assert.deepEqual([s.c.status, s.player.toggles], ['playing', ['pause']]);
+    // asked while it played, started once it had stopped (paused by the
+    // user, its queue ended): the user's play ends that clip too
+    const late = deferred();
+    const l = makeClip({ playing: true, answers: [late.answer] });
+    l.vm.clipStart(SIGNAL);
+    await l.step();
+    l.player.playerStats.playing = false;
+    await l.step();
+    late.resolve(ok(SIGNAL));
+    await l.step();
+    assert.deepEqual([l.c.status, l.player.toggles], ['playing', []], 'nothing to pause');
+    await l.userPlays();
+    assert.deepEqual([l.c.status, l.types().slice(-1)[0], l.events[l.events.length - 1].why, l.el().paused], ['idle', 'stopped', 'main', true]);
+    assert.deepEqual(l.player.toggles, [], 'and the clip never touches the main player');
   });
 
   test('the window\'s tile and the page\'s clip preempt each other; stopDiscoverPreview leaves a page clip alone', async () => {
