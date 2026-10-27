@@ -3778,7 +3778,13 @@ describe('Peer Recommendations: wiring', () => {
     assert.match(css, /\.prec-add \.prec-circle \{[^}]*dashed/);
     assert.match(css, /\.prec-play \{[^}]*width: 28px; height: 28px;[^}]*background: #4fb8a8;/);
     assert.match(css, /\.prec-band \{[^}]*height: 56px;/);
-    assert.match(css, /#dpage-band \{ flex-shrink: 0; \}/);
+    assert.match(css, /#dpage-band \{ flex-shrink: 0; container-type: inline-size; \}/);
+    // under 560 px the attribution takes the second line whole and wraps:
+    // never under the buttons, never ellipsized (§2 items 11 and 14)
+    const narrow = css.slice(css.indexOf('@container (max-width: 559px) {'));
+    assert.ok(css.indexOf('@container (max-width: 559px) {') > css.indexOf('.prec-band-credit { flex: none;'), 'after the band\'s own rules');
+    assert.match(narrow, /^@container \(max-width: 559px\) \{\n {2}\.prec-band \{ height: auto; min-height: 56px;[^}]*\}\n {2}\.prec-band-sub \{ white-space: normal;[^}]*\}\n {2}\.prec-band-sub:has\(\.prec-band-credit\) > :not\(\.prec-band-credit\) \{ display: none; \}\n {2}\.prec-band-credit \{ flex: 0 1 auto; min-width: 0; \}\n\}/);
+    assert.ok(!/\.prec-band-credit \{[^}]*(?:text-overflow|overflow: hidden)/.test(css), 'the attribution is never cut');
     const touch = css.slice(css.indexOf('@media (pointer: coarse)'));
     assert.match(touch, /\.prec-play::before, \.prec-band-toggle::before \{ content: ''; position: absolute; inset: -8px; \}/, '28 + 2 × 8 = 44');
     assert.match(touch, /\.prec-band-icon \{ width: 44px; height: 44px; \}/);

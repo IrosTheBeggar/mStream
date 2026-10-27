@@ -3456,7 +3456,7 @@ body.on-federated-server .side-nav-note {
 @keyframes prec-spin { to { transform: rotate(360deg); } }
 
 /* the band (#dpage-band): the clip, at the column's foot, out of the scroller */
-#dpage-band { flex-shrink: 0; }
+#dpage-band { flex-shrink: 0; container-type: inline-size; }
 .prec-band { position: relative; height: 56px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 12px; background: #15171c; border-top: 1px solid #2c313a; color: #dfe3ea; font-size: 13px; line-height: 1.4; }
 .prec-band-prog { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: #262b33; overflow: hidden; }
 .prec-band-prog i { display: block; width: 100%; height: 100%; background: #4fb8a8; transform-origin: left center; }
@@ -3497,6 +3497,17 @@ a.prec-band-credit:hover { color: #dfe3ea; }
 }
 @media (max-width: 600px) {
   .prec-band { padding: 0 12px 0 16px; }
+}
+/* a band under 560 px (the phone, a narrow column) has no room for
+   "Artist · attribution" beside its buttons: once resolved, the
+   attribution takes the second line whole, in the artist's place, and
+   wraps rather than run under them — only the title truncates; a third
+   line grows the band */
+@container (max-width: 559px) {
+  .prec-band { height: auto; min-height: 56px; padding-top: 4px; padding-bottom: 4px; }
+  .prec-band-sub { white-space: normal; line-height: 14px; }
+  .prec-band-sub:has(.prec-band-credit) > :not(.prec-band-credit) { display: none; }
+  .prec-band-credit { flex: 0 1 auto; min-width: 0; }
 }
 
 /* the now-playing panel's "Discover page →": where the ping has the page */
