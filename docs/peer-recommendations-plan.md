@@ -31,7 +31,7 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
 6. **[review] "No room" is inert on all three clients**, and the server clears every stored `failed` state (no-room included) on any shelf or pin change. So "No room" disappears by itself as soon as an admin unpins something (§3.3). Only `planRoom` may store `no-room`; the admin panel's synchronous fetch never does.
 7. **[orch] Members get a read-only peers route** (online state and shelf peers). Blocked and incompatible-model peers are hidden from everyone. Unheld catalog peers are admin-only.
 8. **[review] The server stamps the generated tile and the peer monogram.** Every network lead carries `tile: {key, hue, letter}` and every peer row carries `monogram`, built with the server's own `nameKey` (`src/db/name-key.js`). Clients draw them verbatim and spread earned art by `tile.key`. This replaces three client implementations that the reviews found disagreeing (key fold, title fallback, letter casing, monogram base). The vectors live in one server fixture (§5.1).
-9. **[flag] Computed hues replace the boards' fixed sample hues.** `hue = FNV-1a-32(tile.key) % 360` moves Undertow 170→4, Daylight Savings 50→352 and Porchlight 100→353, so three of the nine sample albums sit in reds. The user sees a frame-1 stage screenshot at Gate W (§6) before the webapp PR merges. If they want a curated palette instead, only the server's `leadTile` and the fixture change; clients are untouched.
+9. **[user] Computed hues replace the boards' fixed sample hues.** `hue = FNV-1a-32(tile.key) % 360` moves Undertow 170→4, Daylight Savings 50→352 and Porchlight 100→353, so three of the nine sample albums sit in reds. **Decided at Gate W, 2026-10-27**, after the frame-1 stage screenshot: "Keep the computed tile hues as they are, reds included." No palette change; the server's `leadTile` and the fixture stay as they are.
 10. **[review] One earned-art rule**: after a preview resolves, `preview.artwork` (https only) replaces the tile of every row with the same `tile.key`, **only when** both `nameKey(preview.album) == nameKey(lead.album)` (lead album non-empty) and `nameKey(preview.artist) == nameKey(lead.artist)`. Otherwise nothing changes anywhere, with no per-lead fallback. It lasts for the visit and is held in memory only. Terminal: no artwork ever. Phone cards (175 px) take only Deezer art (~250 px); the band and sheet take any (a logged phone deviation).
 11. **[review] Attribution is drawn verbatim** from `preview.attribution` ("Preview from Deezer" / "Provided courtesy of iTunes"), linked to `preview.link` when it is https. It shows wherever a clip plays, never before a resolve, and is never a translated key on any client (Apple's wording, `src/discovery-plugins/plugins/itunes.js:5-8`).
 12. **[orch] Preview provider** = the first plug-in in `GET /api/v1/discovery/plugins` order whose capabilities include `preview`. There is no fall-through to a second provider: a miss shows "No preview". Pacing and 429 rules are in §5.5.
@@ -877,7 +877,7 @@ House rules for every phase:
 - **Gate W**:
   - `npm run test:unit` + the three discovery files green;
   - the §4.1 live walk done;
-  - **the frame-1 screenshot with computed hues shown to the user, and their palette answer recorded in DECISIONS** (a curated palette would be a small server follow-up before the release);
+  - **the frame-1 screenshot with computed hues shown to the user, and their palette answer recorded in DECISIONS** (a curated palette would be a small server follow-up before the release). Done 2026-10-27: computed hues kept (§2 item 9);
   - #1044 rebase checked.
 - Merge.
 
@@ -918,7 +918,7 @@ House rules for every phase:
 5. Clients merged before the server release stay hidden (the gate), so steps 1–2 may slip without harm. Only step 3 must wait for step 2.
 
 ## 7. Open questions (each with the default this plan builds)
-1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. Decided at Gate W; server-only either way.
+1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. **Decided at Gate W, 2026-10-27: computed hues, reds included.**
 2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins.
 3. **Coordinated release** (§2 item 22): hold the mStream bump for the v0.15.0 pin (default), vs ship server + web first and let the terminal room arrive with the next mStream release.
 4. **Admin panel sync `peer-dbs/fetch` keeps pinning** (default yes, back-compat), while page Adds never pin. An admin who wants a page-added peer kept presses Pin in the panel.
@@ -952,7 +952,7 @@ House rules for every phase:
 - **Translations** in all three clients are not native-reviewed.
 - **CI has no audio device on Linux runners**: the terminal's band and clip path are covered by unit tests, and the e2e leg asserts absence when no device opened.
 - **The rust-i18n wasm release memory** (the v0.8.0 OOM): measure trunk before tagging.
-- **Hues differ from the approved boards** until the user answers Q1.
+- **Hues differ from the approved boards**: accepted by the user at Gate W (Q1, 2026-10-27).
 
 ## Appendix A — review findings
 
