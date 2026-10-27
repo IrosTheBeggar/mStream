@@ -422,6 +422,10 @@ function setBrowserRootPanel(panelName, showBar) {
 
   // Discover's bar lives in the column's chrome: no other panel shows it.
   discoveryHideHead();
+  // Peer Recommendations' poll, preview and band end with the page (a
+  // preview never plays out of sight of its attribution). A panel sliced
+  // out on its own, with no page beside it, has nothing to end.
+  if (typeof peerRecsLeave === 'function') { peerRecsLeave(); }
 
   document.getElementById('localSearchBar').value = "";
   document.getElementById('directoryName').innerHTML = '';
@@ -3958,21 +3962,22 @@ function removeDiscoverDownload(el) {
 //              playable through this server. Two parallel POSTs to
 //              /api/v1/discovery/taste (library, peers), so the library
 //              never waits on a connected server's deadline.
-//   'explore'  the network (p2p leads), reached only through
-//              discoveryPanel({ page: 'explore' }) until its nav row lands.
+//   'peerRecs' Peer Recommendations — the p2p network's leads (songs this
+//              server does not have, metadata only), by peer, with 30 s
+//              previews (docs/peer-recommendations-plan.md §4.1; its own
+//              part is the peerRecs* section after this one).
 // Every request body, view model, label and state comes from the pure
 // half, alpha/discovery-page.js (DISCOVERYPAGE); this part fetches, draws
 // and wires. Network leads and the peer ⋯ open the Discover panel's own
-// recommendation window (VUEPLAYERCORE.openDiscoverModal); the leads reuse
-// its plug-in list and job poll for their badges.
+// recommendation window (VUEPLAYERCORE.openDiscoverModal); the connected
+// servers' rows reuse its plug-in list and job poll for their badges.
 //
 // Row actions use data-dp attributes and ONE delegated handler per render
 // (onDiscoveryClick), indexes into discoveryView.shown — never JSON in an
 // onclick. Local-only: play history never leaves this server.
 const discoveryView = {
-  flags: { discovery: false, discoveryTaste: 0, discoveryP2p: false, federationDiscovery: false, discoveryPlugins: false },
+  flags: { discovery: false, discoveryTaste: 0, discoveryP2p: false, discoveryP2pPeers: 0, federationDiscovery: false, discoveryPlugins: false },
   window: 30,         // the bar's window (localStorage: STORAGE_KEYS.window)
-  newArtistsOnly: false, // the Explore page's toggle (the panel's shared key)
   off: null,          // after a 403: 'checking' (re-pinging) | 'server' | 'account'
   pins: [],           // this visit's pins (vpath form), now playing first
   moreFrom: null,     // { library, peers }: the first row the last "Show more" added
@@ -3994,14 +3999,14 @@ const discoveryView = {
   pending: { main: false, peers: false },
   pendingGen: 0,      // the browseGeneration those requests belong to
   seq: 0,             // one per request; an answer for an older one is dropped
-  page: 'play',       // 'play' (Discover) | 'explore' (the network)
+  page: 'play',       // 'play' (Discover) | 'peerRecs' (Peer Recommendations)
   more: { library: 16, peers: 16 }, // rows each song column shows ("Show more")
   allSeeds: false,    // "Show all" opened (the dropped seeds show too)
   optionsOpen: false, // the bar's "More options" opened (the seed picker shows)
   plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
   badgeRows: [],      // the rows looked up, with their job badges: the
-                      // explore page's network leads, the play page's
-                      // connected-server songs (never library rows)
+                      // play page's connected-server songs (never library
+                      // rows; Peer Recommendations' leads carry none)
   badges: new Map(),  // raw row → badge
   cardBadges: new Map(), // a connected album card's key → its badge
   badgeAsk: 0,        // one per lookup; an older lookup's answer is dropped
@@ -4015,9 +4020,11 @@ const DPAGE_LIMITS = { albums: 12, tracks: 48, peers: 25 };
 
 const DPAGE_ICONS = { play: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', add: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>', refresh: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>', note: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>', open: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zm5 16H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7z"/></svg>' };
 
-// The ping's Discover page flags (init()). A server with the taste route
-// says so with discoveryTaste >= 1 (an integer generation); the p2p and
-// federation sections exist only where the ping advertises them.
+// The ping's Discover page flags (init(), and Peer Recommendations'
+// re-ping). A server with the taste route says so with discoveryTaste >= 1
+// (an integer generation); the p2p and federation sections exist only
+// where the ping advertises them, and Peer Recommendations only with
+// generation 2 and the peers route (discoveryP2pPeers).
 function applyDiscoveryPing(response) {
   const r = response || {};
   MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
@@ -4025,10 +4032,12 @@ function applyDiscoveryPing(response) {
     discovery: r.discovery === true,
     discoveryTaste: MSTREAMAPI.currentServer.discoveryTaste,
     discoveryP2p: r.discoveryP2p === true,
+    discoveryP2pPeers: Number(r.discoveryP2pPeers) || 0,
     federationDiscovery: r.federationDiscovery === true,
     discoveryPlugins: r.discoveryPlugins === true,
   };
   discoverySetEntry(DISCOVERYPAGE.pageAvailable(discoveryView.flags));
+  peerRecsSetEntry(DISCOVERYPAGE.peerRecsAvailable(discoveryView.flags));
 }
 
 // The nav entry and the now-playing panel's "Discover page →" link
@@ -4044,16 +4053,12 @@ function discoveryT(label) {
   return label && label.key ? t(label.key, label.params) : '';
 }
 
-// A job row's sub-line part ({key}|{text}|{parts}), the panel's dmText rule.
-function discoveryText(part) {
-  if (!part) { return ''; }
-  if (Array.isArray(part.parts)) { return part.parts.map(discoveryText).filter(Boolean).join(' · '); }
-  return part.key ? t(part.key, part.params) : String(part.text || '');
-}
-
-// The page is up (not an album opened from it, not another panel).
+// The page is up (not an album opened from it, not another panel) — the
+// page the view holds: Discover's state is 'discovery', Peer
+// Recommendations' 'peerRecs'.
 function discoveryOnScreen() {
-  return programState.length === 1 && !!programState[0] && programState[0].state === 'discovery';
+  const s = programState[0];
+  return programState.length === 1 && !!s && s.state === (discoveryView.page === 'peerRecs' ? 'peerRecs' : 'discovery');
 }
 
 // The now-playing song as a pin (vpath form), or null: nothing plays, or
@@ -4064,26 +4069,24 @@ function discoveryNowPlayingPath() {
   return String(song.rawFilePath).replace(/^\/+/, '') || null;
 }
 
-// This browser's choices: the window and the shared "new artists only".
+// This browser's choice: the window.
 function discoveryLocalChoices() {
   const D = DISCOVERYPAGE;
-  const out = { window: D.DEFAULT_WINDOW, newArtistsOnly: false };
+  const out = { window: D.DEFAULT_WINDOW };
   try {
     out.window = D.storedWindow(localStorage.getItem(D.STORAGE_KEYS.window));
-    out.newArtistsOnly = localStorage.getItem(D.STORAGE_KEYS.newArtistsOnly) === 'true';
   } catch (_) { /* storage blocked: defaults */ }
   return out;
 }
 
-// One choice at a time ('window' | 'newArtistsOnly'): the second key is
-// shared with the now-playing panel, which may have changed it since this
-// visit read it — a window change must not write it back.
+// The page's one stored choice, the window ('window'). "New artists only",
+// stored beside it, is the now-playing panel's alone: the pages never
+// write it.
 function discoverySaveLocalChoice(key) {
   const D = DISCOVERYPAGE;
-  const v = discoveryView;
-  const value = key === 'window' ? String(v.window) : String(v.newArtistsOnly === true);
+  if (key !== 'window') { return; }
   try {
-    localStorage.setItem(D.STORAGE_KEYS[key], value);
+    localStorage.setItem(D.STORAGE_KEYS.window, String(discoveryView.window));
   } catch (_) { /* storage blocked: this visit only */ }
 }
 
@@ -4104,17 +4107,16 @@ function openDiscoveryPage() {
 // from an album opened on it, from the song picker — the visit's pins and
 // drops stay). Either way the page asks again; the answer on screen stays
 // drawn (busy) until the new one lands.
-// opts.page: 'play' (Discover, the default) | 'explore' (the network); a
-// return keeps the page it left.
+// opts.page: 'play' (Discover, the default) | 'peerRecs' (Peer
+// Recommendations, peerRecsPanel); a return keeps the page it left.
 function discoveryPanel(opts) {
   const o = opts || {};
   const keep = !!o.keep;
   const v = discoveryView;
-  // 'explore' is no longer one of DISCOVERYPAGE.PAGES, but its draw code
-  // below still answers to it until Peer Recommendations' replaces it.
-  const known = DISCOVERYPAGE.PAGES.indexOf(o.page) !== -1 || o.page === 'explore';
-  const page = known ? o.page : (keep ? v.page : 'play');
-  programState = [{ state: 'discovery' }];
+  const page = DISCOVERYPAGE.PAGES.indexOf(o.page) !== -1 ? o.page : (keep ? v.page : 'play');
+  // each page is its own panel: its programState, nav row and title
+  const state = page === 'peerRecs' ? 'peerRecs' : 'discovery';
+  programState = [{ state }];
   if (peerContext) {
     // Local-only: home first (switchServer draws this page again).
     if (!keep) { switchServer(null); return; }
@@ -4123,9 +4125,9 @@ function discoveryPanel(opts) {
     browseGeneration++;
     fileExplorerArray = [];
     applyServerContext();
-    highlightNavPanel('discovery');
+    highlightNavPanel(state);
   }
-  setBrowserRootPanel(t('panel.discover'), false);
+  setBrowserRootPanel(t(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover'), false);
   currentBrowsingList = [];
   sonicPathHideBanner();
   if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.dpage === true) { VUEPLAYERCORE.songCapture = null; }
@@ -4133,7 +4135,6 @@ function discoveryPanel(opts) {
     const np = discoveryNowPlayingPath();
     const local = discoveryLocalChoices();
     v.window = local.window;
-    v.newArtistsOnly = local.newArtistsOnly;
     v.off = null;
     v.nowPlaying = np;
     v.pins = np ? [np] : [];
@@ -4156,6 +4157,9 @@ function discoveryPanel(opts) {
     v.cardBadges = new Map();
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
   }
+  // Peer Recommendations' own part: its strip's poll, its preview, a
+  // fresh visit's batch and tab (where the server has the page at all).
+  if (page === 'peerRecs' && DISCOVERYPAGE.peerRecsAvailable(v.flags)) { peerRecsOpen(keep); }
   // No answer yet: the page's own loading state (title row, skeletons).
   renderDiscovery();
   return redoDiscovery();
@@ -4163,14 +4167,19 @@ function discoveryPanel(opts) {
 
 // Ask — always: the route draws a new random batch of seeds on every call,
 // so every open and every tap is a new question. Built from the visit's
-// state alone: the window, the pins, the dropped seeds (exclude) and, on
-// the Explore page, "new artists only". The answer on screen stays drawn
-// (busy) until the new one lands; an answer for an older ask is dropped.
-async function redoDiscovery() {
+// state alone: the window, the pins and the dropped seeds (exclude) — and,
+// on Peer Recommendations, its tab (networkPeers). The answer on screen
+// stays drawn (busy) until the new one lands; an answer for an older ask
+// is dropped.
+// opts.batch (Peer Recommendations): ask on the batch on screen — a strip
+// tab, an Add that landed, Try again (plan §3.5 R2, R4) — pinned to its
+// seeds; without it every ask starts a new batch (R3).
+async function redoDiscovery(opts) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   const gen = browseGeneration;
-  if (!D.pageAvailable(v.flags)) {
+  const peerRecs = v.page === 'peerRecs';
+  if (!(peerRecs ? D.peerRecsAvailable(v.flags) : D.pageAvailable(v.flags))) {
     if (discoveryOnScreen()) { renderDiscovery(); }
     return;
   }
@@ -4180,16 +4189,29 @@ async function redoDiscovery() {
     pins: v.pins,
     exclude: v.excluded,
     passed: v.passed,
-    newArtistsOnly: v.newArtistsOnly,
+    networkPeers: peerRecs && peerRecsView.selected ? [peerRecsView.selected] : [],
     ignoreVPaths: localIgnoreVPaths(),
     // the album strip's share and three pages of songs ("Show more"); the
-    // same on both calls and both pages
+    // same on both of Discover's calls (Peer Recommendations has its own)
     limits: DPAGE_LIMITS,
     flags: v.flags,
   });
   if (!reqs.main) {
     if (discoveryOnScreen()) { renderDiscovery(); }
     return;
+  }
+  let body = reqs.main;
+  const tab = peerRecsTab(peerRecsView.selected);
+  if (peerRecs) {
+    // the batch's seeds pinned (null: no batch, or none to pin) — else a
+    // new batch, whose first answer the page keeps
+    const pinned = opts && opts.batch === true ? D.batchRequest(reqs.main, peerRecsView.batch, peerRecsView.selected) : null;
+    if (pinned) {
+      body = pinned;
+    } else {
+      peerRecsView.batch = null;
+      peerRecsView.answers = new Map();
+    }
   }
 
   const seq = ++v.seq;
@@ -4208,7 +4230,7 @@ async function redoDiscovery() {
   // picker shows. Until then the old pair stays drawn (busy); when the new
   // main lands, the column is in flight (its skeleton), never the old one
   // under the new seeds.
-  const res = await MSTREAMAPI.discoveryTaste(reqs.main).catch(() => null);
+  const res = await MSTREAMAPI.discoveryTaste(body).catch(() => null);
   if (!current()) { return; }
   // "Another pick" ran out: every song the random fallback could draw was
   // passed over this visit (the server answers no seed, notAnalyzed). Start
@@ -4216,8 +4238,11 @@ async function redoDiscovery() {
   // false "scan pending" card. Once: the list is empty on the second ask.
   if (v.passed.length && D.noPickLeft(res)) {
     v.passed = [];
-    return redoDiscovery();
+    return redoDiscovery(opts);
   }
+  // Peer Recommendations: no connected servers, no badges (its leads carry
+  // no job state on the page).
+  if (peerRecs) { return peerRecsAnswer(res, tab); }
   v.main = res;
   v.pending.main = false;
   if (res && typeof res === 'object' && res.disabled !== true) { v.lastRandom = res.seedSource === 'random'; }
@@ -4300,25 +4325,25 @@ function discoveryResponse() {
   return excluded.length === res.excluded.length ? res : Object.assign({}, res, { excluded });
 }
 
-// What the user already did with a row: a network lead's download
-// ("getting it · 64%") on the explore page; on the play page a connected
-// server's copy — of the song, its album or its artist — on that server's
-// song rows and album cards (a copy started from the window leaves its
-// trace on the page). Library rows are never looked up: they are already
-// yours. One batch lookup per 100 rows (every connected-server row, not
-// only the ones "Show more" has drawn so far), then the strip's job poll
-// keeps the badges current while the page is up. Only where plug-ins
-// exist. Called once an answer's rows are drawn: a whole ask's, and the
-// connected column's own Try again.
+// What the user already did with a row: a connected server's copy — of the
+// song, its album or its artist — on that server's song rows and album
+// cards (a copy started from the window leaves its trace on the page).
+// Library rows are never looked up: they are already yours; nor are Peer
+// Recommendations' leads (their job shows in the window alone). One batch
+// lookup per 100 rows (every connected-server row, not only the ones "Show
+// more" has drawn so far), then the strip's job poll keeps the badges
+// current while the page is up. Only where plug-ins exist. Called once an
+// answer's rows are drawn: a whole ask's, and the connected column's own
+// Try again.
 async function discoveryLoadBadges(seq) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
-  if (v.flags.discoveryPlugins !== true || seq !== v.seq) { return; }
+  if (v.flags.discoveryPlugins !== true || v.page !== 'play' || seq !== v.seq) { return; }
   const gen = browseGeneration;
   const ask = ++v.badgeAsk;
   const live = () => gen === browseGeneration && seq === v.seq && ask === v.badgeAsk;
   const res = discoveryResponse();
-  const rows = v.page === 'explore' ? D.networkRows(res).rows : D.peerSongRows(D.peerGroups(res));
+  const rows = D.peerSongRows(D.peerGroups(res));
   if (!rows.length) {
     v.badgeRows = [];
     discoveryIndexBadges();
@@ -4352,7 +4377,7 @@ function discoveryIndexBadges() {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
-  const cards = v.page === 'explore' ? [] : D.peerAlbums(D.peerGroups(discoveryResponse()));
+  const cards = D.peerAlbums(D.peerGroups(discoveryResponse()));
   const badges = D.peerAlbumBadges(cards, v.badgeRows, DISCOVERJOBS);
   v.cardBadges = new Map();
   cards.forEach((c, i) => { if (badges[i]) { v.cardBadges.set(c.key, badges[i]); } });
@@ -4369,7 +4394,9 @@ function discoveryWatchJobs() {
   discoveryMergeJobs(VUEPLAYERCORE.discoverJobs());
   if (!v.unwatch) {
     v.unwatch = VUEPLAYERCORE.watchDiscoverJobs((jobs) => {
-      if (!programState[0] || programState[0].state !== 'discovery') {
+      // the play page's badges: gone with it (another panel, Peer
+      // Recommendations, an album opened from it)
+      if (v.page !== 'play' || !discoveryOnScreen()) {
         if (v.unwatch) { v.unwatch(); }
         v.unwatch = null;
         return;
@@ -4400,21 +4427,18 @@ function discoveryMergeJobs(jobs) {
 
 // Redraw what changed in place — never the page (focus, the album strip's
 // scroll and an open ⋯ popper survive the poll's beat): a row's badge and
-// bar slots (data-bslot / data-pslot = 'n' + a network lead's index, 'p' +
-// a connected-server song row's) and a connected album card's ('a' + its
-// index). A row or card not drawn is skipped; a slot not found falls back
-// to a whole-page draw.
+// bar slots (data-bslot / data-pslot = 'p' + a connected-server song row's
+// index) and a connected album card's ('a' + its index). A row or card not
+// drawn is skipped; a slot not found falls back to a whole-page draw.
 function discoveryPatchBadges(changed) {
   const v = discoveryView;
   const root = document.getElementById('filelist');
   const writes = [];
   for (const raw of changed.rows || []) {
-    const n = v.shown.network.findIndex((r) => r.raw === raw);
-    if (n !== -1) { writes.push(['n' + n, discoveryLeadTag(v.shown.network[n]), discoveryProgressHtml(v.badges.get(raw) || null)]); }
     const p = v.shown.peers.findIndex((r) => r.raw === raw);
     if (p !== -1) {
       const b = v.badges.get(raw) || null;
-      writes.push(['p' + p, discoveryBadgeHtml(b, true), discoveryThinBarHtml(b)]);
+      writes.push(['p' + p, discoveryBadgeHtml(b), discoveryThinBarHtml(b)]);
     }
   }
   for (const key of changed.cards || []) {
@@ -4448,18 +4472,24 @@ function renderDiscovery() {
   const root = document.getElementById('filelist');
   const head = document.getElementById('dpage-head');
   const res = discoveryResponse();
-  const page = v.page === 'explore' ? 'explore' : 'play';
+  const page = v.page === 'peerRecs' ? 'peerRecs' : 'play';
   const st = D.stateOf(res, v.flags, { page });
   v.shown = { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [], allPeers: [], peerAlbums: [] };
 
   if (st.state === 'off') {
+    discoveryHideHead();
+    // Peer Recommendations draws no off card: its re-ping hides the entry
+    // and leaves the page (peerRecsOff).
+    if (page === 'peerRecs') {
+      root.innerHTML = '<div class="dpage dpage-off"></div>';
+      return;
+    }
     // After a 403 the re-ping names the reason: the server switched it off,
     // or this account has no history here (the ping still has the page).
     const account = v.off === 'account' && D.pageAvailable(v.flags);
     const body = v.off === 'checking'
       ? escapeHtml(t('dpage.state.loading'))
       : `<b>${escapeHtml(t(account ? 'dpage.state.unavailable' : 'dpage.state.off'))}</b><br>${escapeHtml(t(account ? 'dpage.state.unavailableBody' : 'dpage.state.offBody'))}`;
-    discoveryHideHead();
     root.innerHTML = `<div class="dpage dpage-off"><div class="dpage-hint">${body}</div></div>`;
     return;
   }
@@ -4472,17 +4502,20 @@ function renderDiscovery() {
   const refocus = discoveryFocusedSelector();
   const cls = `dpage-page-${page}${busy ? ' dpage-busy' : ''}`;
   // The bar sits in the column's chrome (#dpage-head), out of the scroller.
-  // The seed picker (and, on Explore, "new artists only") sit behind its
-  // "More options", in the same host: a first-time user took the seed chips
-  // for songs to play.
+  // The seed picker sits behind its "More options", in the same host: a
+  // first-time user took the seed chips for songs to play. On Peer
+  // Recommendations the chips are the batch's (a tab's answer is pinned to
+  // it: every seed would read as picked).
   let barHtml = discoveryHeadHtml(v.window);
-  if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, res, page); }
+  if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, page === 'peerRecs' && peerRecsView.batch ? peerRecsView.batch : res); }
   let html = `<div class="dpage ${cls}"${st.state === 'loading' ? ' aria-busy="true"' : ''}>`;
   // No host (an index.html older than this script): the bar heads the page
   // in the scroller, as it once did, rather than vanishing.
   if (!head) { html += barHtml; }
 
-  if (st.state === 'failed') {
+  if (page === 'peerRecs') {
+    html += peerRecsBodyHtml(res, st);
+  } else if (st.state === 'failed') {
     html += discoveryCardHtml(t('dpage.state.failed'), '', [['retry', 'dpage.verb.tryAgain', true]]);
   } else {
     if (st.state === 'nothingFinished') {
@@ -4493,11 +4526,9 @@ function renderDiscovery() {
       if (dropped) { acts.splice(1, 0, ['editSeeds', 'dpage.seeds.edit']); }
       html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'), acts);
     } else if (st.state === 'scanPending') {
-      const acts = [['retry', 'dpage.verb.checkAgain']];
-      if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
-      html += discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
+      html += discoveryScanCardHtml(st);
     }
-    html += page === 'explore' ? discoveryExploreHtml(res, st) : discoveryPlayHtml(res, st);
+    html += discoveryPlayHtml(res, st);
   }
   html += '</div>';
   if (head) {
@@ -4510,7 +4541,12 @@ function renderDiscovery() {
     const opts = keep ? head.querySelector('.dpage-options') : null;
     if (opts) { opts.scrollTop = keep; }
   }
+  // Peer Recommendations' strip keeps its sideways scroll across the draw.
+  const strip = page === 'peerRecs' ? root.querySelector('.prec-strip-row') : null;
+  const stripLeft = strip ? strip.scrollLeft : 0;
   root.innerHTML = html;
+  const stripNow = stripLeft ? root.querySelector('.prec-strip-row') : null;
+  if (stripNow) { stripNow.scrollLeft = stripLeft; }
   for (const host of [head, root]) {
     const el = host && host.querySelector('.dpage');
     if (!el) { continue; }
@@ -4552,24 +4588,16 @@ function discoveryHeadHtml(windowDays) {
   </div>`;
 }
 
-// Under the bar while "More options" is open: on Explore its one checkbox
-// ("new artists only"), then the seed picker — or one dim line while there
-// is no answer to pick from.
-function discoveryOptionsHtml(st, res, page) {
-  const check = page === 'explore'
-    ? `<div class="dpage-opt-row">${discoveryCheckHtml('newArtists', discoveryView.newArtistsOnly === true, t('dpage.network.newArtistsOnly'))}</div>`
-    : '';
+// Under the bar while "More options" is open: the seed picker over `res`
+// (the batch's answer) — or one dim line while there is no answer to pick
+// from.
+function discoveryOptionsHtml(st, res) {
   // The body already says why (loading / failed): this line says only
   // what the picker is waiting for.
   const inner = st.state === 'loading' || st.state === 'failed'
     ? `<div class="dpage-hint">${escapeHtml(t('dpage.bar.seedsWait'))}</div>`
     : discoverySeedsHtml(res);
-  return `<div class="dpage-options" id="dpage-options">${check}${inner}</div>`;
-}
-
-// A checkbox drawn as a button (materialize hides a bare <input>).
-function discoveryCheckHtml(act, on, label) {
-  return `<button type="button" class="dpage-tog dpage-check${on ? ' on' : ''}" role="checkbox" aria-checked="${on ? 'true' : 'false'}" data-dp="${act}"><i aria-hidden="true"></i>${escapeHtml(label)}</button>`;
+  return `<div class="dpage-options" id="dpage-options">${inner}</div>`;
 }
 
 // One of the states' cards: a title, a body, its buttons ([act, key, primary]).
@@ -4582,6 +4610,14 @@ function discoveryCardHtml(title, body, acts, note) {
     <div class="dpage-card-acts">${buttons}</div>
     ${note ? `<div class="dpage-card-note">${escapeHtml(note)}</div>` : ''}
   </div>`;
+}
+
+// Nothing analyzed yet: the card that says so (both pages), with Check
+// again and, for an admin, the way to Enrichment.
+function discoveryScanCardHtml(st) {
+  const acts = [['retry', 'dpage.verb.checkAgain']];
+  if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
+  return discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
 }
 
 // "Based on what you finished": the batch the answer was built from (×
@@ -4791,7 +4827,7 @@ function discoverySongRowHtml(r, i, kind) {
   // row has neither.
   const badge = peer ? (discoveryView.badges.get(r.raw) || null) : null;
   const sub = peer
-    ? `<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">${escapeHtml(r.subtitle || '')}</span><div class="dpage-slot" data-bslot="p${i}">${discoveryBadgeHtml(badge, true)}</div></div><div class="dpage-slot" data-pslot="p${i}">${discoveryThinBarHtml(badge)}</div>`
+    ? `<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">${escapeHtml(r.subtitle || '')}</span><div class="dpage-slot" data-bslot="p${i}">${discoveryBadgeHtml(badge)}</div></div><div class="dpage-slot" data-pslot="p${i}">${discoveryThinBarHtml(badge)}</div>`
     : `<div class="discover-row-sub">${escapeHtml(r.subtitle || '')}</div>`;
   return `<div class="discover-row dpage-row pointer" data-dp="${peer ? 'fedQueue' : 'queue'}" data-i="${i}"${tip ? ` title="${escapeHtml(tip)}"` : ''}>
     ${discoveryArtHtml(src, peer)}
@@ -4875,54 +4911,23 @@ function discoveryPeerSongsHtml(s, pg, labels) {
   return `<section class="dpage-col dpage-src-peers" data-source="peers">${discoveryLabelHtml(label)}${acts}${body}</section>`;
 }
 
-// ── Explore (the network): reached only through discoveryPanel({ page:
-// 'explore' }) until its nav row lands.
-function discoveryExploreHtml(res, st) {
-  const s = st.sources.network;
-  return !s || s.status === 'absent' ? '' : discoveryNetworkHtml(res, s);
-}
-
-function discoverySectionHtml(name, title, sub, body) {
-  return `<section class="dpage-sec dpage-sec-${name}" data-source="${name}">
-    <div class="dpage-sec-h"><span class="dpage-dot"></span><h3>${escapeHtml(title)}</h3><span class="dpage-sub">${escapeHtml(sub.filter(Boolean).join(' · '))}</span></div>
-    ${body}
-  </section>`;
-}
-
-// A section's body while it has nothing to draw: skeleton rows (asking),
-// or its one dim line (empty / failed).
-function discoveryEmptyHtml(s) {
-  if (s.status === 'loading') {
-    return `<div class="dpage-rows" aria-busy="true">${discoverySkelHtml('rows', 4)}</div>`;
-  }
-  const retry = s.status === 'failed' ? ` <a href="javascript:void(0)" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</a>` : '';
-  return `<div class="dpage-hint">${escapeHtml(discoveryT(s.reason))}${retry}</div>`;
-}
-
-// A job badge: its word, what it acts on beyond the song ("album", "every
-// album", "what you're missing") and — on the explore page — its sub-line
-// ("getting it · 64%"); its bar while it moves. `plain` (the play page:
-// connected-server rows and album cards) draws the word and the kind
-// alone — "copying · album", "in your collection" — no percentage and no
-// count: the numbers stay in the recommendation window.
-function discoveryBadgeHtml(b, plain) {
+// A job badge (the play page: connected-server rows and album cards): its
+// word and what it acts on beyond the song ("album", "every album", "what
+// you're missing") — "copying · album", "in your collection" — no
+// percentage and no count: the numbers stay in the recommendation window.
+function discoveryBadgeHtml(b) {
   if (!b) { return ''; }
-  const text = [b.tag ? t(b.tag) : '', b.kind ? t(b.kind) : '', plain ? '' : discoveryText(b.sub)].filter(Boolean).join(' · ');
+  const text = [b.tag ? t(b.tag) : '', b.kind ? t(b.kind) : ''].filter(Boolean).join(' · ');
   if (!text) { return ''; }
   const cls = b.tagCls === 'ok' ? 'ok' : (b.tagCls === 'err' ? 'err' : (b.muted ? 'dim' : 'src'));
   return `<span class="dpage-badge dpage-badge-${cls}">${escapeHtml(text)}</span>`;
-}
-
-function discoveryProgressHtml(b) {
-  if (!b || typeof b.progress !== 'number') { return ''; }
-  return `<div class="dpage-prog"><i style="width:${Math.max(0, Math.min(100, b.progress))}%"></i></div>`;
 }
 
 // A connected album card's badge: the row's word, without "album" — the
 // card is the album (an artist copy still says "every album").
 function discoveryCardBadgeHtml(b) {
   const own = b && b.kind === 'discover.tray.kindAlbum' ? Object.assign({}, b, { kind: null }) : b;
-  return discoveryBadgeHtml(own, true);
+  return discoveryBadgeHtml(own);
 }
 
 // The play page's bar: the same thin line, drawn by a scale so no number
@@ -4934,65 +4939,10 @@ function discoveryThinBarHtml(b) {
   return `<div class="dpage-prog dpage-prog-thin" aria-hidden="true"><i style="transform:scaleX(${Number(f.toFixed(3))})"></i></div>`;
 }
 
-// A lead's tag slot: its job badge, else the network's "new artist".
-function discoveryLeadTag(r) {
-  const badge = discoveryView.badges.get(r.raw) || null;
-  if (badge) { return discoveryBadgeHtml(badge); }
-  return r.raw && r.raw.newArtist === true ? `<span class="dpage-tag dpage-new">${escapeHtml(t('dpage.network.newArtist'))}</span>` : '';
-}
-
 // What the recommendation window's match bar names: the seed this row was
 // matched against (its seedHash), else the centroid of the seeds (peers).
 function discoveryMatchOpts(row) {
   return row && row.matchSeed ? { seedTitle: row.matchSeed } : { seedPlain: t('dpage.match.recent') };
-}
-
-// "From the network": metadata-only leads; the row opens its window.
-function discoveryNetworkHtml(res, s) {
-  const D = DISCOVERYPAGE;
-  const v = discoveryView;
-  const net = D.networkRows(res);
-  const searched = net.searched ? Number(net.searched.peers) || 0 : 0;
-  const sub = [t('dpage.network.sub'), net.searched ? t('dpage.network.searched', { count: searched }) : ''];
-  if (s.status !== 'ready') {
-    // This page's own empty lines (the model's are Peer Recommendations').
-    const empty = s.status === 'empty' && s.why !== 'scanPending'
-      ? Object.assign({}, s, { reason: { key: s.why === 'noPeers' ? 'dpage.network.warmingUp' : 'dpage.network.nothingNew', params: {} } })
-      : s;
-    return discoverySectionHtml('network', t('dpage.network.title'), sub, discoveryEmptyHtml(empty));
-  }
-  const rows = net.rows;
-  v.shown.network = rows;
-  let body = '';
-  // One chip per plug-in capability a lead can use (the peer copy is the
-  // connected servers'; Get it needs jobs.allowed).
-  const chips = [];
-  for (const p of v.plugins && v.plugins.available && Array.isArray(v.plugins.list) ? v.plugins.list : []) {
-    if (!p || !p.name || p.name === 'federation-copy') { continue; }
-    const caps = Array.isArray(p.capabilities) ? p.capabilities : [];
-    const title = p.title || p.name;
-    if (caps.includes('preview')) { chips.push({ key: 'dpage.plugins.preview', title }); }
-    if (caps.includes('acquire') && v.plugins.jobsAllowed === true) { chips.push({ key: 'dpage.plugins.getIt', title }); }
-    if (caps.includes('links')) { chips.push({ key: 'dpage.plugins.links', title }); }
-  }
-  if (chips.length) {
-    body += `<div class="dpage-plugins"><span>${escapeHtml(t('dpage.network.pluginsOn'))}</span>${chips.map((c) =>
-      `<span class="dpage-plugin"><b>${escapeHtml(t(c.key))}</b> · ${escapeHtml(c.title)}</span>`).join('')}</div>`;
-  }
-  body += '<div class="dpage-rows">';
-  const open = escapeHtml(t('dpage.verb.openLead'));
-  rows.forEach((r, i) => {
-    const badge = v.badges.get(r.raw) || null;
-    const rest = [r.album, r.year == null ? '' : String(r.year), r.peerName ? t('dpage.network.onServer', { name: r.peerName }) : ''].filter(Boolean).join(' · ');
-    body += `<div class="discover-row dpage-row pointer" data-dp="lead" data-i="${i}"${r.because ? ` title="${escapeHtml(discoveryT(r.because))}"` : ''}>
-      ${discoveryArtHtml(null)}
-      <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}</div><div class="dpage-slot" data-pslot="n${i}">${discoveryProgressHtml(badge)}</div></div>
-      <span class="dpage-slot" data-bslot="n${i}">${discoveryLeadTag(r)}</span>
-      <span class="dpage-verbs"><button type="button" class="dpage-vb" data-dp="lead" data-i="${i}" title="${open}" aria-label="${open}">${DPAGE_ICONS.open}</button></span>
-    </div>`;
-  });
-  body += `</div><div class="dpage-foot"><span class="dpage-foot-note">${escapeHtml(t('dpage.network.rowOpens'))}</span></div>`;
-  return discoverySectionHtml('network', t('dpage.network.title'), sub, body);
 }
 
 function onDiscoveryChange(ev) {
@@ -5030,9 +4980,10 @@ function discoveryAction(act, el) {
   const val = el.getAttribute('data-v');
   const queued = () => iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
   const track = v.shown.tracks[i];
-  const lead = v.shown.network[i];
   const peerRow = v.shown.peers[i];
   const peerAlbum = v.shown.peerAlbums[i];
+  // Peer Recommendations' own controls (its strip, rows and acts line)
+  if (act.indexOf('prec') === 0) { peerRecsAction(act, el); return; }
   if (act === 'play' && track) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
   } else if (act === 'queue' && track) {
@@ -5045,9 +4996,6 @@ function discoveryAction(act, el) {
   } else if (act === 'save') {
     if (!v.shown.allTracks.length) { return; }
     openSavePlaylistModal(() => v.shown.allTracks.map((r) => r.filepath));
-  } else if (act === 'lead' && lead) {
-    // the window gives the keyboard back to this control when it closes
-    VUEPLAYERCORE.openDiscoverModal(lead.raw, 'p2p', Object.assign({}, discoveryMatchOpts(lead), { opener: el }));
   } else if (act === 'peerPlay' && peerRow && peerRow.playable) {
     // Play now, through this server's federation stream proxy.
     const raw = peerRow.raw;
@@ -5084,16 +5032,20 @@ function discoveryAction(act, el) {
     v.moreFrom = Object.assign({}, v.moreFrom, { [val]: v.more[val] });
     v.more = Object.assign({}, v.more, { [val]: D.pageSlice(all, v.more[val]).next });
     renderDiscovery();
-  } else if (act === 'newArtists') {
-    v.newArtistsOnly = v.newArtistsOnly !== true;
-    discoverySaveLocalChoice('newArtistsOnly');
-    redoDiscovery();
   } else if (act === 'refresh') {
     // "New seeds": the same question again — the server draws a new random
-    // batch; the answer on screen stays drawn (busy) until it lands.
+    // batch; the answer on screen stays drawn (busy) until it lands. Peer
+    // Recommendations walks the network on a random pick too: the pick
+    // shown is passed over, as "Another pick" does (plan §3.5 R3).
+    if (v.page === 'peerRecs') {
+      const pick = D.randomPick(peerRecsView.batch || discoveryResponse());
+      if (pick) { v.passed = D.passPick(v.passed, pick); }
+    }
     redoDiscovery();
   } else if (act === 'retry') {
-    redoDiscovery();
+    // Try again / Check again; Peer Recommendations asks on its batch
+    // (a new one when there is none)
+    redoDiscovery({ batch: v.page === 'peerRecs' });
   } else if (act === 'peersRetry') {
     redoDiscoveryPeers();
   } else if (act === 'drop') {
@@ -5245,7 +5197,9 @@ function discoveryQueueAll(shuffle) {
 // "+ Add a song…" / "Choose a song…": the Sonic Path's picker — the next
 // single row click anywhere becomes a pin, then the page comes back.
 function discoveryPick() {
-  const back = () => changeView(() => discoveryPanel({ keep: true }), document.getElementById('nav-discover'));
+  // back to the page it was picked for, with its own nav row lit
+  const nav = document.getElementById(discoveryView.page === 'peerRecs' ? 'nav-peer-recs' : 'nav-discover');
+  const back = () => changeView(() => discoveryPanel({ keep: true }), nav);
   const capture = (song) => {
     sonicPathHideBanner();
     const path = String((song && song.filepath) || '').replace(/^\/+/, '');
@@ -5256,6 +5210,819 @@ function discoveryPick() {
   VUEPLAYERCORE.songCapture = capture;
   showPickBanner(t('dpage.seeds.pickBanner'), back);
   changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
+// ── Peer Recommendations (docs/peer-recommendations-plan.md §4.1) ────────
+// The p2p network's leads — songs other servers have and this one does
+// not, metadata only — seeded by the songs this account finished. The bar,
+// the seed batch, the visit and the recommendation window are Discover's
+// (discoveryPanel({ page: 'peerRecs' }); renderDiscovery draws this page's
+// body with peerRecsBodyHtml). Its own parts:
+//   - the peer strip: All, the shelf's peers, an admin's "+" items (GET
+//     /api/v1/discovery/p2p/peers, polled — R6). A peer narrows the leads
+//     to it, asked again on the batch on screen (R2); each tab's answer is
+//     kept for the batch, so going back to one asks nothing;
+//   - the leads in two columns: a row's open button opens its window, and
+//     only its play icon plays — a 30 s preview through the preview
+//     plug-in (VUEPLAYERCORE.clip*: one clip for the rows, the band and
+//     the window);
+//   - the band (#dpage-band, under the scroller): the clip, its
+//     attribution, ⏸ ⏭, Get it… and ✕;
+//   - Preview all (the tab's leads one after another) and Copy list.
+// What the server stamps — a lead's tile, a peer's label, monogram and
+// hue, a preview's attribution — is drawn as sent (alpha/peer-recs.js,
+// PEERRECS, holds the rules), and every state is keyed on the peer's
+// endpointId. A poll or a clip event writes slots in place (data-*slot,
+// data-prec-strip), never the page: the strip's scroll and the keyboard's
+// control stay where they were.
+const peerRecsView = {
+  visit: 0,           // one per open (and leave): an older visit's answers are dropped
+  peers: null,        // the last peers answer (null: none yet)
+  noRoute: false,     // the peers route answered 404 (an older server): the strip is All alone
+  polling: false,     // the strip polls while the page is up
+  paused: false,      // a poll skipped while the document was hidden (one when it shows)
+  pollTimer: null,
+  polls: 0,           // peers polls sent: an Add's local state stands until a later one answers
+  answered: 0,        // the newest poll answered (an older one landing late is dropped)
+  local: {},          // endpointId → { state, poll }: an Add's state before the server says so
+  posted: new Set(),  // endpointIds this page added whose landing re-asks (R4)
+  posting: new Set(), // the Adds still out
+  selected: null,     // the strip's tab: null = All, else an endpointId
+  batch: null,        // the batch's first answer: its seeds pin every tab and draw the chips
+  answers: new Map(), // tab ('all' | endpointId) → its answer for this batch
+  pending: false,     // an Add landed while a clip played: the tab re-asks when it ends
+  seq: null,          // the clip's list: { mode: 'one' | 'all', list (raw leads), index, prefetched }
+  noPreview: new Set(), // lead keys with no preview this visit
+  provider: null,     // the preview plug-in (PEERRECS.previewProvider): no play icon without one
+  getIt: false,       // the band's Get it…: an acquire plug-in, jobs allowed, a destination
+  stripHtml: '',      // the strip as last drawn: a poll that changes nothing writes nothing
+  cells: [],          // each drawn row's play icon, as last written
+  acts: '',           // the acts line, as last written
+  bandKey: null,      // the lead the band shows
+  checking: false,    // a re-ping is out (peerRecsOff)
+  unwatchClip: null,
+  unwatchGate: null,
+  onVisible: null,    // the visibilitychange listener while the page is up
+};
+
+const PREC_ICONS = { network: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5.5" r="2.2"/><circle cx="5.5" cy="17.5" r="2.2"/><circle cx="18.5" cy="17.5" r="2.2"/><path d="M10.9 7.4 6.6 15.6M13.1 7.4l4.3 8.2M7.7 17.5h8.6"/></svg>', plus: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>', alert: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 6v8"/><circle cx="12" cy="18" r="1.1" fill="currentColor"/></svg>', play: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', pause: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>', next: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6l9 6-9 6zM16.5 6H19v12h-2.5z"/></svg>', close: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
+
+// The nav row (index.html #nav-peer-recs), and the panel when the app
+// comes back to it (PANELS_BY_STATE.peerRecs).
+function peerRecsPanel() {
+  return discoveryPanel({ page: 'peerRecs' });
+}
+
+// The nav row comes and goes with the ping's gate
+// (DISCOVERYPAGE.peerRecsAvailable). Nothing else links the page.
+function peerRecsSetEntry(on) {
+  const nav = document.getElementById('nav-peer-recs');
+  if (nav) { nav.classList.toggle('super-hide', !on); }
+}
+
+// The answers map's key for a tab.
+function peerRecsTab(id) {
+  return id || 'all';
+}
+
+function peerRecsOnScreen() {
+  return discoveryView.page === 'peerRecs' && discoveryOnScreen();
+}
+
+// Opened (discoveryPanel, after setBrowserRootPanel left the last visit):
+// a fresh visit forgets the last one's batch, tab, Add states, previews and
+// earned art; a return ({ keep: true }, from the seed picker) keeps them.
+// Either way the strip polls at once, the clip is watched and the preview
+// plug-in and Get it… are read.
+function peerRecsOpen(keep) {
+  const p = peerRecsView;
+  p.visit++;
+  if (!keep) {
+    Object.assign(p, {
+      noRoute: false, local: {}, posted: new Set(), selected: null, batch: null,
+      answers: new Map(), pending: false, seq: null, noPreview: new Set(),
+    });
+    VUEPLAYERCORE.clipReset();
+  }
+  p.polling = true;
+  p.paused = false;
+  p.stripHtml = '';
+  p.unwatchClip = VUEPLAYERCORE.watchClip(peerRecsOnClip);
+  p.unwatchGate = VUEPLAYERCORE.watchKeepGate(peerRecsReadGate);
+  p.onVisible = peerRecsVisible;
+  document.addEventListener('visibilitychange', p.onVisible);
+  peerRecsPoll();
+  peerRecsReadGate();
+}
+
+// The page left (setBrowserRootPanel: another panel, or the page drawn
+// again): the poll stops, the clip ends — the main player plays again if
+// the clip paused it — and the band goes. Nothing when it was not up.
+function peerRecsLeave() {
+  const p = peerRecsView;
+  if (!p.polling && !p.unwatchClip) { return; }
+  p.visit++;
+  p.polling = false;
+  p.paused = false;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); p.pollTimer = null; }
+  if (p.onVisible) { document.removeEventListener('visibilitychange', p.onVisible); p.onVisible = null; }
+  for (const k of ['unwatchClip', 'unwatchGate']) {
+    if (p[k]) { p[k](); p[k] = null; }
+  }
+  p.seq = null;
+  p.pending = false;
+  VUEPLAYERCORE.clipStop('leave');
+  peerRecsBandHide();
+}
+
+// The preview plug-in (the first listed that previews: no play icons, no
+// Preview all, no band without one) and the band's Get it… (§3.6: an
+// acquire plug-in other than the connected servers' copy, this account
+// allowed to start jobs, and a destination to land in). Read on open and
+// whenever the window says the gate may have moved (watchKeepGate).
+async function peerRecsReadGate() {
+  const p = peerRecsView;
+  const visit = p.visit;
+  const plugins = await VUEPLAYERCORE.ensureDiscoverPlugins();
+  if (visit !== p.visit) { return; }
+  const list = plugins && plugins.available === true && Array.isArray(plugins.list) ? plugins.list : [];
+  const provider = PEERRECS.previewProvider(list);
+  const acquire = !!plugins && plugins.jobsAllowed === true && list.some((x) => x && x.name !== DISCOVERJOBS.COPY_PLUGIN
+    && Array.isArray(x.capabilities) && x.capabilities.indexOf('acquire') !== -1);
+  let getIt = false;
+  if (acquire) {
+    const view = await MSTREAMAPI.discoveryDestination().catch(() => null);
+    if (visit !== p.visit) { return; }
+    getIt = !!(view && view.destination);
+  }
+  const redraw = (provider && provider.name) !== (p.provider && p.provider.name);
+  p.provider = provider;
+  p.getIt = getIt;
+  if (redraw && peerRecsOnScreen()) { renderDiscovery(); }
+  const s = VUEPLAYERCORE.clipState();
+  if (s.live) { peerRecsBandDraw(s); }
+}
+
+// R6: the strip's poll — on open, then every 15 s, every 3 s while a row
+// is being added or an Add of this page's is out; skipped while the
+// document is hidden (one poll when it shows again). A 403 is the network
+// switched off (R7); a 404 an older server: All alone, no more polls; any
+// other failure keeps the last strip.
+async function peerRecsPoll() {
+  const p = peerRecsView;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); p.pollTimer = null; }
+  if (!p.polling) { return; }
+  if (document.visibilityState === 'hidden') { p.paused = true; return; }
+  const visit = p.visit;
+  const n = ++p.polls;
+  let answer = null;
+  let status = 200;
+  try {
+    answer = await MSTREAMAPI.discoveryP2pPeers();
+  } catch (err) {
+    status = (err && err.status) || 0;
+  }
+  if (visit !== p.visit || !p.polling) { return; }
+  if (status === 403) {
+    p.polling = false;
+    peerRecsOff('peers');
+    return;
+  }
+  if (status === 404) {
+    p.polling = false;
+    p.noRoute = true;
+    p.peers = null;
+    peerRecsPatchStrip();
+    return;
+  }
+  if (status === 200 && answer && typeof answer === 'object' && n > p.answered) {
+    p.answered = n;
+    peerRecsTakePeers(answer, n);
+  }
+  peerRecsPollIn(PEERRECS.pollDelay(peerRecsStrip().items, p.posting.size));
+}
+
+function peerRecsPollIn(ms) {
+  const p = peerRecsView;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); }
+  p.pollTimer = p.polling ? setTimeout(peerRecsPoll, ms) : null;
+}
+
+// The document shows again: the poll it skipped, at once.
+function peerRecsVisible() {
+  const p = peerRecsView;
+  if (document.visibilityState === 'hidden' || !p.paused) { return; }
+  p.paused = false;
+  peerRecsPoll();
+}
+
+// The strip's items as the last peers answer and this page's Add states
+// stand (PEERRECS.stripItems); `poll` = the poll an answer belongs to.
+function peerRecsStrip(poll) {
+  const p = peerRecsView;
+  return PEERRECS.stripItems(p.peers, { selected: p.selected, local: p.local, poll });
+}
+
+// A poll's answer: the strip patched in place. The tab's peer gone from
+// the shelf goes back to All (R5: its answer for the batch, else asked);
+// an Add of this page's that landed — or a shelf that filled while "No
+// peers yet" shows — asks the tab again on the batch (R4). An Add by
+// someone else, or a rotation, only moves the strip.
+function peerRecsTakePeers(answer, n) {
+  const p = peerRecsView;
+  const land = PEERRECS.landed(p.peers, answer, p.posted, peerRecsNoPeers());
+  for (const id of land.ids.concat(land.failed)) { p.posted.delete(id); }
+  p.peers = answer;
+  const strip = peerRecsStrip(n);
+  p.local = strip.local;
+  // the shelf moved under the batch: no tab's answer stands
+  if (land.reask) { p.answers = new Map(); }
+  if (strip.fallback) { p.selected = null; }
+  peerRecsPatchStrip();
+  if (strip.fallback) {
+    const all = p.answers.get('all');
+    if (all) {
+      ++discoveryView.seq;
+      peerRecsShow(all);
+    } else {
+      redoDiscovery({ batch: true });
+    }
+  } else if (land.reask) {
+    peerRecsReask();
+  }
+}
+
+// R4's re-ask: the tab on the batch — once the clip is over (the list
+// never changes under a preview).
+function peerRecsReask() {
+  const p = peerRecsView;
+  if (VUEPLAYERCORE.clipState().live) {
+    p.pending = true;
+    return;
+  }
+  p.answers = new Map();
+  if (peerRecsOnScreen()) { redoDiscovery({ batch: true }); }
+}
+
+// What an empty network section says (§2 item 18): "No peers yet" where
+// the walk had no peer to search (its reason) or the strip's shelf has
+// none searchable, else "Nothing new".
+function peerRecsEmpty(s) {
+  const shelf = peerRecsView.peers && peerRecsView.peers.shelf;
+  return s.why === 'noPeers' || (!!shelf && shelf.searchable === 0) ? 'noPeers' : 'nothingNew';
+}
+
+// Whether the page shows "No peers yet" now.
+function peerRecsNoPeers() {
+  const s = DISCOVERYPAGE.stateOf(discoveryResponse(), discoveryView.flags, { page: 'peerRecs' }).sources.network;
+  return s.status === 'empty' && s.why !== 'scanPending' && peerRecsEmpty(s) === 'noPeers';
+}
+
+// An admin's "+" (or its Try again): POST the Add (§3.3), "Adding…" at
+// once and the poll at 3 s; the answer is read by its code
+// (PEERRECS.addOutcome), never by its words.
+async function peerRecsAdd(id) {
+  const p = peerRecsView;
+  const item = peerRecsStrip().items.find((x) => x.kind === 'add' && x.id === id);
+  if (!item || item.act !== 'add' || p.posting.has(id)) { return; }
+  const visit = p.visit;
+  p.local[id] = { state: 'adding', poll: p.polls };
+  p.posted.add(id);
+  p.posting.add(id);
+  peerRecsPatchStrip();
+  peerRecsPollIn(PEERRECS.POLL_FAST_MS);
+  const res = await MSTREAMAPI.discoveryP2pAdd(id);
+  p.posting.delete(id);
+  if (visit !== p.visit) { return; }
+  const out = PEERRECS.addOutcome(res ? res.status : 0, res ? res.body : null);
+  if (out.local) { p.local[id] = { state: out.local, poll: p.polls }; } else { delete p.local[id]; }
+  // only an Add still on its way can land (R4)
+  if (out.outcome !== 'adding' && out.outcome !== 'landed') { p.posted.delete(id); }
+  peerRecsPatchStrip();
+  peerRecsPollIn(out.pollNow ? 0 : PEERRECS.pollDelay(peerRecsStrip().items, p.posting.size));
+}
+
+// A strip tab (R2): its answer for this batch when the page has it, else
+// asked on the batch; the last tap wins (the seq fence).
+function peerRecsSelect(id) {
+  const p = peerRecsView;
+  p.selected = id;
+  const kept = p.batch ? p.answers.get(peerRecsTab(id)) : null;
+  if (kept) {
+    // an ask still out is for another tab
+    ++discoveryView.seq;
+    peerRecsShow(kept);
+    return;
+  }
+  redoDiscovery({ batch: true });
+}
+
+// One of the page's answers (redoDiscovery). A refusal, or no network on a
+// history answer, is the network switched off (R7); a tab whose peer left
+// the shelf goes back to All (R5); else it is drawn and kept for its tab —
+// the first of a batch as the batch.
+function peerRecsAnswer(res, tab) {
+  const v = discoveryView;
+  const p = peerRecsView;
+  v.pending = { main: false, peers: false };
+  const answered = !!res && typeof res === 'object';
+  if (answered && (res.disabled === true || (res.seedSource !== 'random' && res.network === null))) { return peerRecsOff('taste'); }
+  if (answered && res.network && res.network.reason === 'not-on-shelf' && p.selected !== null) {
+    p.selected = null;
+    const all = p.answers.get('all');
+    if (all) { return peerRecsShow(all); }
+    return redoDiscovery({ batch: true });
+  }
+  if (answered) {
+    if (!p.batch) { p.batch = res; }
+    p.answers.set(tab, res);
+  }
+  peerRecsShow(res);
+}
+
+// Draw a tab's answer. Preview all plays its clip out and ends there: it
+// never runs on into another list.
+function peerRecsShow(res) {
+  const v = discoveryView;
+  const p = peerRecsView;
+  if (p.seq && p.seq.mode === 'all') { p.seq.mode = 'one'; }
+  v.pending = { main: false, peers: false };
+  v.main = res;
+  if (discoveryOnScreen()) { renderDiscovery(); }
+}
+
+// R7: the network switched off — a refusal or no network on a history
+// answer ('taste'), a 403 from the strip's poll ('peers') or from a
+// preview's resolve ('clip'). One re-ping (its flags are the app's from
+// now on): off, or no answer, hides the nav row and leaves the page for
+// the file explorer — there is no off card. Still on: a taste answer
+// draws "Try again"; the rest stays as it is.
+async function peerRecsOff(source) {
+  const p = peerRecsView;
+  const v = discoveryView;
+  if (p.checking) { return; }
+  p.checking = true;
+  let r = null;
+  try {
+    r = await MSTREAMAPI.ping();
+  } catch (_) { /* no answer: off */ }
+  p.checking = false;
+  if (r) { applyDiscoveryPing(r); }
+  if (r && DISCOVERYPAGE.peerRecsAvailable(v.flags)) {
+    if (source === 'taste') {
+      v.main = null;
+      if (peerRecsOnScreen()) { renderDiscovery(); }
+    }
+    return;
+  }
+  peerRecsSetEntry(false);
+  if (peerRecsOnScreen()) {
+    changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+  }
+}
+
+// The page's own controls (discoveryAction hands them over): a strip tab
+// or "+", a row's open button or play icon, Preview all, Copy list.
+function peerRecsAction(act, el) {
+  const p = peerRecsView;
+  const i = Number(el.getAttribute('data-i'));
+  const id = el.getAttribute('data-v');
+  const r = discoveryView.shown.network[i];
+  if (act === 'precTab') {
+    if (id === '' || PEERRECS.isEndpointId(id)) { peerRecsSelect(id || null); }
+  } else if (act === 'precAdd') {
+    if (PEERRECS.isEndpointId(id)) { peerRecsAdd(id); }
+  } else if (act === 'precOpen' && r) {
+    // the window: nothing plays; the keyboard comes back here on close
+    VUEPLAYERCORE.openDiscoverModal(r.raw, 'p2p', { from: 'peerRecs', opener: el, peer: PEERRECS.peerLine(r.raw, p.peers), tile: r.tile });
+  } else if (act === 'precPlay' && r) {
+    peerRecsPlay(i);
+  } else if (act === 'precAll') {
+    peerRecsPreviewAll();
+  } else if (act === 'precCopy') {
+    peerRecsCopyList();
+  }
+}
+
+// A row's play icon: its lead's clip — paused, resumed or dropped when it
+// already is the clip (VUEPLAYERCORE.clipToggle), else started with the
+// tab's leads after it for ⏭. It opens nothing.
+function peerRecsPlay(i) {
+  const p = peerRecsView;
+  const rows = discoveryView.shown.network;
+  const r = rows[i];
+  if (!r || !p.provider || peerRecsClipOf(r.raw) === 'none') { return; }
+  if (VUEPLAYERCORE.clipState().key !== PEERRECS.leadKey(r.raw)) {
+    p.seq = { mode: 'one', list: rows.map((x) => x.raw), index: i, prefetched: -1 };
+  }
+  VUEPLAYERCORE.clipToggle(r.raw);
+}
+
+// Preview all: the tab's leads one after another from the top, past those
+// with no preview this visit; pressed while it runs, it stops.
+function peerRecsPreviewAll() {
+  const p = peerRecsView;
+  if (!p.provider) { return; }
+  if (p.seq && p.seq.mode === 'all' && VUEPLAYERCORE.clipState().live) {
+    VUEPLAYERCORE.clipStop('user');
+    return;
+  }
+  const list = discoveryView.shown.network.map((r) => r.raw);
+  const first = PEERRECS.nextIndex(list, -1, p.noPreview);
+  if (first === -1) { return; }
+  p.seq = { mode: 'all', list, index: first, prefetched: -1 };
+  VUEPLAYERCORE.clipStart(list[first]);
+  peerRecsPatchPlay();
+}
+
+// The next lead of the clip's list (past those with no preview), started
+// at once — inside the clip's own event when one ended, so the main player
+// stays paused across the hand-off. → whether there was one.
+function peerRecsAdvance() {
+  const p = peerRecsView;
+  const seq = p.seq;
+  const next = seq ? PEERRECS.nextIndex(seq.list, seq.index, p.noPreview) : -1;
+  if (next === -1) { return false; }
+  seq.index = next;
+  seq.prefetched = -1;
+  VUEPLAYERCORE.clipStart(seq.list[next]);
+  return true;
+}
+
+// The clip's events (VUEPLAYERCORE.watchClip, while the page is up): the
+// band and the play icons follow it; Preview all moves on when a clip
+// ends or has no preview, asks the next one ahead once (20 s in), and
+// ends on a failed one rather than run into the provider's limiter.
+function peerRecsOnClip(ev) {
+  const p = peerRecsView;
+  const seq = p.seq;
+  const all = !!seq && seq.mode === 'all';
+  const s = ev.state;
+  if (ev.type === 'resolving' || ev.type === 'waiting' || ev.type === 'playing' || ev.type === 'paused') {
+    peerRecsBandDraw(s);
+    peerRecsPatchPlay();
+  } else if (ev.type === 'time') {
+    peerRecsBandProgress(s);
+    if (all && s.at >= 20 && seq.prefetched !== seq.index) {
+      seq.prefetched = seq.index;
+      const next = PEERRECS.nextIndex(seq.list, seq.index, p.noPreview);
+      if (next !== -1) { VUEPLAYERCORE.clipPrefetch(seq.list[next]); }
+    }
+  } else if (ev.type === 'art') {
+    peerRecsPatchArt(ev.tileKey);
+  } else if (ev.type === 'ended') {
+    if (!(all && peerRecsAdvance())) { peerRecsEnd(); }
+  } else if (ev.type === 'none' || ev.type === 'failed') {
+    // none: no preview for the visit; failed: for this press only
+    if (ev.type === 'none') { p.noPreview.add(ev.key); }
+    if (all && ev.type === 'none' && peerRecsAdvance()) { return; }
+    // a play icon's press says so (the window's Preview says it itself)
+    if (seq && !all) { iziToast.info({ title: escapeHtml(t('peerRecs.noPreview')), position: 'topCenter', timeout: 1800 }); }
+    peerRecsEnd();
+  } else if (ev.type === 'stopped') {
+    peerRecsEnd();
+  } else if (ev.type === 'reset') {
+    peerRecsPatchArt(null);
+  } else if (ev.type === 'off') {
+    peerRecsEnd();
+    peerRecsOff('clip');
+  }
+}
+
+// The clip's session is over (its last clip played out, ✕, no preview, the
+// main player started, the window's tile took over): the band goes, the
+// play icons settle, and an Add that landed meanwhile asks the tab again.
+function peerRecsEnd() {
+  const p = peerRecsView;
+  p.seq = null;
+  peerRecsBandHide();
+  peerRecsPatchPlay();
+  if (p.pending) {
+    p.pending = false;
+    peerRecsReask();
+  }
+}
+
+// Copy list: the tab's leads, "Artist - Title" a line (§5.7).
+async function peerRecsCopyList() {
+  const text = PEERRECS.copyListText(discoveryView.shown.network);
+  if (!text) { return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    iziToast.success({ title: escapeHtml(t('peerRecs.copied')), position: 'topCenter', timeout: 1800 });
+  } catch (_) {
+    // no clipboard here: the list itself, to copy by hand
+    iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
+  }
+}
+
+// A lead's play icon: 'none' (no preview this visit: muted, inert), its
+// clip's status while it is the live clip (resolving · waiting · playing ·
+// paused), else 'idle'.
+function peerRecsClipOf(raw) {
+  const key = PEERRECS.leadKey(raw);
+  const known = VUEPLAYERCORE.clipResult(raw);
+  if (peerRecsView.noPreview.has(key) || (known && known.status === 'none')) { return 'none'; }
+  const s = VUEPLAYERCORE.clipState();
+  return s.live && s.key === key ? s.status : 'idle';
+}
+
+function peerRecsHttps(url) {
+  if (typeof url !== 'string' || !url) { return false; }
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+// The art a preview earned for a tile key this visit (§5.4: https only).
+function peerRecsArt(tileKey) {
+  const url = VUEPLAYERCORE.clipArt(tileKey);
+  return peerRecsHttps(url) ? url : null;
+}
+
+// The page under the bar (renderDiscovery): the strip, then the state —
+// Discover's scan-pending card, "Try again", "No peers yet", "Nothing new"
+// with New seeds — or the acts line and the leads. Loading: two columns of
+// skeleton rows; an ask with an answer on screen dims it (.dpage-busy).
+function peerRecsBodyHtml(res, st) {
+  const D = DISCOVERYPAGE;
+  const p = peerRecsView;
+  const s = st.sources.network;
+  p.stripHtml = peerRecsStripHtml(peerRecsStrip().items);
+  p.cells = [];
+  p.acts = '';
+  const html = `<div class="prec-strip-host" data-prec-strip>${p.stripHtml}</div>`;
+  if (st.state === 'scanPending') { return html + discoveryScanCardHtml(st); }
+  if (st.state === 'failed' || s.status === 'failed') {
+    return html + `<div class="prec-retry"><button type="button" class="dpage-btn" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
+  }
+  if (s.status === 'loading') {
+    return html + `<div class="dpage-songs dpage-songs-solo prec-songs" aria-busy="true"><div class="dpage-rows dpage-flow" style="--dpage-per:8">${discoverySkelHtml('rows', 16)}</div></div>`;
+  }
+  if (s.status === 'empty') {
+    return html + (peerRecsEmpty(s) === 'noPeers'
+      ? discoveryColHintHtml(t('peerRecs.noPeers'))
+      : discoveryColHintHtml(t('peerRecs.nothingNew'), 'refresh', 'dpage.verb.newSeeds'));
+  }
+  if (s.status !== 'ready') { return html; }
+  const rows = D.networkRows(res).rows;
+  discoveryView.shown.network = rows;
+  p.cells = rows.map((r, i) => peerRecsPlayHtml(r, i));
+  p.acts = peerRecsActsHtml();
+  // no "Show more": every lead (at most 32), column-major in blocks of 16
+  const blocks = D.columnBlocks(rows).map((b) =>
+    `<div class="dpage-rows dpage-flow" style="--dpage-per:${b.perColumn}">${b.rows.map((x) => peerRecsRowHtml(x.row, x.i)).join('')}</div>`).join('');
+  return `${html}<div class="dpage-slot" data-aslot="acts">${p.acts}</div><div class="dpage-songs dpage-songs-solo prec-songs">${blocks}</div>`;
+}
+
+// The peer strip (§5.6): All, the shelf's peers (the server's monogram on
+// the peer's hue, a dot while it is online, dimmed while not), then an
+// admin's "+" items with their Add states. Drawn once the first poll
+// answered (All alone on a server without the route), and not at all when
+// there is no peer to show.
+function peerRecsStripHtml(items) {
+  const p = peerRecsView;
+  if (!p.noRoute && (!p.peers || items.length < 2)) { return ''; }
+  return `<section class="prec-strip" role="group" aria-label="${escapeHtml(t('peerRecs.a11y.peers'))}"><div class="prec-strip-row">${items.map(peerRecsItemHtml).join('')}</div></section>`;
+}
+
+// One strip item (PEERRECS.stripItems): All and a shelf peer select the
+// tab; an addable peer's "+" and Try again POST the Add, its Adding… and
+// No room are inert. data-v is the endpoint id (64 hex, checked by
+// stripItems), the inline style an integer hue.
+function peerRecsItemHtml(it) {
+  const label = it.kind === 'all' ? t('peerRecs.all') : it.label;
+  const name = `<span class="prec-name">${escapeHtml(label)}</span>`;
+  if (it.kind === 'all') {
+    return `<button type="button" class="prec-peer prec-all${it.selected ? ' is-on' : ''}" data-dp="precTab" data-v="" aria-pressed="${it.selected}"><span class="prec-circle">${PREC_ICONS.network}</span>${name}</button>`;
+  }
+  const attrs = `data-v="${escapeHtml(it.id)}" title="${escapeHtml(label)}" style="--h:${PEERRECS.hueOf(it.hue)}"`;
+  const mono = escapeHtml(it.monogram);
+  const dot = it.online ? '<i class="prec-online" aria-hidden="true"></i>' : '';
+  if (it.kind === 'peer') {
+    return `<button type="button" class="prec-peer${it.online ? '' : ' prec-off'}${it.selected ? ' is-on' : ''}" data-dp="precTab" ${attrs} aria-pressed="${it.selected}" aria-label="${escapeHtml(label)}"><span class="prec-circle">${mono}${dot}</span>${name}</button>`;
+  }
+  const cls = { adding: ' prec-adding', failed: ' prec-failed', noRoom: ' prec-noroom' }[it.state] || '';
+  const face = { adding: mono, failed: PREC_ICONS.alert, noRoom: PREC_ICONS.plus }[it.state] || PREC_ICONS.plus + dot;
+  const state = it.text ? `<span class="prec-state">${escapeHtml(t(it.text.key, it.text.params))}</span>` : '';
+  return `<button type="button" class="prec-peer prec-add${cls}" data-dp="precAdd" ${attrs} aria-label="${escapeHtml(t(it.aria.key, it.aria.params))}"${it.act ? '' : ' aria-disabled="true"'}><span class="prec-circle">${face}</span>${name}${state}</button>`;
+}
+
+// "Preview all · Copy list" over the leads (Preview all only with a
+// preview plug-in; pressed while it runs).
+function peerRecsActsHtml() {
+  const p = peerRecsView;
+  const copy = `<button type="button" class="prec-act" data-dp="precCopy">${escapeHtml(t('peerRecs.copyList'))}</button>`;
+  if (!p.provider) { return `<div class="dpage-acts prec-acts">${copy}</div>`; }
+  const on = !!p.seq && p.seq.mode === 'all';
+  return `<div class="dpage-acts prec-acts"><button type="button" class="prec-act prec-act-all" data-dp="precAll" aria-pressed="${on}">${PREC_ICONS.play}${escapeHtml(t('peerRecs.previewAll'))}</button><span class="dpage-sep" aria-hidden="true">·</span>${copy}</div>`;
+}
+
+// A lead: its open button (the tile, title and "Artist · Album") opens its
+// recommendation window; its play icon, always shown, plays its preview.
+// No job state on the row: the window shows it.
+function peerRecsRowHtml(r, i) {
+  return `<div class="discover-row dpage-row prec-row">
+    <button type="button" class="prec-open" data-dp="precOpen" data-i="${i}" aria-haspopup="dialog"><span class="dpage-slot" data-tslot="${i}">${peerRecsTileHtml(r)}</span><span class="discover-row-info"><span class="discover-row-title">${escapeHtml(r.title)}</span><span class="discover-row-sub">${escapeHtml(r.subtitle || '')}</span></span></button>
+    <span class="dpage-slot" data-cslot="${i}">${peerRecsView.cells[i] || ''}</span>
+  </div>`;
+}
+
+// A lead's 40 px tile: the art a preview earned for its tile key this
+// visit, else the server's tile (its letter on its hue), else the note.
+function peerRecsTileHtml(r) {
+  const art = r.tile ? peerRecsArt(r.tile.key) : null;
+  if (art) { return `<span class="dpage-art"><img loading="lazy" src="${escapeHtml(art)}" alt="" referrerpolicy="no-referrer" onerror="discoveryPeerArtFailed(this)"></span>`; }
+  if (r.tile) { return `<span class="dpage-art prec-tile" style="--h:${PEERRECS.hueOf(r.tile.hue)}" aria-hidden="true">${escapeHtml(r.tile.letter)}</span>`; }
+  return discoveryArtHtml(null);
+}
+
+// A lead's play icon — none without a preview plug-in: play; pause while
+// its clip plays (a turning ring while it is asked for); muted and inert
+// with no preview this visit.
+function peerRecsPlayHtml(r, i) {
+  if (!peerRecsView.provider) { return ''; }
+  const st = peerRecsClipOf(r.raw);
+  const title = { title: r.title };
+  if (st === 'none') {
+    return `<button type="button" class="prec-play is-none" data-dp="precPlay" data-i="${i}" aria-disabled="true" aria-label="${escapeHtml(t('peerRecs.a11y.previewSong', title))}" title="${escapeHtml(t('peerRecs.noPreview'))}">${PREC_ICONS.play}</button>`;
+  }
+  const busy = st === 'resolving' || st === 'waiting';
+  const on = busy || st === 'playing';
+  const cls = st === 'idle' ? '' : ` is-live${busy ? ' is-busy' : ''}`;
+  return `<button type="button" class="prec-play${cls}" data-dp="precPlay" data-i="${i}" aria-pressed="${on}" aria-label="${escapeHtml(t(on ? 'peerRecs.a11y.pauseSong' : 'peerRecs.a11y.previewSong', title))}">${on ? PREC_ICONS.pause : PREC_ICONS.play}</button>`;
+}
+
+// Write one of the page's slots in place; the keyboard's control, when it
+// was inside, comes back.
+function peerRecsWrite(sel, html) {
+  const root = document.getElementById('filelist');
+  const slot = root && root.querySelector(sel);
+  if (!slot) { return; }
+  const refocus = discoveryFocusedSelector();
+  const held = refocus && slot.querySelector(refocus) ? refocus : null;
+  slot.innerHTML = html;
+  if (held) { discoveryRefocus(held); }
+}
+
+// The play icons and Preview all as the clip now stands: only the slots
+// that changed are written.
+function peerRecsPatchPlay() {
+  const p = peerRecsView;
+  if (!peerRecsOnScreen()) { return; }
+  discoveryView.shown.network.forEach((r, i) => {
+    const html = peerRecsPlayHtml(r, i);
+    if (html === p.cells[i]) { return; }
+    p.cells[i] = html;
+    peerRecsWrite(`[data-cslot="${i}"]`, html);
+  });
+  const acts = peerRecsActsHtml();
+  if (acts !== p.acts) {
+    p.acts = acts;
+    peerRecsWrite('[data-aslot="acts"]', acts);
+  }
+}
+
+// A preview earned its art (tileKey), or a fresh visit took it back
+// (null): every drawn row with that tile, in place.
+function peerRecsPatchArt(tileKey) {
+  if (!peerRecsOnScreen()) { return; }
+  discoveryView.shown.network.forEach((r, i) => {
+    if (r.tile && (tileKey === null || r.tile.key === tileKey)) { peerRecsWrite(`[data-tslot="${i}"]`, peerRecsTileHtml(r)); }
+  });
+}
+
+// The strip as the last poll left it, in place: its sideways scroll kept,
+// the keyboard back on the item it was on (by endpoint id; All when that
+// one went). A poll that changes nothing writes nothing.
+function peerRecsPatchStrip() {
+  const p = peerRecsView;
+  const root = document.getElementById('filelist');
+  const host = root && peerRecsOnScreen() ? root.querySelector('[data-prec-strip]') : null;
+  if (!host) { return; }
+  const html = peerRecsStripHtml(peerRecsStrip().items);
+  if (html === p.stripHtml) { return; }
+  p.stripHtml = html;
+  const row = host.querySelector('.prec-strip-row');
+  const left = row ? row.scrollLeft : 0;
+  const at = document.activeElement;
+  const id = at && typeof at.closest === 'function' && at.closest('[data-prec-strip]') ? at.getAttribute('data-v') : null;
+  host.innerHTML = html;
+  const next = left ? host.querySelector('.prec-strip-row') : null;
+  if (next) { next.scrollLeft = left; }
+  if (id !== null) {
+    const same = id === '' || PEERRECS.isEndpointId(id) ? host.querySelector(`[data-v="${id}"]`) : null;
+    const el = same || host.querySelector('[data-v=""]');
+    if (el && typeof el.focus === 'function') { el.focus(); }
+  }
+}
+
+// The band (#dpage-band, under the scroller): the clip as it stands — its
+// earned art or tile, title, artist and, once resolved, its attribution
+// (verbatim; linked only to https), then ⏸ ⏭, Get it… (where the server
+// can get it: it opens the lead's window) and ✕. Hidden while no clip is
+// live. The keyboard's button comes back after a redraw.
+function peerRecsBandDraw(s) {
+  const band = document.getElementById('dpage-band');
+  if (!band || !s || !s.live) {
+    peerRecsBandHide();
+    return;
+  }
+  const at = document.activeElement;
+  const act = at && typeof at.closest === 'function' && at.closest('#dpage-band') ? at.getAttribute('data-dp') : null;
+  peerRecsView.bandKey = s.key;
+  band.innerHTML = peerRecsBandHtml(s);
+  band.classList.remove('super-hide');
+  const el = band.querySelector('.prec-band');
+  if (el) { el.addEventListener('click', peerRecsBandClick); }
+  const again = act && /^band[A-Za-z]+$/.test(act) ? band.querySelector(`[data-dp="${act}"]`) : null;
+  if (again && typeof again.focus === 'function') { again.focus(); }
+}
+
+function peerRecsBandHtml(s) {
+  const raw = s.raw || {};
+  const busy = s.status === 'resolving' || s.status === 'waiting';
+  const on = busy || s.status === 'playing';
+  const tile = s.tile;
+  const art = tile ? peerRecsArt(tile.key) : null;
+  const face = art
+    ? `<span class="dpage-art prec-band-art"><img src="${escapeHtml(art)}" alt="" referrerpolicy="no-referrer" onerror="discoveryPeerArtFailed(this)"></span>`
+    : (tile
+      ? `<span class="dpage-art prec-band-art prec-tile" style="--h:${PEERRECS.hueOf(tile.hue)}" aria-hidden="true">${escapeHtml(tile.letter)}</span>`
+      : `<span class="dpage-art prec-band-art dpage-art-ph">${DPAGE_ICONS.note}</span>`);
+  const pv = s.preview;
+  const words = pv && typeof pv.attribution === 'string' ? pv.attribution.trim() : '';
+  const credit = !words ? '' : (peerRecsHttps(pv.link)
+    ? `<a class="prec-band-credit" href="${escapeHtml(pv.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(words)}</a>`
+    : `<span class="prec-band-credit">${escapeHtml(words)}</span>`);
+  const artist = typeof raw.artist === 'string' && raw.artist.trim() ? `<span class="prec-band-artist">${escapeHtml(raw.artist.trim())}</span>` : '';
+  const sub = [artist, credit].filter(Boolean).join('<span aria-hidden="true">·</span>');
+  const getIt = peerRecsView.getIt ? `<button type="button" class="prec-band-getit" data-dp="bandGetIt" aria-haspopup="dialog">${escapeHtml(t('peerRecs.getIt'))}</button>` : '';
+  return `<div class="prec-band" role="region" aria-label="${escapeHtml(t('peerRecs.preview'))}">
+    <div class="dpage-slot" data-band-prog>${peerRecsBandProgHtml(s)}</div>
+    ${face}
+    <div class="prec-band-text"><div class="prec-band-title">${escapeHtml(raw.title || '')}</div>${sub ? `<div class="prec-band-sub">${sub}</div>` : ''}</div>
+    <div class="prec-band-acts">
+      <button type="button" class="prec-band-toggle${busy ? ' is-busy' : ''}" data-dp="bandToggle" aria-pressed="${on}" aria-label="${escapeHtml(t(on ? 'peerRecs.a11y.pause' : 'peerRecs.a11y.play'))}">${on ? PREC_ICONS.pause : PREC_ICONS.play}</button>
+      <button type="button" class="prec-band-icon" data-dp="bandNext" aria-label="${escapeHtml(t('peerRecs.a11y.next'))}">${PREC_ICONS.next}</button>
+      ${getIt}
+      <button type="button" class="prec-band-icon" data-dp="bandClose" aria-label="${escapeHtml(t('peerRecs.a11y.close'))}">${PREC_ICONS.close}</button>
+    </div>
+  </div>`;
+}
+
+// The band's 2 px line: how far the clip is.
+function peerRecsBandProgHtml(s) {
+  const secs = Number(s.seconds) > 0 ? Number(s.seconds) : 30;
+  const at = Math.max(0, Math.min(secs, Number(s.at) || 0));
+  return `<div class="prec-band-prog" role="progressbar" aria-label="${escapeHtml(t('peerRecs.a11y.position'))}" aria-valuemin="0" aria-valuemax="${Math.round(secs)}" aria-valuenow="${Math.round(at)}"><i style="transform:scaleX(${Number((at / secs).toFixed(3))})"></i></div>`;
+}
+
+// A time tick: the line alone (the band's buttons keep the keyboard).
+function peerRecsBandProgress(s) {
+  const band = document.getElementById('dpage-band');
+  const slot = band && band.querySelector('[data-band-prog]');
+  if (slot) { slot.innerHTML = peerRecsBandProgHtml(s); } else { peerRecsBandDraw(s); }
+}
+
+// The band hidden and emptied; the keyboard, when it was on it, goes to
+// the lead's play icon (else Preview all, else the bar).
+function peerRecsBandHide() {
+  const band = document.getElementById('dpage-band');
+  if (!band) { return; }
+  const at = document.activeElement;
+  const held = !!at && typeof at.closest === 'function' && !!at.closest('#dpage-band');
+  band.classList.add('super-hide');
+  band.innerHTML = '';
+  if (!held) { return; }
+  const i = discoveryView.shown.network.findIndex((r) => PEERRECS.leadKey(r.raw) === peerRecsView.bandKey);
+  discoveryRefocus(...(i === -1 ? [] : [`[data-dp="precPlay"][data-i="${i}"]`]), '[data-dp="precAll"]', '[data-dp="options"]');
+}
+
+// The band's own delegated click (its host is outside #filelist).
+function peerRecsBandClick(ev) {
+  const el = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-dp]') : null;
+  if (!el) { return; }
+  const p = peerRecsView;
+  const act = el.getAttribute('data-dp');
+  const s = VUEPLAYERCORE.clipState();
+  if (!s.raw) { return; }
+  if (act === 'bandToggle') {
+    VUEPLAYERCORE.clipToggle(s.raw);
+  } else if (act === 'bandNext') {
+    // a clip the window started: the tab's leads after it
+    if (!p.seq) {
+      const list = discoveryView.shown.network.map((r) => r.raw);
+      p.seq = { mode: 'one', list, index: list.findIndex((raw) => PEERRECS.leadKey(raw) === s.key), prefetched: -1 };
+    }
+    if (!peerRecsAdvance()) { VUEPLAYERCORE.clipStop('user'); }
+  } else if (act === 'bandGetIt' && p.getIt) {
+    VUEPLAYERCORE.openDiscoverModal(s.raw, 'p2p', { from: 'peerRecs', opener: el, peer: PEERRECS.peerLine(s.raw, p.peers), tile: s.tile });
+  } else if (act === 'bandClose') {
+    VUEPLAYERCORE.clipStop('user');
+  }
 }
 
 ///////////////// Transcode
@@ -7254,6 +8021,7 @@ const PANELS_BY_STATE = {
   searchPanel: () => setupSearchPanel(),
   discoverDownloads: () => discoverDownloadsPanel(),
   discovery: () => discoveryPanel(),
+  peerRecs: () => peerRecsPanel(),
 };
 
 // Which of those a federated server can actually answer: its library, and
