@@ -6103,6 +6103,33 @@ describe('the window opened from Peer Recommendations (vp.js, plan §2 item 15)'
     assert.equal(w.vm.discover.modal.from, null, 'closed: the blank window');
   });
 
+  test('the keyboard back from a window the band\'s Get it… opened: the band\'s button redrawn, else Preview all, else the bar — never <body>', () => {
+    const opener = new Function(`${vpModuleFn('dmOpenerOf')}\nreturn dmOpenerOf;`)();
+    const back = new Function(`${vpModuleFn('dmAttrValue')}\n${vpModuleFn('dmFocusBack')}\nreturn dmFocusBack;`)();
+    const node = (tagName, attrs = {}) => {
+      const el = { tagName, isConnected: true, focused: 0, attrs, getAttribute: (n) => (n in attrs ? String(attrs[n]) : null), hasAttribute: (n) => n in attrs,
+        setAttribute: (n, v) => { attrs[n] = String(v); }, closest: () => null, focus() { el.focused += 1; } };
+      return el;
+    };
+    const queries = [];
+    const docOf = (found) => ({ querySelector: (sel) => { queries.push(sel); return found[sel] || null; } });
+    const getIt = node('BUTTON', { 'data-dp': 'bandGetIt' });
+    const gone = { ...opener(getIt), el: { ...getIt, isConnected: false } };
+    assert.equal(gone.sel, '[data-dp="bandGetIt"]');
+    const redrawn = node('BUTTON', { 'data-dp': 'bandGetIt' });
+    assert.equal(back(gone, docOf({ '#dpage-band button[data-dp="bandGetIt"]': redrawn })), redrawn, 'the band redrew: its Get it…');
+    assert.equal(redrawn.focused, 1);
+    const all = node('BUTTON', { 'data-dp': 'precAll' });
+    const bar = node('BUTTON', { 'data-dp': 'options' });
+    queries.length = 0;
+    assert.equal(back(gone, docOf({ '#filelist .dpage [data-dp="precAll"]': all, '#dpage-head .dpage [data-dp="options"]': bar })), all, 'the band went: Preview all');
+    assert.deepEqual(queries.slice(-3), ['#dpage-band [data-dp="bandGetIt"]', '#filelist .dpage h3', '#filelist .dpage [data-dp="precAll"]']);
+    assert.equal(back(gone, docOf({ '#dpage-head .dpage [data-dp="options"]': bar })), bar, 'no preview plug-in: the bar\'s More options');
+    // a row whose index went with a redraw of fewer leads
+    const row = { el: null, sel: '[data-dp="precOpen"][data-i="9"]', key: null };
+    assert.equal(back(row, docOf({ '#filelist .dpage [data-dp="precAll"]': all })), all);
+  });
+
   test('Discover\'s and the now-playing panel\'s windows are unchanged', async () => {
     const lead = { title: 'Lead', artist: 'Mo', album: 'Lead Album', year: 2020, duration: 200, isrc: 'USRC17607839', similarity: 0.5, peer: { endpointId: 'e1', name: 'Kitchen Radio', label: 'Kitchen Radio' }, tile: { key: 'mo|lead album', hue: 10, letter: 'M' } };
     for (const opts of [{ seedPlain: 'your recent listening' }, undefined]) {
