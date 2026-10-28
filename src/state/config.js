@@ -296,6 +296,12 @@ const dbOptions = Joi.object({
   // corrupts), but a hard power loss can lose transactions committed since the
   // most recent WAL checkpoint. Runtime-changeable via the admin API/UI.
   synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL'),
+  // SQLite journal mode for mstream.db and discovery.db. 'auto' (default)
+  // uses WAL unless the dbDirectory's filesystem can't keep the server,
+  // scanner and workers' locks apart — a Docker Desktop bind mount, say —
+  // and then DELETE (src/db/journal-mode.js; boot logs the reason). 'WAL' or
+  // 'DELETE' skips that check. Applied at boot; every other process follows.
+  journalMode: Joi.string().valid('auto', 'WAL', 'DELETE').default('auto'),
   // SQLite page-cache size for the main server connection, in MEBIBYTES.
   // Applied as `PRAGMA cache_size = -(cacheSizeMb*1024)` — a negative cache_size
   // means "this many KiB of memory" rather than a page count. A larger cache

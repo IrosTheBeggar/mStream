@@ -316,6 +316,18 @@ The `albumArtDirectory` will be publicly available
 }
 ```
 
+The database in `dbDirectory` is shared by several mStream processes (the server, the scanner and the background workers), so its filesystem has to keep their file locks apart. Local disks and Docker named volumes do. On any other filesystem mStream checks at boot, and where a lock taken by one process can be invisible to another, as on Docker Desktop bind mounts from macOS, it switches SQLite from WAL to the slower DELETE journal and logs why. For full speed, keep `dbDirectory` on a local disk or a Docker named volume.
+
+`db.journalMode` skips that check: `"WAL"` or `"DELETE"` (default `"auto"`).
+
+```json
+{
+  "db": {
+    "journalMode": "DELETE"
+  }
+}
+```
+
 ## Logs
 
 set `writeLogs` to `true` to enable writing logs to the filesystem

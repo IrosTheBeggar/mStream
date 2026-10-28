@@ -8,6 +8,7 @@ import { shouldMigrate, migrate } from './migrate-from-loki.js';
 import { normalizeArtistName } from '../util/artist-normalize.js';
 import { albumKey } from './album-key.js';
 import { nameKey } from './name-key.js';
+import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode.js';
 
 let db = null;
 let clearSharedTimer = null;
@@ -64,12 +65,19 @@ export function initDB() {
     try { db.close(); } catch (err) { winston.warn(`Could not close the previous database handle: ${err.message}`); }
     db = null;
   }
+  // WAL for concurrent readers and writers, unless this directory's file
+  // locks can't keep the server, scanner and workers apart — then a rollback
+  // journal (journal-mode.js). This connection owns the choice: the mode is
+  // stored in the database header, and the other processes inherit it.
+  const journalMode = resolveJournalMode(config.program.storage.dbDirectory,
+    { override: config.program.db?.journalMode });
+  ensureDbFile(dbPath);
   db = new DatabaseSync(dbPath);
 
-  // Enable WAL mode for better concurrent read/write performance
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
+  // busy_timeout first: leaving WAL waits for the database to itself.
   db.exec('PRAGMA busy_timeout = 5000');
+  setJournalMode(db, journalMode, dbPath);
+  db.exec('PRAGMA foreign_keys = ON');
   // V31 adds AFTER triggers on tracks/artists/albums to maintain the
   // FTS5 index. The triggers themselves don't recursively fire other
   // user triggers (they write to FTS5 virtual tables, which have no

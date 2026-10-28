@@ -31,6 +31,7 @@ import crypto from 'crypto';
 import { DatabaseSync } from './sqlite-driver.js';
 import winston from 'winston';
 import * as config from '../state/config.js';
+import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode.js';
 
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
 export const DISCOVERY_SCHEMA_VERSION = 3;
@@ -173,21 +174,28 @@ export function getDiscoveryDb() {
 }
 
 // Idempotent open + migrate. Mirrors manager.js initDB(): WAL for
-// concurrent reader/writer friendliness, busy_timeout so a future forked
-// worker holding a write lock doesn't turn admin reads into instant
-// SQLITE_BUSY errors.
+// concurrent reader/writer friendliness (or the rollback journal
+// journal-mode.js picks where file locks can't keep processes apart),
+// busy_timeout so a forked worker holding a write lock doesn't turn admin
+// reads into instant SQLITE_BUSY errors.
 //
 // `dbPath` is optional — the server passes nothing (config-derived path);
-// an explicit path is for callers with no config state (the future forked
-// embedding worker, which receives paths via its JSON payload, and tests).
+// an explicit path is for callers with no config state (the forked workers,
+// which receive paths via their JSON payload, and tests). Only the server
+// sets the journal mode, like initDB(): the workers inherit it from the
+// database header.
 export function initDiscoveryDb(dbPath) {
   if (db) { return db; }
 
   openedPath = dbPath || discoveryDbPath();
+  ensureDbFile(openedPath);
   db = new DatabaseSync(openedPath);
   try {
-    db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 5000');
+    if (!dbPath) {
+      setJournalMode(db, resolveJournalMode(config.program.storage.dbDirectory,
+        { override: config.program.db?.journalMode }), openedPath);
+    }
     runMigrations();
     seedMeta();
   } catch (err) {

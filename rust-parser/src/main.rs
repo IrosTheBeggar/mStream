@@ -1983,32 +1983,40 @@ fn run_scan(config: &ScanConfig) -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let conn = Connection::open(&config.db_path)?;
-    // busy_timeout: wait up to 5s for the single WAL writer lock instead of
-    // failing immediately with "database is locked" under contention.
+    // busy_timeout: wait up to 5s for the single writer lock instead of
+    // failing immediately with "database is locked" under contention. First,
+    // so it also covers the journal_mode read below.
     // recursive_triggers: V31 FTS5 triggers — defence-in-depth to match
     // src/db/manager.js initDB() and src/db/scanner.mjs.
+    //
+    // No journal_mode here: the server sets it on the database header and
+    // this connection inherits it — WAL, or DELETE where file locks can't
+    // keep the processes apart (src/db/journal-mode.js). Forcing WAL would
+    // undo that.
     //
     // synchronous = NORMAL: in WAL mode this is crash-safe — the DB can never
     // corrupt; a power loss can only lose recently-committed transactions
     // (those in the WAL since the last checkpoint), which the next scan
     // re-derives via the mtime fast-path — and it drops the per-COMMIT
     // fsync, otherwise on the critical path of EVERY batch, a large win on
-    // the HDD/NAS storage mStream often runs on.
+    // the HDD/NAS storage mStream often runs on. Under the DELETE fallback
+    // NORMAL is not corruption-proof on a power cut, so FULL there.
     // We scope it to the scanner connection only; the main server (manager.js)
     // keeps the FULL default so user data stays maximally durable.
     //
     // cache_size = -65536 (64 MB) + temp_store = MEMORY: keep the FTS5 index
     // pages and the end-of-scan cleanup working set in RAM instead of
     // spilling to disk. Cheap next to the per-worker file buffers.
-    conn.execute_batch(
-        "PRAGMA journal_mode = WAL;
-         PRAGMA foreign_keys = ON;
-         PRAGMA busy_timeout = 5000;
+    conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
+    let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+    let synchronous = if journal_mode.eq_ignore_ascii_case("wal") { "NORMAL" } else { "FULL" };
+    conn.execute_batch(&format!(
+        "PRAGMA foreign_keys = ON;
          PRAGMA recursive_triggers = ON;
-         PRAGMA synchronous = NORMAL;
+         PRAGMA synchronous = {synchronous};
          PRAGMA cache_size = -65536;
-         PRAGMA temp_store = MEMORY;",
-    )?;
+         PRAGMA temp_store = MEMORY;"
+    ))?;
     // Keep every prepared SELECT/INSERT/UPDATE/DELETE used by commit_track
     // in the statement cache. Hot loop does ~15 distinct statements per
     // changed file; the default (16) just barely fits, so bump headroom
