@@ -41,6 +41,7 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from './manager.js';
 import * as discoveryDb from './discovery-db.js';
+import { activeMoodVersion } from './discovery-features-lib.js';
 import {
   CACHE_EXT as WAVEFORM_CACHE_EXT,
   FAILED_EXT as WAVEFORM_FAILED_EXT,
@@ -358,6 +359,20 @@ function discoveryCoverage() {
     "SELECT value FROM discovery_meta WHERE key = 'embedding_runtime'"
   ).get();
 
+  // Mood heads ride the embedding pass, so their catch-up re-pass (a
+  // library embedded before they existed) shows up as the pass running
+  // with embeddings at 100% — say how far the moods are. Index-only
+  // through idx_discovery_tracks_embedded_model_mood. null when moods are
+  // off or the model has no heads.
+  const moodVersion = activeMoodVersion(config.program.scanOptions);
+  let moods = null;
+  if (moodVersion !== null) {
+    const moodDone = ddb.prepare(
+      'SELECT COUNT(*) AS n FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ? AND mood_version = ?'
+    ).get(model, moodVersion).n;
+    moods = { done: moodDone, remaining: done - moodDone };
+  }
+
   return {
     scope: 'global',
     unit: 'tracks',
@@ -366,6 +381,7 @@ function discoveryCoverage() {
     done,
     remaining,
     outcomes,
+    moods,
   };
 }
 

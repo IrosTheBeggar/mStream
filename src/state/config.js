@@ -236,6 +236,14 @@ const scanOptions = Joi.object({
   // otherwise take every core). Raise it on a big box that should chew
   // through its first backfill faster.
   embeddingThreads: Joi.number().integer().min(1).max(64).optional(),
+  // Run the discovery model's mood heads in the same pass (src/db/discovery-
+  // features-lib.js): danceable, happy, sad, relaxed, aggressive, party,
+  // acoustic and instrumental scores per track, mirrored into track_moods
+  // (src/db/mood-sync.js). Nearly free per track — the heads read the
+  // inference the embedding already runs — but a library embedded before
+  // they existed is re-analysed once to catch up, at the cost of its first
+  // embedding pass. Turning it off stops that and empties track_moods.
+  analyzeMoods: Joi.boolean().default(true),
   // Feed the discovery model's style predictions (discovery_tracks.
   // genre_tags) into the real genre tables as track_genres rows with
   // source='model' (src/db/genre-sync.js) — genre browse / filtering /

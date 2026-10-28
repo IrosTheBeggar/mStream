@@ -29,16 +29,23 @@
 // error-cooldown, deduped by canonical hash (byte-identical copies embed
 // once), skipping spoken-word genres and out-of-window durations.
 //
+// Mood heads (`moods`, when the model has them): every write carries the
+// heads' scores and the set's pin (mood_version), and an embedded row whose
+// pin is missing or old is eligible again — re-analysed once, after the
+// rows that have no embedding at all. The head files are fetched before any
+// work is picked: if the mirror can't serve them, moods sit this run out
+// rather than re-selecting the whole library every pass.
+//
 // CLI input — single argv entry, JSON-encoded (built in task-queue.js):
 //   { discoveryDbPath, libraryDbPath, ffmpegPath, model, modelCacheDir,
-//     runtime, threads, maxPerRun, expectedSchemaVersion, minDurationSec,
-//     maxDurationSec, maxAnalyzeSeconds, errorCooldownSec, runBudgetSec,
-//     skipGenres }
+//     runtime, threads, moods, maxPerRun, expectedSchemaVersion,
+//     minDurationSec, maxDurationSec, maxAnalyzeSeconds, errorCooldownSec,
+//     runBudgetSec, skipGenres }
 //
 // stdout protocol — line-buffered single-line JSON events:
 //   { event: 'discoveryRuntime', runtime, threads, skipped }   once per run with work
 //   { event: 'discoveryProgress', attempted, total }
-//   { event: 'discoveryComplete', attempted, embedded, errors, hitCap }
+//   { event: 'discoveryComplete', attempted, embedded, moodOnly, errors, hitCap }
 //   { event: 'error', message }     ← always followed by a non-zero exit
 //
 // Exit codes: 0 completed (per-track failures recorded, not fatal);
@@ -52,7 +59,9 @@ import {
   initDiscoveryDb, setMeta, upsertDiscoveryTrack, bumpRowSeq, publishIndexEpoch,
   fillCatalogueFieldsFromLibrary,
 } from './discovery-db.js';
-import { createEmbedder, analyzeFile, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL } from './discovery-features-lib.js';
+import {
+  createEmbedder, analyzeFile, ensureMoodHeadFiles, moodTagsOf, EMBEDDING_MODELS, DEFAULT_EMBEDDING_MODEL,
+} from './discovery-features-lib.js';
 
 const SCHEMA_GUARD_EXIT = 3;
 // Exit contract with task-queue.js: NO embedding runtime could be loaded —
@@ -96,6 +105,9 @@ const schema = Joi.object({
   // Inference threads for either runtime; unset = embedding-runtime.js's
   // policy (two, one on small-memory machines).
   threads: Joi.number().integer().min(1).max(64).optional(),
+  // Run the model's mood heads (scanOptions.analyzeMoods). Off by default
+  // here so a caller that doesn't say gets exactly the embedding pass.
+  moods: Joi.boolean().default(false),
   maxPerRun: Joi.number().integer().min(1).default(50),
   // Guard against the LIBRARY db being mid-migration under us (same contract
   // as the other enrichment workers). discovery.db needs no equivalent —
@@ -175,9 +187,12 @@ function pruneOrphans() {
 }
 
 // Tracks needing (re-)embedding: no discovery row, no embedding yet, or an
-// embedding pinned to a DIFFERENT model (the swap-migration path). One
-// representative per canonical hash; failures respect the error cooldown.
-function selectEligibleTracks(nowSec) {
+// embedding pinned to a DIFFERENT model (the swap-migration path) — and,
+// with `moodVersion` set, a current embedding whose mood pin differs
+// (`mood_only`, ordered after the rest so new music is embedded first).
+// One representative per canonical hash; failures respect the error
+// cooldown.
+function selectEligibleTracks(nowSec, moodVersion) {
   const errorCutoff = nowSec - cfg.errorCooldownSec;
   const genres = cfg.skipGenres.map((g) => g.toLowerCase());
   const genreClause = genres.length
@@ -201,7 +216,8 @@ function selectEligibleTracks(nowSec) {
            al.name AS album,
            COALESCE(t.year, al.year) AS year,
            t.isrc AS isrc,
-           al.mbz_release_group_id AS release_group_mbid
+           al.mbz_release_group_id AS release_group_mbid,
+           (dt.embedding IS NOT NULL AND dt.model_id IS ?) AS mood_only
       FROM lib.tracks t
       JOIN lib.libraries l ON l.id = t.library_id
       LEFT JOIN lib.artists a ON a.id = t.artist_id
@@ -214,14 +230,31 @@ function selectEligibleTracks(nowSec) {
        AND t.duration IS NOT NULL
        AND t.duration >= ? AND t.duration <= ?
        ${genreClause}
-       AND (dt.audio_hash IS NULL OR dt.embedding IS NULL OR dt.model_id IS NOT ?)
+       AND (dt.audio_hash IS NULL OR dt.embedding IS NULL OR dt.model_id IS NOT ?
+            OR (? IS NOT NULL AND dt.mood_version IS NOT ?))
        AND (dl.audio_hash IS NULL OR dl.last_attempt_at < ?)
      GROUP BY COALESCE(t.audio_hash, t.file_hash)
-     ORDER BY track_id
+     ORDER BY mood_only, track_id
      LIMIT ?
   `;
-  const params = [cfg.minDurationSec, cfg.maxDurationSec, ...genres, cfg.model, errorCutoff, cfg.maxPerRun];
+  const params = [cfg.model, cfg.minDurationSec, cfg.maxDurationSec, ...genres, cfg.model,
+    moodVersion, moodVersion, errorCutoff, cfg.maxPerRun];
   return db.prepare(sql).all(...params);
+}
+
+// The mood pin this run writes, or null when moods are off for it: not
+// asked for, a model without heads, or head files the mirror can't serve
+// (logged; the next run tries again).
+async function resolveMoodVersion() {
+  const spec = EMBEDDING_MODELS[cfg.model];
+  if (!cfg.moods || !spec.moods) { return null; }
+  try {
+    await ensureMoodHeadFiles(spec, cfg.modelCacheDir);
+    return spec.moods.version;
+  } catch (err) {
+    console.error(`Warning: mood heads unavailable, embedding without moods this run: ${err?.message || err}`);
+    return null;
+  }
 }
 
 const recordError = db.prepare(`
@@ -254,11 +287,12 @@ async function run() {
   pruneOrphans();
   const filled = fillCatalogueFields();
 
+  const moodVersion = await resolveMoodVersion();
   const nowSec = Math.floor(Date.now() / 1000);
-  const tracks = selectEligibleTracks(nowSec);
+  const tracks = selectEligibleTracks(nowSec, moodVersion);
 
   if (tracks.length === 0) {
-    emit({ event: 'discoveryComplete', attempted: 0, embedded: 0, errors: 0, filled, hitCap: false });
+    emit({ event: 'discoveryComplete', attempted: 0, embedded: 0, moodOnly: 0, errors: 0, filled, hitCap: false });
     return;
   }
 
@@ -270,6 +304,7 @@ async function run() {
     modelCacheDir: cfg.modelCacheDir,
     runtime: cfg.runtime,
     threads: cfg.threads,
+    moods: moodVersion !== null,
   });
   // Which runtime serves this run, with how many threads, and which
   // candidates were passed over and why — the parent logs it, and the
@@ -294,25 +329,35 @@ async function run() {
   setMeta('embedding_model_license', embedder.spec.license || '');
   setMeta('embedding_model_attribution', embedder.spec.attribution || '');
 
+  // Head sessions can still fail after their files checked out. Then the
+  // rows that only lacked moods wait for a later run: written without
+  // moods they would stay eligible, and every batch would pick them again.
+  let work = tracks;
+  if (moodVersion !== null && !embedder.hasMoods) {
+    console.error(`Warning: mood heads failed to load, embedding without moods this run: ${embedder.moodError}`);
+    work = tracks.filter((t) => !t.mood_only);
+  }
+
   const startMs = Date.now();
   let attempted = 0;
   let embedded = 0;
+  let moodOnly = 0;      // of embedded: rows that only lacked current moods
   let errors = 0;
   let persisted = 0;     // rows actually written — hitCap depends on it
   let hitBudget = false;
 
-  for (let i = 0; i < tracks.length; i++) {
+  for (let i = 0; i < work.length; i++) {
     // Wall-clock budget: un-attempted tracks stay eligible; the hitCap
     // re-enqueue resumes them next pass.
     if (Date.now() - startMs > cfg.runBudgetSec * 1000) { hitBudget = true; break; }
 
-    const t = tracks[i];
+    const t = work[i];
     attempted++;
     const attemptSec = Math.floor(Date.now() / 1000);
 
     try {
       const absPath = path.join(t.root, t.filepath);
-      const { embedding, genreTags } =
+      const { embedding, genreTags, moods } =
         await analyzeFile(embedder, absPath, cfg.ffmpegPath, {
           maxSeconds: cfg.maxAnalyzeSeconds,
           // Known duration → analyzeFile seek-decodes just the analysis
@@ -331,6 +376,13 @@ async function run() {
         // Model-derived style tags (EffNet's activations head) — free with
         // the same inference. NULL for models without a classifier head.
         genreTags,
+        // Mood heads, same inference: every score (internal) plus the
+        // exported coarse pair — danceability and the labels at or over
+        // the threshold. All NULL when moods are off for this run.
+        moodScores: moods,
+        moodVersion: moods ? moodVersion : null,
+        danceability: moods?.danceable ?? null,
+        moodTags: moodTagsOf(moods, embedder.spec),
         // Tier-1 filter metadata the library already knows (tag- or
         // essentia-sourced).
         bpm: t.bpm,
@@ -352,6 +404,7 @@ async function run() {
       // A previous failure for this hash is superseded by success.
       try { clearError.run(t.canon_hash); } catch (_e) { /* best-effort */ }
       embedded++;
+      if (t.mood_only) { moodOnly++; }
       persisted++;
     } catch (err) {
       // Decode/inference failure (undecodable codec, timeout, disk, OOM).
@@ -363,8 +416,8 @@ async function run() {
       catch (_e) { /* best-effort */ }
     }
 
-    if (attempted % 5 === 0 && i + 1 < tracks.length) {
-      emit({ event: 'discoveryProgress', attempted, total: tracks.length });
+    if (attempted % 5 === 0 && i + 1 < work.length) {
+      emit({ event: 'discoveryProgress', attempted, total: work.length });
     }
   }
 
@@ -372,11 +425,12 @@ async function run() {
     event: 'discoveryComplete',
     attempted,
     embedded,
+    moodOnly,
     errors,
     filled,
     // More work probably remains (full batch or budget cut). persisted>0
     // breaks the would-be infinite re-enqueue when NOTHING could be written.
-    hitCap: (tracks.length === cfg.maxPerRun || hitBudget) && persisted > 0,
+    hitCap: (work.length === cfg.maxPerRun || hitBudget) && persisted > 0,
   });
 }
 
