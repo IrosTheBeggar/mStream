@@ -304,21 +304,15 @@ function renderArtist(artist) {
     </li>`;
 }
 
-// `source` — 'tag' | 'model', the kind of genre the list shows — rides on
-// the row so its songs are asked for the same way; null on a server that
-// does not tell sources apart.
+// `source` — 'tag' | 'model', the one kind of genre the list shows — rides
+// on the row so its songs are asked for the same way; null when the list
+// shows both kinds, or the server does not tell them apart.
 function renderGenre(genre, trackCount, source) {
   return `<li class="collection-item">
     <div data-genre="${escapeHtml(genre)}"${source ? ` data-genre-source="${escapeHtml(source)}"` : ''}${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
       ${escapeHtml(genre)} <span style="color:#888;font-size:13px;">(${escapeHtml(trackCount)})</span>
     </div>
   </li>`;
-}
-
-// The Genres panel's two kinds, as a two-button switch at the top of the list.
-function genreSourceSwitch(active) {
-  const btn = (source, label) => `<button type="button" class="genre-source-btn" aria-pressed="${active === source}" onclick="chooseGenreSource('${source}')">${escapeHtml(t(label))}</button>`;
-  return `<div class="genre-source" role="radiogroup" aria-label="${escapeHtml(t('genres.sourceLabel'))}">${btn('tag', 'genres.sourceTags')}${btn('model', 'genres.sourceGenerated')}</div>`;
 }
 
 function renderFileWithMetadataHtml(filepath, lokiId, metadata) {
@@ -437,6 +431,8 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('local_search_btn').style.display = '';
   document.getElementById('upload_btn').classList.add('super-hide');
   document.getElementById('mkdir_btn').classList.add('super-hide');
+  // The Genres panel's switch; getAllGenres shows it when there's a choice.
+  document.getElementById('genre_source')?.classList.add('super-hide');
 
   // Inside a peer view every panel says whose library it is showing.
   const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
@@ -3332,25 +3328,38 @@ async function getArtistsAlbums(artist) {
 }
 
 /////////////// Genres
-// Which genres the panel lists: 'tag' — the files' own — or 'model' — the
-// discovery model's (the server's `source` filter). Remembered across
-// visits; the switch is only drawn when the server has both kinds.
-// This visit's pick comes first: storage can be off (a private window).
+// Which genres the panel lists: 'tag' — the files' own — 'model' — the
+// discovery model's — or 'both' (the server's `source` filter, left off
+// for both). Remembered across visits; this visit's pick comes first, as
+// storage can be off (a private window). The switch is the browse bar's
+// #genre_source, shown only when the server has both kinds.
 let genreSourceChoice = null;
+
+const GENRE_SOURCES = ['tag', 'model', 'both'];
 
 function preferredGenreSource() {
   if (genreSourceChoice) { return genreSourceChoice; }
   try {
     const v = localStorage.getItem('genre-source');
-    return v === 'tag' || v === 'model' ? v : null;
+    return GENRE_SOURCES.includes(v) ? v : null;
   } catch (_) { return null; }
 }
 
 function chooseGenreSource(source) {
-  if (programState[0]?.state === 'allGenres' && programState[0].source === source) { return; }
+  if (programState[0]?.state === 'allGenres' && programState[0].genreSource === source) { return; }
   genreSourceChoice = source;
   try { localStorage.setItem('genre-source', source); } catch (_) { /* storage off: this visit only */ }
   getAllGenres();
+}
+
+// Show the bar's switch with `active` pressed (setBrowserRootPanel hides it).
+function showGenreSourceSwitch(active) {
+  const bar = document.getElementById('genre_source');
+  if (!bar) { return; }
+  bar.classList.remove('super-hide');
+  bar.querySelectorAll('button[data-source]').forEach((btn) => {
+    btn.setAttribute('aria-pressed', String(btn.getAttribute('data-source') === active));
+  });
 }
 
 async function getAllGenres() {
@@ -3360,31 +3369,30 @@ async function getAllGenres() {
 
   const gen = browseGeneration;
   try {
-    // The remembered kind; when the server has none of it (an untagged
-    // library, a server without the model) the other one. A server that
-    // predates the filter ignores it and sends no `sources`: every genre,
-    // no switch.
+    // The remembered kind; when the server has none of a single kind (an
+    // untagged library, a server without the model) the other one. A
+    // server that predates the filter ignores it and sends no `sources`:
+    // every genre, no switch.
     let source = preferredGenreSource() || 'tag';
-    let response = await browseApi('genres', { source });
+    const ask = (s) => browseApi('genres', s === 'both' ? {} : { source: s });
+    let response = await ask(source);
     if (gen !== browseGeneration) { return; }
     const sources = response.sources;
-    if (sources && !(sources[source] > 0)) {
+    if (sources && source !== 'both' && !(sources[source] > 0)) {
       const other = source === 'tag' ? 'model' : 'tag';
       if (sources[other] > 0) {
         source = other;
-        response = await browseApi('genres', { source });
+        response = await ask(source);
       }
     }
     if (gen !== browseGeneration) { return; }
 
-    const listSource = sources ? source : null;
-    const offerSwitch = Boolean(sources && sources.tag > 0 && sources.model > 0);
-    // The local filter redraws the list from here.
-    programState[0].source = listSource;
-    programState[0].sourceSwitch = offerSwitch;
+    programState[0].genreSource = source;
+    if (sources && sources.tag > 0 && sources.model > 0) { showGenreSourceSwitch(source); }
+    // What a row asks its songs with: the one kind listed, or nothing.
+    const listSource = sources && source !== 'both' ? source : null;
 
-    let html = offerSwitch ? genreSourceSwitch(source) : '';
-    html += '<ul class="collection">';
+    let html = '<ul class="collection">';
     response.genres.forEach(value => {
       html += renderGenre(value.name, value.track_count, listSource);
       currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count, source: listSource });
@@ -6929,10 +6937,6 @@ function runLocalSearch(el) {
       }
     }
   });
-
-  // The Genres panel's switch stays above its filtered rows.
-  const top = programState[programState.length - 1];
-  if (top?.state === 'allGenres' && top.sourceSwitch) { filelist = genreSourceSwitch(top.source) + filelist; }
 
   document.getElementById('filelist').innerHTML= filelist;
   // The rows drew their marks as known; the ones not looked up yet are

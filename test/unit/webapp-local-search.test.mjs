@@ -66,7 +66,7 @@ function sliceConst(name) {
   throw new Error(`could not find the end of const ${name}`);
 }
 
-const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre', 'genreSourceSwitch',
+const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
@@ -80,9 +80,9 @@ const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath
 // routed browse call (browseApi) and the peer-aware art URL (artImgAttr).
 // albumCredit / albumSongsBody: the album-API series' card credit and
 // album-songs request helpers the album panels call.
-// preferredGenreSource: the Genres panel's tags / generated choice (no
-// localStorage here, so tags; these canned servers send no `sources`, so
-// the panel draws as for a server that predates the filter).
+// preferredGenreSource: the Genres panel's tags / generated / both choice
+// (no localStorage here, so tags; these canned servers send no `sources`,
+// so the panel draws as for a server that predates the filter).
 const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody',
   'preferredGenreSource'];
 
@@ -139,6 +139,7 @@ function makeSandbox(api) {
     let peerContext = null;
     let browseGeneration = 0;
     let genreSourceChoice = null;
+    const GENRE_SOURCES = ['tag', 'model', 'both'];
     ${sliceConst('entityMap')}
     ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}

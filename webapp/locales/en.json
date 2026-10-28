@@ -619,6 +619,7 @@
   "genres.sourceLabel": "Genre source",
   "genres.sourceTags": "Tags",
   "genres.sourceGenerated": "Generated",
+  "genres.sourceBoth": "Both",
   "panel.songs": "Songs",
   "panel.starred": "Starred",
   "panel.recentlyPlayed": "Recently Played",

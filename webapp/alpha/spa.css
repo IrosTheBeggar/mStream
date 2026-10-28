@@ -1909,10 +1909,15 @@ select {
   opacity: 0.4;
   cursor: not-allowed;
 }
-/* The Genres panel's tags / generated switch shares the look above; it
-   sits at the top of the list, in line with the rows' text. */
+/* The Genres panel's tags / generated / both switch shares the look
+   above; it sits in the browse bar, beside the search icon. */
 .genre-source {
-  margin: 10px 0 4px 20px;
+  margin: 0 4px 0 6px;
+  align-self: center;
+  flex-shrink: 0;
+}
+.genre-source-btn {
+  padding: 3px 9px;
 }
 
 /* Anchor for the suggestion dropdown — keep it relative so the
