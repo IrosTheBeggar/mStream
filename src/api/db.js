@@ -917,7 +917,18 @@ export function setup(mstream) {
 
   // ── Genres ──────────────────────────────────────────────────────────────
 
+  // Where a genre link came from (V79 track_genres.source): 'tag' — the
+  // file's own tags; 'model' — the discovery model's styles
+  // (src/db/genre-sync.js). Optional on both genre routes; omitted, every
+  // link counts, as before. Validated alone: neither route rejects fields
+  // it does not know (federated peers and the Flutter app send their own).
+  const genreSourceSchema = Joi.object({
+    source: Joi.string().valid('tag', 'model').optional(),
+  }).unknown(true);
+
   function getGenres(req) {
+    // GET carries it in the query string, POST in the body.
+    const { value: { source } } = joiValidate(genreSourceSchema, { source: req.body?.source ?? req.query?.source });
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
 
     // Same no-op shortcut as recent/added: with every library visible the
@@ -926,27 +937,51 @@ export function setup(mstream) {
     // Equivalent because track_genres is PRIMARY KEY (track_id, genre_id) —
     // no duplicate pairs, so COUNT(*) per genre IS COUNT(DISTINCT track_id) —
     // and track_id is a CASCADE foreign key, so there are no orphan rows to
-    // over-count. DISTINCT is kept for the same reason the original had it:
-    // legacy data can hold two vocabulary rows with the same name.
+    // over-count.
+    //
+    // One pass per genre AND source: the requested source's list and the
+    // per-source totals both fall out of it. A track links a genre once
+    // (that primary key again), so a genre's sources add up to its count.
     const rows = filter.coversAllLibraries
       ? d().prepare(`
-          SELECT DISTINCT g.name, COUNT(*) AS track_count
+          SELECT g.id, g.name, tg.source, COUNT(*) AS track_count
           FROM track_genres tg
           JOIN genres g ON g.id = tg.genre_id
-          GROUP BY g.id
-          ORDER BY g.name COLLATE NOCASE
+          GROUP BY g.id, tg.source
+          ORDER BY g.name COLLATE NOCASE, g.id
         `).all()
       : d().prepare(`
-          SELECT DISTINCT g.name, COUNT(DISTINCT t.id) AS track_count
+          SELECT g.id, g.name, tg.source, COUNT(DISTINCT t.id) AS track_count
           FROM genres g
           JOIN track_genres tg ON tg.genre_id = g.id
           JOIN tracks t ON t.id = tg.track_id
           WHERE ${filter.clause}
-          GROUP BY g.id
-          ORDER BY g.name COLLATE NOCASE
+          GROUP BY g.id, tg.source
+          ORDER BY g.name COLLATE NOCASE, g.id
         `).all(...filter.params);
 
-    return { genres: rows.map(r => ({ name: r.name, track_count: r.track_count })) };
+    const byGenre = new Map();   // genre id → { name, track_count }, name order
+    const perSource = { tag: new Set(), model: new Set() };
+    for (const r of rows) {
+      perSource[r.source]?.add(r.id);
+      if (source && r.source !== source) { continue; }
+      const g = byGenre.get(r.id);
+      if (g) { g.track_count += r.track_count; } else { byGenre.set(r.id, { name: r.name, track_count: r.track_count }); }
+    }
+
+    // The original's DISTINCT, kept: legacy data can hold two vocabulary
+    // rows with the same name, and identical name + count pairs collapse.
+    const seen = new Set();
+    const genres = [...byGenre.values()].filter((g) => {
+      const key = `${g.name}\u0000${g.track_count}`;
+      if (seen.has(key)) { return false; }
+      seen.add(key);
+      return true;
+    });
+
+    // How many genres each source has here, whatever was asked for — what
+    // tells a client whether there is a choice to offer.
+    return { genres, sources: { tag: perSource.tag.size, model: perSource.model.size } };
   }
 
   mstream.get('/api/v1/db/genres', (req, res) => res.json(getGenres(req)));
@@ -967,11 +1002,14 @@ export function setup(mstream) {
     // federated peers — see federation-auth's allow-list). Rejecting fields
     // that used to be ignored would be a breaking change smuggled into a
     // perf PR. The new paging fields are still validated.
+    // `source` ('tag' | 'model') keeps only songs linked to the genre that
+    // way — the genre list's choice, carried into the genre.
     const schema = Joi.object({
       genre: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(10000).optional(),
       offset: Joi.number().integer().min(0).optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      source: Joi.string().valid('tag', 'model').optional(),
     }).unknown(true);
     // Use the COERCED value, not req.body: Joi turns `limit: "50"` into a
     // number, and binding a string into LIMIT would be a different query.
@@ -994,9 +1032,11 @@ export function setup(mstream) {
       .all(String(req.body.genre)).map((r) => r.id);
     if (genreIds.length === 0) { return res.json([]); }
     const idPh = genreIds.map(() => '?').join(',');
+    const sourceSql = query.source ? 'AND tg.source = ?' : '';
+    const joinParams = query.source ? [...genreIds, query.source] : genreIds;
     const allParams = req.user?.id
-      ? [req.user.id, ...genreIds, ...filter.params]
-      : [...genreIds, ...filter.params];
+      ? [req.user.id, ...joinParams, ...filter.params]
+      : [...joinParams, ...filter.params];
 
     // SQLite treats LIMIT -1 as "no limit", and OFFSET is meaningless without
     // one — so the unpaged call keeps exactly its old plan and result.
@@ -1007,7 +1047,7 @@ export function setup(mstream) {
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
-      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
+      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh}) ${sourceSql}
       WHERE ${filter.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, ${ALBUM_TRACK_ORDER}
       ${pageSql}

@@ -236,6 +236,19 @@ const scanOptions = Joi.object({
   // otherwise take every core). Raise it on a big box that should chew
   // through its first backfill faster.
   embeddingThreads: Joi.number().integer().min(1).max(64).optional(),
+  // Feed the discovery model's style predictions (discovery_tracks.
+  // genre_tags) into the real genre tables as track_genres rows with
+  // source='model' (src/db/genre-sync.js) — genre browse / filtering /
+  // Auto-DJ genre mode all start working on untagged libraries. Default
+  // ON; does nothing while collectDiscoveryData is off. The flag exists
+  // for users who want embeddings/network WITHOUT the model touching
+  // their genre vocabulary — turning it off removes the model's links.
+  modelGenres: Joi.boolean().default(true),
+  // Which tracks get model genres. 'all' (default): every analysed track,
+  // next to its tag genres (up to five styles plus their parent genres
+  // each). 'untagged': only tracks whose files carry no genre tag, so a
+  // tagged library's genres stay the user's.
+  modelGenresMode: Joi.string().valid('all', 'untagged').default('all'),
   autoAlbumArt: Joi.boolean().default(true),
   // What the post-scan album-art downloader targets. 'missing' (default):
   // only albums with no cover at all — the fill-in-the-blanks pass.

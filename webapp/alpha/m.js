@@ -304,9 +304,12 @@ function renderArtist(artist) {
     </li>`;
 }
 
-function renderGenre(genre, trackCount) {
+// `source` — 'tag' | 'model', the one kind of genre the list shows — rides
+// on the row so its songs are asked for the same way; null when the list
+// shows both kinds, or the server does not tell them apart.
+function renderGenre(genre, trackCount, source) {
   return `<li class="collection-item">
-    <div data-genre="${escapeHtml(genre)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
+    <div data-genre="${escapeHtml(genre)}"${source ? ` data-genre-source="${escapeHtml(source)}"` : ''}${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
       ${escapeHtml(genre)} <span style="color:#888;font-size:13px;">(${escapeHtml(trackCount)})</span>
     </div>
   </li>`;
@@ -428,6 +431,8 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('local_search_btn').style.display = '';
   document.getElementById('upload_btn').classList.add('super-hide');
   document.getElementById('mkdir_btn').classList.add('super-hide');
+  // The Genres panel's switch; getAllGenres shows it when there's a choice.
+  document.getElementById('genre_source')?.classList.add('super-hide');
 
   // Inside a peer view every panel says whose library it is showing.
   const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
@@ -2854,7 +2859,7 @@ async function onBackButton() {
   } else if (backState.state === 'allGenres') {
     await getAllGenres(undefined);
   } else if (backState.state === 'genre') {
-    await getGenreSongs(backState.name);
+    await getGenreSongs(backState.name, backState.source);
   } else if (backState.state === 'fileExplorer') {
     fileExplorerArray.pop();
     await senddir();
@@ -3323,6 +3328,40 @@ async function getArtistsAlbums(artist) {
 }
 
 /////////////// Genres
+// Which genres the panel lists: 'tag' — the files' own — 'model' — the
+// discovery model's — or 'both' (the server's `source` filter, left off
+// for both). Remembered across visits; this visit's pick comes first, as
+// storage can be off (a private window). The switch is the browse bar's
+// #genre_source, shown only when the server has both kinds.
+let genreSourceChoice = null;
+
+const GENRE_SOURCES = ['tag', 'model', 'both'];
+
+function preferredGenreSource() {
+  if (genreSourceChoice) { return genreSourceChoice; }
+  try {
+    const v = localStorage.getItem('genre-source');
+    return GENRE_SOURCES.includes(v) ? v : null;
+  } catch (_) { return null; }
+}
+
+function chooseGenreSource(source) {
+  if (programState[0]?.state === 'allGenres' && programState[0].genreSource === source) { return; }
+  genreSourceChoice = source;
+  try { localStorage.setItem('genre-source', source); } catch (_) { /* storage off: this visit only */ }
+  getAllGenres();
+}
+
+// Show the bar's switch with `active` pressed (setBrowserRootPanel hides it).
+function showGenreSourceSwitch(active) {
+  const bar = document.getElementById('genre_source');
+  if (!bar) { return; }
+  bar.classList.remove('super-hide');
+  bar.querySelectorAll('button[data-source]').forEach((btn) => {
+    btn.setAttribute('aria-pressed', String(btn.getAttribute('data-source') === active));
+  });
+}
+
 async function getAllGenres() {
   setBrowserRootPanel(t('panel.genres'));
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3330,13 +3369,33 @@ async function getAllGenres() {
 
   const gen = browseGeneration;
   try {
-    const response = await browseApi('genres', {});
+    // The remembered kind; when the server has none of a single kind (an
+    // untagged library, a server without the model) the other one. A
+    // server that predates the filter ignores it and sends no `sources`:
+    // every genre, no switch.
+    let source = preferredGenreSource() || 'tag';
+    const ask = (s) => browseApi('genres', s === 'both' ? {} : { source: s });
+    let response = await ask(source);
     if (gen !== browseGeneration) { return; }
+    const sources = response.sources;
+    if (sources && source !== 'both' && !(sources[source] > 0)) {
+      const other = source === 'tag' ? 'model' : 'tag';
+      if (sources[other] > 0) {
+        source = other;
+        response = await ask(source);
+      }
+    }
+    if (gen !== browseGeneration) { return; }
+
+    programState[0].genreSource = source;
+    if (sources && sources.tag > 0 && sources.model > 0) { showGenreSourceSwitch(source); }
+    // What a row asks its songs with: the one kind listed, or nothing.
+    const listSource = sources && source !== 'both' ? source : null;
 
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
-      html += renderGenre(value.name, value.track_count);
-      currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count });
+      html += renderGenre(value.name, value.track_count, listSource);
+      currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count, source: listSource });
     });
     html += '</ul>';
 
@@ -3352,16 +3411,20 @@ async function getAllGenres() {
 function getGenreSongsList(el) {
   adoptPeer(el);
   const genre = el.getAttribute('data-genre');
+  const source = el.getAttribute('data-genre-source');
   programState.push({
     state: 'genre',
     name: genre,
+    source,
     previousScroll: document.getElementById('filelist').scrollTop,
     previousSearch: document.getElementById('localSearchBar').value
   });
-  getGenreSongs(genre);
+  getGenreSongs(genre, source);
 }
 
-async function getGenreSongs(genre) {
+// `source` narrows the songs to the list's kind of genre; absent, every
+// song with the genre (and what a server without the filter answers).
+async function getGenreSongs(genre, source) {
   setBrowserRootPanel(t('panel.songs'));
   document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3369,7 +3432,7 @@ async function getGenreSongs(genre) {
   const gen = browseGeneration;
   try {
     const gate = keepGateFor(peerContext);
-    const response = await browseApi('genreSongs', { genre: genre });
+    const response = await browseApi('genreSongs', source ? { genre, source } : { genre });
     await gate;
     if (gen !== browseGeneration) { return; }
 
@@ -6858,7 +6921,7 @@ function runLocalSearch(el) {
       } else if (x.type === 'artist') {
         filelist += renderArtist(x.name);
       } else if (x.type === 'genre') {
-        filelist += renderGenre(x.name, x.track_count);
+        filelist += renderGenre(x.name, x.track_count, x.source);
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);

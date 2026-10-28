@@ -2253,6 +2253,18 @@ paths:
     get: &genresOp
       tags: [Library]
       summary: List all genres
+      description: >
+        Every genre with at least one visible track, in name order. `source`
+        narrows the list to one kind of genre link: `tag` (the files' own
+        genre tags) or `model` (styles the discovery model predicted,
+        `scanOptions.modelGenres`). Omitted, every link counts. POST also
+        takes it in the body.
+      parameters:
+        - name: source
+          in: query
+          required: false
+          schema: { type: string, enum: [tag, model] }
+          description: Only genres linked this way, with that way's track counts.
       responses:
         "200":
           description: Genres.
@@ -2268,13 +2280,32 @@ paths:
                       properties:
                         name: { type: string }
                         track_count: { type: integer }
+                  sources:
+                    type: object
+                    description: >
+                      How many genres each kind has for this caller, whatever
+                      `source` asked for, so a client knows whether there is
+                      a choice to offer. Absent on servers that predate the
+                      filter.
+                    properties:
+                      tag: { type: integer }
+                      model: { type: integer }
+        "400": { description: "Request validation failed (an unknown `source`)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       <<: *genresOp
       requestBody:
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IgnoreVPaths" }
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    source:
+                      type: string
+                      enum: [tag, model]
+                      description: As the query parameter.
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/genre-songs:
     post:
@@ -2304,6 +2335,13 @@ paths:
                       type: integer
                       minimum: 0
                       description: Rows to skip. Usable without `limit`.
+                    source:
+                      type: string
+                      enum: [tag, model]
+                      description: >
+                        Only tracks linked to the genre this way — from their
+                        own tags (`tag`) or by the discovery model (`model`).
+                        Omit for both.
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":
@@ -2313,6 +2351,7 @@ paths:
               schema:
                 type: array
                 items: { $ref: "#/components/schemas/Metadata" }
+        "400": { description: "Request validation failed." }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/db/random-songs:
