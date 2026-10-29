@@ -877,6 +877,17 @@ components:
           maxItems: 100
           items: { type: string, maxLength: 256 }
           description: Libraries (by name) to leave out of seeds and library results.
+        moods:
+          allOf:
+            - { $ref: "#/components/schemas/MoodFilter" }
+          description: |
+            A mood filter (`discoveryTaste` >= 2; the body is strict, so older servers refuse
+            the key). Seeds come from the history songs that match it first (the usual chain
+            when there are none), every library song matches it, and an album card needs
+            MORE than half of the album's analysed songs to. Connected servers filter on
+            their side; one that cannot is dropped (`moodsUnsupported`). The network section
+            is null on a filtered call. Not applied, and not echoed, while this server has
+            no mood scores.
     TasteSeed:
       type: object
       properties:
@@ -928,6 +939,7 @@ components:
         name: { type: string }
         reachable: { type: boolean, description: "The peer answered within its 4 s deadline in THIS call (a model mismatch counts as an answer). A peer whose dial failed twice in a row (that deadline missed, or its handshake refused) is not dialed again for 60 s, doubling up to 10 min while it keeps failing, and is false at once meanwhile; an answer, or the admin's successful test-connection, resets it. A failure while this server's own federation endpoint is not running (not yet bound at boot, or stopped for a reboot) does not count. An answer that is not OK, not JSON, over 1 MB, or sent compressed (it is asked for uncompressed) answers nothing and reads false too, but it is no failed dial." }
         mismatched: { type: boolean, description: "The peer's embeddings are another model's space; it answered nothing." }
+        moodsUnsupported: { type: boolean, description: "On a `moods` call only: the peer answered without applying the filter (older than it, or without mood scores), so its rows are dropped." }
         lastSeen:
           type: string
           format: date-time
@@ -1003,9 +1015,10 @@ components:
           type: object
           nullable: true
           description: >
-            Null when not asked for, when `discoveryP2p` is off, or with a
-            random seed. Asked for and empty (`results: []`) otherwise —
-            including while no seed is analyzed yet (`notAnalyzed`).
+            Null when not asked for, when `discoveryP2p` is off, with a
+            random seed, or on a call with a `moods` filter. Asked for and
+            empty (`results: []`) otherwise — including while no seed is
+            analyzed yet (`notAnalyzed`).
           properties:
             results:
               type: array
@@ -1039,6 +1052,8 @@ components:
                 peers: { type: integer, description: "Peers that answered in the query's model space." }
                 unreachable: { type: integer }
                 mismatched: { type: integer }
+                moodsUnsupported: { type: integer, description: "On a `moods` call only: peers that answered without applying the filter (their rows are dropped)." }
+        moods: { $ref: "#/components/schemas/MoodEcho" }
     Library:
       type: object
       properties:
@@ -1078,6 +1093,37 @@ components:
           items:
             type: string
           description: Libraries (vpaths) to exclude from the query.
+
+    MoodFilter:
+      type: object
+      additionalProperties: false
+      description: |
+        A mood filter over the songs' mood scores (the discovery model's mood heads, in
+        track_moods). A group left out does not filter; a song matches when every group
+        given holds for it. A score "holds" at 0.5 or more. The two scales pair opposite
+        heads, and each analysed song is exactly one of their values: `happy` when its
+        happy score holds and is at least its sad score, `sad` when sad holds and beats
+        happy, `neutral` when neither holds (`relaxed` / `aggressive` alike). `vocals` is an
+        instrumental score under 0.5. Every tag given must hold. Songs not analysed yet
+        match no filter. Unknown groups and values are a 400.
+      properties:
+        valence: { type: string, enum: [happy, neutral, sad] }
+        energy: { type: string, enum: [relaxed, neutral, aggressive] }
+        voice: { type: string, enum: [instrumental, vocals] }
+        tags:
+          type: array
+          uniqueItems: true
+          items: { type: string, enum: [acoustic, party, danceable] }
+      example: { energy: relaxed, voice: instrumental }
+
+    MoodEcho:
+      allOf:
+        - { $ref: "#/components/schemas/MoodFilter" }
+      description: |
+        The mood filter this answer applied, normalized (tags in acoustic, party, danceable
+        order) — `{}` when none. Present only while the server has mood scores to filter
+        by: absent (as from servers older than the filter), a requested filter was NOT
+        applied and the answer is unfiltered.
 
     StatsPeriod:
       type: object
@@ -1672,9 +1718,19 @@ paths:
                           The Discover page generation: this server answers
                           `POST /api/v1/discovery/taste` and
                           `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
-                          An integer like `stats` — a later body key ships as
-                          2. A version fact: show the page on `discovery ===
-                          true && discoveryTaste >= 1`; absent on older
+                          An integer like `stats`: 2 = the body takes
+                          `moods` (a MoodFilter). A version fact: show the
+                          page on `discovery === true && discoveryTaste >= 1`;
+                          absent on older servers.
+                      moodFilters:
+                        type: boolean
+                        description: >
+                          A mood filter would find something right now: the
+                          mood heads are on and some songs have scores. The
+                          Discover page shows its filters on this (with
+                          `discoveryTaste >= 2`); the browse lists read the
+                          `moods` key their own answers carry instead (a
+                          connected server's included). Absent on older
                           servers.
                       discoveryOwned:
                         type: boolean
@@ -1763,7 +1819,8 @@ paths:
                   discoveryP2p: false
                   discoveryPlugins: true
                   discoveryOwned: true
-                  discoveryTaste: 1
+                  discoveryTaste: 2
+                  moodFilters: true
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -1827,6 +1884,12 @@ paths:
                       The Discover page generation — the same fact as
                       `features.discoveryTaste` on `GET /api`. Absent on
                       older servers.
+                  moodFilters:
+                    type: boolean
+                    description: >
+                      Mood scores to filter by, right now — the same fact as
+                      `features.moodFilters` on `GET /api`. Absent on older
+                      servers.
                   supportedAudioFiles:
                     type: object
                     additionalProperties: { type: boolean }
@@ -2109,6 +2172,11 @@ paths:
         an album (ALBUMARTIST — this is where "Various Artists" appears), and a role name
         (`featured`, `composer`, `conductor`, `remixer`, `lyricist`) adds artists holding
         that credit on a track. Unknown values are a 400.
+
+        POST takes an optional `moods` filter (MoodFilter): the list keeps the artists MORE
+        than half of whose analysed songs — as the track's primary artist, whatever
+        `include` lists them by — match it. The answer's `moods` (MoodEcho) says which
+        filter was applied.
       parameters:
         - in: query
           name: sort
@@ -2130,11 +2198,13 @@ paths:
                   artists:
                     type: array
                     items: { type: string }
+                  moods: { $ref: "#/components/schemas/MoodEcho" }
+        "400": { description: "An unknown `include` value, or a `moods` filter it cannot read." }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       <<: *artistsOp
       requestBody:
-        description: Optional `ignoreVPaths` filter, `sort` mode and `include` sources.
+        description: Optional `ignoreVPaths` filter, `sort` mode, `include` sources and `moods` filter.
         content:
           application/json:
             schema:
@@ -2146,6 +2216,7 @@ paths:
                       type: array
                       items: { type: string, enum: [albumArtists, featured, composer, conductor, remixer, lyricist] }
                       description: Extra sources to include (V73; see the GET description).
+                    moods: { $ref: "#/components/schemas/MoodFilter" }
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/artists-albums:
@@ -2190,6 +2261,10 @@ paths:
     get: &albumsOp
       tags: [Library]
       summary: List all albums
+      description: |
+        POST takes an optional `moods` filter (MoodFilter): the list keeps the albums MORE
+        than half of whose analysed songs match it. The answer's `moods` (MoodEcho) says
+        which filter was applied.
       responses:
         "200":
           description: Albums.
@@ -2201,13 +2276,20 @@ paths:
                   albums:
                     type: array
                     items: { $ref: "#/components/schemas/Album" }
+                  moods: { $ref: "#/components/schemas/MoodEcho" }
+        "400": { description: "A `moods` filter it cannot read." }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       <<: *albumsOp
       requestBody:
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IgnoreVPaths" }
+            schema:
+              allOf:
+                - type: object
+                  properties:
+                    moods: { $ref: "#/components/schemas/MoodFilter" }
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
 
   /api/v1/db/album-songs:
     post:
@@ -8320,6 +8402,18 @@ paths:
         tracks it already owns. A model-id mismatch is a soft 200 with
         `modelMismatch: true` (vectors from different models are
         incomparable), so a fan-out caller can skip the peer gracefully.
+
+        An optional `moods` query parameter (a MoodFilter as JSON) keeps only
+        the songs that match it, and the answer echoes it back (`moods`). It
+        rides in the query string because the body is strict: a server older
+        than the filter ignores it and answers unfiltered, without the echo —
+        and a caller drops an answer that does not carry it.
+      parameters:
+        - in: query
+          name: moods
+          required: false
+          description: A MoodFilter as JSON, e.g. `{"energy":"relaxed"}`. Anything else is a 400.
+          schema: { type: string, maxLength: 512 }
       requestBody:
         required: true
         content:
@@ -8351,6 +8445,7 @@ paths:
                       id: { type: string }
                       version: { type: string, nullable: true }
                   modelMismatch: { type: boolean, description: Present (true) only when the declared model differs }
+                  moods: { $ref: "#/components/schemas/MoodEcho" }
                   results:
                     type: array
                     items:

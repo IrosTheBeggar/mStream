@@ -72,7 +72,7 @@ const VECTORS = [
   // 'Sketch 1' deliberately has none.
 ];
 
-const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'kim', 'lou', 'max', 'nina', 'pat', 'quin', 'ray', 'zoe'];
+const USERS = ['admin', 'bob', 'carol', 'dave', 'erin', 'fay', 'gus', 'hal', 'ivy', 'kim', 'lou', 'max', 'moe', 'nina', 'pat', 'quin', 'ray', 'zoe'];
 const VPATHS = { admin: ['testlib', 'lib2'], zoe: ['lib2'] };
 
 let server;     // discovery on, users, federation on (for the key test)
@@ -867,17 +867,92 @@ describe('discovery taste: public mode', () => {
   });
 });
 
+// ── mood filter ──────────────────────────────────────────────────────────
+
+// `moods` (src/api/mood-filter.js): seeds prefer songs that match it, the
+// library's songs all match it, and an album card needs most of the
+// album's analysed songs to. Scores go straight into track_moods for this
+// block only (the mood sync's table): Descent and Sketch 1 get none.
+//   aggressive: Be Somebody, Rise, Static   relaxed: Orbit, Return, Highway, Neon
+describe('discovery taste: mood filter', () => {
+  const RELAXED = new Set([P.orbit, P.ret, P.highway, P.neon]);
+  const SCORES = [
+    ['Be Somebody', false], ['Rise', false], ['Static', false],
+    ['Orbit', true], ['Return', true], ['Highway', true], ['Neon', true],
+  ];
+  const withDb = (fn) => {
+    const db = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
+    try { fn(db); } finally { db.close(); }
+  };
+  before(async () => {
+    withDb((db) => {
+      const ins = db.prepare(`INSERT INTO track_moods (track_id, relaxed, aggressive)
+        SELECT id, ?, ? FROM tracks WHERE title = ?`);
+      for (const [title, relaxed] of SCORES) { ins.run(relaxed ? 0.9 : 0.1, relaxed ? 0.1 : 0.9, title); }
+    });
+    // moe: one aggressive song, 20 days ago — this block's own history.
+    await postPlays(server, tokens.moe, [play(P.beSomebody, 20 * DAY, 'completed', 200000, 200000)]);
+  });
+  after(() => withDb((db) => db.exec('DELETE FROM track_moods')));
+
+  test('the answer echoes the filter; an unfiltered call says it could filter', async () => {
+    const r = await taste('moe', { sources: ['library'], moods: { energy: 'aggressive' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.moods, { energy: 'aggressive' });
+    assert.deepEqual((await taste('moe', { sources: ['library'] })).body.moods, {});
+  });
+
+  test('songs all match; an album card needs most of its album to', async () => {
+    const plain = await taste('moe', { sources: ['library'] });
+    assert.ok(plain.body.library.albums.some((a) => a.name === 'Night Drive'), 'unfiltered, Night Drive has a card');
+
+    const r = await taste('moe', { sources: ['library'], moods: { energy: 'aggressive' } });
+    assert.deepEqual(pathSet(r.body.seeds), new Set([P.beSomebody]), 'moe\'s one song matches: it seeds');
+    assert.deepEqual(pathSet(r.body.library.tracks), new Set([P.rise, P.stat]));
+    assert.deepEqual(r.body.library.albums, [], 'Night Drive: Static is 1 of 3 aggressive songs');
+  });
+
+  test('no matching history: the usual seeds, filtered results — and whole-album cards', async () => {
+    const r = await taste('moe', { sources: ['library'], moods: { energy: 'relaxed' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(pathSet(r.body.seeds), new Set([P.beSomebody]), 'nothing relaxed in moe\'s history');
+    // Later Works: Return is its one analysed song. Night Drive: 2 of 3.
+    // Be Somebody: Orbit alone (1 of 3) — no card, so Orbit stays a song.
+    assert.deepEqual(new Set(r.body.library.albums.map((a) => a.name)), new Set(['Later Works', 'Night Drive']));
+    for (const a of r.body.library.albums) {
+      for (const t of a.tracks) { assert.ok(RELAXED.has(t), `${a.name}: ${t}`); }
+    }
+    assert.deepEqual(paths(r.body.library.tracks), [P.orbit]);
+  });
+
+  test('seeds come from the history songs that match, when there are any', async () => {
+    const r = await taste('bob', { sources: ['library'], moods: { energy: 'relaxed' } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.ok(r.body.seeds.length > 0);
+    for (const s of r.body.seeds) { assert.ok(RELAXED.has(s.filepath), s.filepath); }
+    for (const t of r.body.library.tracks) { assert.ok(RELAXED.has(t.filepath), t.filepath); }
+  });
+
+  test('a filtered call leaves the network out; a bad filter is a 400', async () => {
+    const r = await taste('moe', { moods: { energy: 'aggressive' } });
+    assert.equal(r.body.network, null);
+    assert.equal((await taste('moe', { moods: { valence: 'angry' } })).status, 400);
+    assert.equal((await taste('moe', { moods: 'relaxed' })).status, 400);
+  });
+});
+
 // ── capability flag ──────────────────────────────────────────────────────
 
 describe('discovery taste: the capability flag', () => {
   test('features.discoveryTaste on GET /api and discoveryTaste on ping, an integer generation', async () => {
+    // 2: the body takes `moods` (test/integration/mood-filters.test.mjs).
     const api = await call(server, 'GET', '/api/', undefined, tokens.bob);
-    assert.equal(api.body.features.discoveryTaste, 1);
+    assert.equal(api.body.features.discoveryTaste, 2);
     const ping = await call(server, 'GET', '/api/v1/ping', undefined, tokens.bob);
-    assert.equal(ping.body.discoveryTaste, 1);
+    assert.equal(ping.body.discoveryTaste, 2);
     // A version fact: present (and the same) with discovery off too.
     const off = await call(offServer, 'GET', '/api/v1/ping');
-    assert.equal(off.body.discoveryTaste, 1);
+    assert.equal(off.body.discoveryTaste, 2);
     assert.equal(off.body.discovery, false);
   });
 });
