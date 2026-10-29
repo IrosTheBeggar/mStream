@@ -48,14 +48,14 @@ export const DEFAULT_SEEDS = [
     // join measured ~1.7s; peers connect directly after introduction).
     name: 'seed-au-1',
     endpointId: 'c961437a8ff60617d7b36b5bca0e866e9521b5194e8068de08a731631418b00b',
-    ticket: 'endpointadewcq32r73amf6xwnvvxsqoqzxjkinvdfhia2g6bcttcyyudcyawayaenuhi5dqom5c6l3bobztcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqblaraabjbwqdaeancjs65kinuay',
+    ticket: 'endpointadewcq32r73amf6xwnvvxsqoqzxjkinvdfhia2g6bcttcyyudcyawayaenuhi5dqom5c6l3bobztcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqblaraabmivybadismxxkyrlq',
   },
   {
     // DigitalOcean, EU Central (euc1 relay) — a second independent region
     // so bootstrap has no single point of failure.
     name: 'seed-eu-1',
     endpointId: 'd7d3f4501a5a70e17ea93106f303b77714d5625e9849aa4ebaff6d0c5d4b2260',
-    ticket: 'endpointadl5h5cqdjnhbyl6veyqn4ydw53rjvlcl2metksoxl7w2dc5jmrgaayaenuhi5dqom5c6l3fovrtcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqbhpvij2yz5icaeakyeiaakgpkaq',
+    ticket: 'endpointadl5h5cqdjnhbyl6veyqn4ydw53rjvlcl2metksoxl7w2dc5jmrgaayaenuhi5dqom5c6l3fovrtcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqbhpvij24ivybacwbcaacyrlq',
   },
 ];
 
