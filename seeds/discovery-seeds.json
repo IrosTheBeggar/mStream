@@ -1,19 +1,19 @@
 {
   "version": 1,
-  "updated": "2026-07-05",
+  "updated": "2026-10-29",
   "_readme": "Community seed nodes for the mStream discovery network. Servers with discoveryP2p.useCommunitySeeds (default on) fetch this file at most daily and bootstrap the gossip catalog off these tickets, in addition to any operator-configured bootstrapPeers. Seeds relay the mesh but hold no music and no snapshots; announcements stay signed by their origins. Rotating a seed = editing this file, running scripts/sign-discovery-seeds.mjs (maintainer signing key required; clients reject unsigned or replayed lists by ed25519 signature + monotonic seq), and committing. Entry shape: {\"name\": \"...\", \"endpointId\": \"<64 hex>\", \"ticket\": \"endpoint...\"} — endpointId lets operator blocklists apply to seeds. The seed binary lives in the mstream-discovery-seed repo.",
-  "seq": 1,
+  "seq": 2,
   "seeds": [
     {
       "name": "seed-au-1",
       "endpointId": "c961437a8ff60617d7b36b5bca0e866e9521b5194e8068de08a731631418b00b",
-      "ticket": "endpointadewcq32r73amf6xwnvvxsqoqzxjkinvdfhia2g6bcttcyyudcyawayaenuhi5dqom5c6l3bobztcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqblaraabjbwqdaeancjs65kinuay"
+      "ticket": "endpointadewcq32r73amf6xwnvvxsqoqzxjkinvdfhia2g6bcttcyyudcyawayaenuhi5dqom5c6l3bobztcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqblaraabmivybadismxxkyrlq"
     },
     {
       "name": "seed-eu-1",
       "endpointId": "d7d3f4501a5a70e17ea93106f303b77714d5625e9849aa4ebaff6d0c5d4b2260",
-      "ticket": "endpointadl5h5cqdjnhbyl6veyqn4ydw53rjvlcl2metksoxl7w2dc5jmrgaayaenuhi5dqom5c6l3fovrtcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqbhpvij2yz5icaeakyeiaakgpkaq"
+      "ticket": "endpointadl5h5cqdjnhbyl6veyqn4ydw53rjvlcl2metksoxl7w2dc5jmrgaayaenuhi5dqom5c6l3fovrtcljrfzzgk3dbpexg4mbonfzg62bonruw42zof4aqbhpvij24ivybacwbcaacyrlq"
     }
   ],
-  "signature": "sw4tXeuvfrMIvG7KveoH43OXs5CUyIAfpFGR+SvXbaqbykOQ+kyd7ESES3xvTmTKETjuOEpg7OkfW31MQVIgBQ=="
+  "signature": "Y++zbNRmLB7N0WlAtC8LNZ6VcAzBehn0K8XtXof1h+y1Xlv+iIiViv2apuJpHrVhvtGc2WPoLD3ddVknPw9HDg=="
 }
