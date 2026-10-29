@@ -381,7 +381,12 @@ const transcodeOptions = Joi.object({
   // operator action. Set false to freeze the current binary even across pin
   // changes — useful when a build regresses, or for air-gapped / reproducible
   // installs. No effect when running off system ffmpeg (managed by the OS).
-  autoUpdate: Joi.boolean().default(true)
+  autoUpdate: Joi.boolean().default(true),
+  // How many transcodes flagged `?bulk=1` (one file of a long job — a
+  // library converted onto a portable player's card) may run at once,
+  // server-wide; more wait in a queue (api/transcode.js). Listeners' streams
+  // are never counted or capped.
+  bulkConcurrency: Joi.number().integer().min(1).max(64).default(2),
 });
 
 const updatesOptions = Joi.object({

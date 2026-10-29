@@ -1506,6 +1506,32 @@ components:
             daemon_error: generic redaction — the raw daemon RPC error is NOT
             forwarded to non-admin callers.
 
+    FederationAllowance:
+      type: object
+      description: |
+        A federation caller's own allowance: the caps its key runs under on
+        this server and where today stands against them. Shown to the key
+        and to its guests (a guest shares the key's pool, so it sees the
+        same figures), never to anyone else. Live figures — today's bytes
+        include usage not yet flushed to the database, exactly what the
+        quota gate compares. Every cap reads `0` for unlimited.
+      properties:
+        streamKbps: { type: integer, description: "Rate cap shared by the key's concurrent `/media` streams (0 = unlimited)." }
+        dailyMb: { type: integer, description: "Per-UTC-day transfer quota over everything the key pulls (0 = unlimited)." }
+        maxStreams: { type: integer, description: "Concurrent `/media` responses allowed (0 = unlimited)." }
+        allowCopies: { type: boolean, description: "Whether a request saying `X-mStream-Purpose: copy` is served; when false such a request for a file is a 403." }
+        day: { type: string, format: date, description: "The UTC day the usage figures cover.", example: "2026-10-18" }
+        usedTodayBytes: { type: integer, description: "Bytes the key (and its guests) pulled today: media, art and JSON." }
+        remainingTodayBytes:
+          type: integer
+          nullable: true
+          description: >
+            What is left of today's quota; `null` when there is none. Floors
+            at 0 (a day can overshoot by the one file in flight when the
+            quota was reached).
+        resetsInSeconds: { type: integer, description: "Seconds to the next UTC midnight, when the quota resets — the `Retry-After` a quota 429 carries." }
+        activeStreams: { type: integer, description: "The key's `/media` responses open right now, guests' included." }
+
   responses:
     EmptySuccess:
       description: Operation succeeded.
@@ -1588,9 +1614,10 @@ paths:
         The authenticated server-info endpoint, layered by who is asking:
 
         * **Base** (every authenticated response): `server` (the
-          version), `apiVersions`, and `features` — server-wide
-          capability facts (transcode, supportedAudioFiles, discovery,
-          discoveryP2p, discoveryReady).
+          version), `instanceId` (the server's stable id), `apiVersions`,
+          and `features` — server-wide capability facts (transcode,
+          supportedAudioFiles, discovery, discoveryP2p, discoveryReady,
+          federationProxy).
         * **`user`** — identity plus the CALLER-SCOPED half of the ping
           boot payload (vpaths, permission flags, federationDiscovery,
           federationBrowse, vpathMetaData). Unlike ping, no `playlists` (fetch those from
@@ -1611,7 +1638,8 @@ paths:
         `200` with all applicable layers. Share tokens cannot call this
         route (`401`). Federation keys reach it via their route
         allowlist and receive the version plus their granted-library
-        view (`403` on any route off that allowlist).
+        view (`403` on any route off that allowlist), and
+        `user.federationAllowance`: their key's caps and today's use.
 
         Supersedes `/api/v1/ping` for new clients.
       responses:
@@ -1625,6 +1653,20 @@ paths:
                   server:
                     type: string
                     description: Server version (from package.json).
+                  instanceId:
+                    type: string
+                    nullable: true
+                    example: 3f2b8c1e-6a4d-4e0f-9b7a-2c5d8e1f0a93
+                    description: >
+                      The server's stable id: a random UUID generated on first
+                      boot and kept in its config (`discovery.mdns.instanceId`,
+                      the same value mDNS advertises as `id=`). It survives
+                      restarts and address, port and name changes, so a client
+                      that keeps something per server can tell the same server
+                      under another URL from another server without storing a
+                      URL or a token. Visible to every authenticated caller,
+                      federation keys included. An operator may set it by hand,
+                      so treat it as an opaque string. Absent on older servers.
                   apiVersions:
                     type: array
                     items: { type: string }
@@ -1690,6 +1732,27 @@ paths:
                           library manifest behind client-side mirrors and
                           offline indexes). Absent on older servers — gate on
                           the key, never on a probe.
+                      federationProxy:
+                        type: object
+                        description: >
+                          What this server's peer stream proxy
+                          (`GET /api/v1/federation/peers/{id}/stream/{path}`)
+                          passes on to the peer. `purpose: true` — it forwards
+                          `X-mStream-Purpose`, so a copy made through it
+                          reaches the peer declared as one, and a key with
+                          copies switched off refuses it. A version fact like
+                          `sync`: present whether or not federation is
+                          enabled (whether there is a peer to reach is
+                          `user.federationBrowse`). Absent on older servers,
+                          whose proxy drops the header — a copy through them
+                          reaches the peer undeclared. Like `sync`, the key's
+                          presence is the signal: a proxy that does not
+                          forward the header gets no key, never
+                          `purpose: false`. Not on `/api/v1/ping`.
+                        properties:
+                          purpose:
+                            type: boolean
+                            enum: [true]
                       transcode:
                         description: >
                           false when unavailable; otherwise the server's
@@ -1701,6 +1764,37 @@ paths:
                             properties:
                               defaultCodec: { type: string }
                               defaultBitrate: { type: string }
+                              codecs:
+                                type: object
+                                description: >
+                                  What `/transcode` takes, per codec: the
+                                  bitrates (`mp3` reaches 320k) and the
+                                  output sample rates `?sampleRate=` accepts.
+                                  Absent on older servers, which take
+                                  64k-192k and no sample rate — gate on the
+                                  key, never on the version.
+                                additionalProperties:
+                                  type: object
+                                  properties:
+                                    bitrates:
+                                      type: array
+                                      items: { type: string }
+                                      example: ["64k", "96k", "128k", "192k", "256k", "320k"]
+                                    sampleRates:
+                                      type: array
+                                      items: { type: integer }
+                                      example: [32000, 44100, 48000]
+                              bulk:
+                                type: object
+                                description: >
+                                  `/transcode` takes `?bulk=1` (one file of a
+                                  long job: kept out of the cache, queued
+                                  behind a server-wide cap), and runs this
+                                  many such transcodes at once — a bulk client
+                                  gains nothing by opening more. Absent on
+                                  older servers.
+                                properties:
+                                  concurrency: { type: integer, example: 2 }
                       supportedAudioFiles:
                         type: object
                         description: Per-format booleans from config.
@@ -1723,6 +1817,15 @@ paths:
                       federationGuest:
                         type: boolean
                         description: True when authenticated by a federation guest token rather than the key itself.
+                      federationAllowance:
+                        description: >
+                          Present only when `federation` is true: the caller's
+                          key's caps and today's use on this server, so a
+                          holder can pace a long pull instead of learning its
+                          quota from a 429. Absent on servers older than this
+                          field — fall back to a budget of your own.
+                        allOf:
+                          - $ref: "#/components/schemas/FederationAllowance"
                       federationDirect:
                         type: boolean
                         description: >
@@ -1756,6 +1859,7 @@ paths:
                         description: The live database's PRAGMA user_version.
               example:
                 server: "6.22.0"
+                instanceId: 3f2b8c1e-6a4d-4e0f-9b7a-2c5d8e1f0a93
                 apiVersions: ["1"]
                 features:
                   discoveryReady: true
@@ -1765,6 +1869,7 @@ paths:
                   discoveryOwned: true
                   discoveryTaste: 1
                   sync: true
+                  federationProxy: { purpose: true }
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -1804,6 +1909,10 @@ paths:
                   vpaths:
                     type: array
                     items: { type: string }
+                  instanceId:
+                    type: string
+                    nullable: true
+                    description: The server's stable id — the same value `GET /api` carries as `instanceId`.
                   playlists:
                     type: array
                     items:
@@ -1818,6 +1927,9 @@ paths:
                         properties:
                           defaultCodec: { type: string }
                           defaultBitrate: { type: string }
+                          codecs:
+                            type: object
+                            description: The same object `GET /api` carries as `features.transcode.codecs`.
                   noMkdir: { type: boolean }
                   noUpload: { type: boolean }
                   noFileModify: { type: boolean }
@@ -4394,7 +4506,7 @@ paths:
                       playedMs: { type: integer, minimum: 0 }
                       durationMs: { type: integer, minimum: 0, description: "Defaults to the library's duration for a local track." }
                       outcome: { type: string, enum: [completed, skipped, stopped] }
-                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, other], description: "How the play was queued. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
+                      source: { type: string, enum: [manual, shuffle, autodj, playlist, smart-playlist, auto, carplay, cast, device, other], description: "How the play was queued. `device`: played on a portable player away from any mStream client (a card filled from this library, played offline, its log posted later by the software that syncs it) — a queueing mode the device knew, such as `shuffle` or `autodj`, is sent as itself instead; older servers refuse `device` with a 400, so send `other` to them. `legacy` is reserved for the server's own scrobble-by-filepath route and is never accepted here." }
                       sessionId: { type: string, maxLength: 128 }
                       pauseCount: { type: integer, minimum: 0, default: 0 }
                       track:
@@ -5662,14 +5774,57 @@ paths:
           schema: { type: string }
         - name: codec
           in: query
+          description: An unknown value quietly becomes the server's default codec — check the response's Content-Type.
           schema:
             type: string
             enum: [mp3, opus, aac]
         - name: bitrate
           in: query
+          description: >
+            Every codec takes 64k-192k; `mp3` also takes 256k and 320k.
+            `GET /api` lists each codec's bitrates under
+            `features.transcode.codecs`. A value the codec does not take
+            quietly becomes the server's default bitrate (opus at 320k
+            included).
           schema:
             type: string
-            enum: ["64k", "96k", "128k", "192k"]
+            enum: ["64k", "96k", "128k", "192k", "256k", "320k"]
+        - name: sampleRate
+          in: query
+          description: >
+            Output sample rate in Hz; ffmpeg resamples to it. Omitted, the
+            encoder negotiates a rate from the source, as before. Each
+            codec takes its encoder's rates only — mp3 8000-48000 (below
+            32000 is MPEG-2, where LAME clamps the bitrate to at most 160k),
+            opus 8000/12000/16000/24000/48000, aac 7350-96000; the lists are
+            under `features.transcode.codecs` in `GET /api`. Any other value
+            is a 400 (strict, unlike codec and bitrate). Absent on older
+            servers, which ignore it.
+          schema:
+            type: integer
+            enum: [7350, 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000]
+        - name: offset
+          in: query
+          description: Start this many seconds in (a re-encode from there, never cached).
+          schema: { type: number }
+        - name: bulk
+          in: query
+          description: >
+            `1` (or `true`) marks one file of a long job — a library
+            converted onto a portable player's card, an export — rather
+            than a listener. Its output never enters the transcode cache
+            (so a job cannot push listeners' entries out; a cached copy is
+            still served to it), and it runs in one of a few server-wide
+            slots (`features.transcode.bulk.concurrency` in `GET /api`,
+            config `transcode.bulkConcurrency`, default 2). Over the cap it
+            waits, first come first served, for up to a minute before any
+            byte is sent; then, or at once when the queue is full, it gets
+            a 503 with `Retry-After`. A slot is held while its ffmpeg runs,
+            so a client should read what it asked for. Requests without the
+            flag are never queued or capped. Older servers ignore it.
+          schema:
+            type: string
+            enum: ["1", "true"]
       responses:
         "200":
           description: Transcoded audio stream.
@@ -5680,9 +5835,26 @@ paths:
           content:
             audio/*:
               schema: { type: string, format: binary }
+        "400":
+          description: A `sampleRate` the codec's encoder does not take.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "500":
+          description: >
+            ffmpeg is not available (`transcoding disabled`) — also when it
+            went away while the request waited, as during the restart a
+            settings save makes — or could not be started (`transcode failed`).
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "503":
-          description: ffmpeg not available.
+          description: >
+            A `bulk=1` request only: no bulk slot came free within the wait,
+            or the bulk queue is full. Carries `Retry-After` (seconds).
+          headers:
+            Retry-After: { schema: { type: integer } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -7785,6 +7957,7 @@ paths:
                 properties:
                   defaultCodec: { type: string }
                   defaultBitrate: { type: string }
+                  bulkConcurrency: { type: integer, description: "How many `?bulk=1` transcodes run at once (config `transcode.bulkConcurrency`, default 2)." }
                   downloaded: { type: boolean, description: "Whether ffmpeg has been downloaded." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
@@ -8239,8 +8412,16 @@ paths:
       description: |
         The test-connection target a federated peer hits (with its
         `x-federation-key` header) to verify the pairing and learn its live
-        grant list. Regular authenticated users can also call it and see
+        grant list, and its key's allowance (`allowance`: the caps and
+        today's use). Regular authenticated users can also call it and see
         their own libraries.
+
+        A parent's users read their server's allowance on a peer through
+        the browse proxy, which forwards this route:
+        `GET /api/v1/federation/peers/{id}/api/api/v1/federation/health`.
+        A device on the direct path (a guest token) calls it on the peer
+        itself and sees the same figures, since guests share the key's
+        pool.
       responses:
         "200":
           description: Server identity + the caller's visible libraries.
@@ -8271,6 +8452,13 @@ paths:
                   guestAccess:
                     type: boolean
                     description: This build mints guest tokens (`POST /api/v1/federation/guest`).
+                  allowance:
+                    description: >
+                      Present only for a federation caller (a key or a guest
+                      of one): its key's caps and today's use. Absent for a
+                      local user, and on servers older than this field.
+                    allOf:
+                      - $ref: "#/components/schemas/FederationAllowance"
 
   /api/v1/federation/guest:
     post:
@@ -8614,6 +8802,25 @@ paths:
         server. The PEER's auth wall and key grants decide whether the
         path is readable — it lives in the peer's vpath namespace, not
         this server's.
+
+        Forwarded to the peer: `Range`, `If-Range`, `If-None-Match`,
+        `If-Modified-Since`, `Accept` and `X-mStream-Purpose`. Copied
+        back: `Content-Type`, `Content-Length`, `Content-Range`,
+        `Accept-Ranges`, `ETag`, `Last-Modified` and `Retry-After`, with
+        the peer's status. Nothing else crosses either way — this server's
+        cookies and tokens never reach the peer. `GET /api` advertises the
+        `X-mStream-Purpose` forwarding as
+        `features.federationProxy: { purpose: true }`.
+
+        A `HEAD` asks the peer for the file's first byte (`Range: bytes=0-0`;
+        a federation key may not `HEAD` a peer's `/media`) and answers `200`
+        with the whole file's `Content-Length` — `0` for an empty file —
+        and its `Content-Type`, `Accept-Ranges`, `ETag` and
+        `Last-Modified`. The probe costs the key one byte and holds one of
+        its stream slots for an instant, so it can still meet the peer's
+        `429`. A `Range` on the `HEAD` itself is ignored; the conditionals
+        are forwarded. Works against every peer, old or new. (Older servers
+        fetched the whole file from the peer and discarded it.)
       parameters:
         - { name: id, in: path, required: true, schema: { type: integer }, description: Peer row id }
         - name: path
@@ -8626,15 +8833,37 @@ paths:
           required: false
           schema: { type: string }
           description: "Forwarded to the peer verbatim — seeking works end-to-end"
+        - name: X-mStream-Purpose
+          in: header
+          required: false
+          schema: { type: string, enum: [copy] }
+          description: >
+            Forwarded to the peer verbatim. A client that is copying files
+            (keeping them, not playing them) says `copy`, as it would on the
+            direct path; a peer whose key for this server has copies switched
+            off then answers 403. Older servers do not forward it (their
+            `GET /api` has no `features.federationProxy`).
       responses:
         "200":
           description: Full-body audio stream from the peer.
         "206":
           description: "Partial content for a range request; content-range is copied from the peer."
         "403":
-          description: Federation is disabled on this server.
+          description: >
+            Federation is disabled on this server — or the peer refused: a
+            copy (`X-mStream-Purpose: copy`) on a key with copies switched
+            off ("copies are not allowed with this key").
         "404":
           description: "Unknown peer id, or the peer answered 404 (unknown or ungranted path there)."
+        "429":
+          description: >
+            The peer's caps for this server's key: "Too many concurrent
+            streams" (`Retry-After: 5`) or "Daily transfer quota exceeded"
+            (`Retry-After` = seconds to the peer's UTC midnight). The peer's
+            JSON body and its `Retry-After` are passed through; older
+            servers dropped the header.
+          headers:
+            Retry-After: { schema: { type: integer } }
         "502":
           description: "Peer unreachable — the dial + response-header deadline (15s) was exceeded."
 

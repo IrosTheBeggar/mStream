@@ -16,11 +16,14 @@
 // filtering a full object down: an additive bug omits a field, a
 // filtering bug discloses everything.
 //
-//   Base: `server` (the version), `apiVersions`, and `features` —
-//     server-wide capability facts (see buildFeatures). Visible to every
-//     authenticated caller including federated peers; rule for what may
-//     appear: config/capability facts only — no counts, no library or
-//     content names, no identity.
+//   Base: `server` (the version), `instanceId`, `apiVersions`, and
+//     `features` — server-wide capability facts (see buildFeatures).
+//     Visible to every authenticated caller including federated peers;
+//     rule for what may appear: config/capability facts only — no counts,
+//     no library or content names, no identity of the caller or of anyone
+//     else. The one identity here is the SERVER's own: `instanceId`, the
+//     random id mDNS already advertises to the whole LAN (see
+//     serverInstanceId).
 //
 //   `user`: identity plus the CALLER-SCOPED boot payload (vpaths,
 //     permission flags, federationDiscovery, vpathMetaData), scoped
@@ -37,7 +40,10 @@
 //
 // Federation keys reach this route via their allowlist ('GET /api' +
 // 'GET /api/' in federation-auth.js) and get the version plus their
-// granted-library view — the mobile app's "what can this peer do" call.
+// granted-library view — the mobile app's "what can this peer do" call —
+// and their key's allowance (`user.federationAllowance`: the caps and
+// today's use), so a holder paces itself instead of meeting the quota as a
+// 429.
 // Share tokens get the wall's path-gating and cannot call this (401),
 // same as ping. /api/v1/ping is deprecated in favor of this endpoint
 // but kept indefinitely; it composes its frozen flat payload from the
@@ -51,6 +57,23 @@ import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
+import { describeAllowance } from './federation-limits.js';
+import { describeProxy } from './federation-stream.js';
+
+// The server's stable id: the random UUID config.js generates on first boot
+// and persists (discovery.mdns.instanceId — the key's name predates this
+// use; mDNS has always advertised it as `id=`). It survives restarts,
+// address and port changes, and a rename, so a client that stores
+// something per server (a portable player's card, an offline index) can
+// tell "the same server under another URL" from "another server" without
+// keeping a URL or a token. null only on a config that never booted
+// through config.js. Generated whether or not mDNS advertises, and
+// identical to what it advertises, so a server found on the LAN and the
+// one reached by URL compare equal.
+export function serverInstanceId() {
+  const id = config.program.discovery?.mdns?.instanceId;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -61,10 +84,19 @@ export function buildFeatures() {
   if (transcode.isDownloaded() && config.program.transcode) {
     transcodeInfo = {
       defaultCodec: config.program.transcode.defaultCodec,
-      defaultBitrate: config.program.transcode.defaultBitrate
+      defaultBitrate: config.program.transcode.defaultBitrate,
+      // What a request may ask of each codec: its bitrates (MP3 reaches
+      // 320k) and the output sample rates `?sampleRate=` takes. Absent on
+      // older servers, which take only 64k-192k and no sample rate.
+      codecs: transcode.getTransCodecOptions(),
+      // This server takes `?bulk=1` (one file of a long job: kept out of
+      // the cache, queued behind a server-wide cap) and runs this many such
+      // transcodes at once — a bulk client need not open more.
+      bulk: { concurrency: transcode.bulkConcurrency() },
     };
   }
 
+  const proxy = describeProxy();
   return {
     // Whether a sonic-similarity query would find anything RIGHT NOW.
     // Distinct from `discovery`, which says the feature is switched on: a
@@ -114,6 +146,16 @@ export function buildFeatures() {
     // contract as the discovery flags: the key's presence says this VERSION
     // has the route; clients never probe for it.
     sync: true,
+    // The peer stream proxy (/api/v1/federation/peers/:id/stream/*,
+    // api/federation-stream.js) forwards X-mStream-Purpose: `{ purpose:
+    // true }`, so a client copying a peer's files through this server knows
+    // the peer is told they are copies. A version fact like `sync`, present
+    // with federation on or off (whether there is a peer to reach is
+    // user.federationBrowse), and like `sync` the key's presence is the
+    // signal: describeProxy() is null for a proxy that drops the header, and
+    // the key is left out, as older servers leave it out. /api/-only, like
+    // discoveryReady: ping never carried it.
+    ...(proxy ? { federationProxy: proxy } : {}),
   };
 }
 
@@ -197,6 +239,9 @@ export function setup(mstream) {
     // ── Base ───────────────────────────────────────────────────────────
     const info = {
       server: packageJson.version,
+      // The server's own stable id (serverInstanceId above) — not the
+      // caller's identity, which lives in `user`.
+      instanceId: serverInstanceId(),
       apiVersions: ["1"],
       features: buildFeatures(),
     };
@@ -209,6 +254,12 @@ export function setup(mstream) {
       // A device of a key holder, on a guest token rather than the key
       // itself (state/federation-guest.js). Same scope as the key.
       federationGuest: user.federationGuest === true,
+      // A federation caller's own allowance: its key's caps and today's use
+      // (api/federation-limits.js describeAllowance, built field by field —
+      // the synthetic user's internal federationLimits / federationKeyId
+      // never reach the response). Federation callers only: it describes
+      // the caller's key, and a local account has none.
+      ...(user.federation === true ? { federationAllowance: describeAllowance(user) } : {}),
       ...buildClientBootPayload(user),
     };
 
