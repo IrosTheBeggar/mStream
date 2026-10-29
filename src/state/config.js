@@ -303,11 +303,14 @@ const dbOptions = Joi.object({
   // fsync for faster writes and is still crash-safe under WAL (the DB never
   // corrupts), but a hard power loss can lose transactions committed since the
   // most recent WAL checkpoint. Runtime-changeable via the admin API/UI.
+  // Applies under WAL only: on the DELETE journal (journalMode below) the
+  // server always uses FULL, since NORMAL could corrupt there.
   synchronous: Joi.string().valid('FULL', 'NORMAL').default('FULL'),
   // SQLite journal mode for mstream.db and discovery.db. 'auto' (default)
-  // uses WAL unless the dbDirectory's filesystem can't keep the server,
-  // scanner and workers' locks apart — a Docker Desktop bind mount, say —
-  // and then DELETE (src/db/journal-mode.js; boot logs the reason). 'WAL' or
+  // uses WAL unless, on Linux, the dbDirectory's filesystem can't keep the
+  // server, scanner and workers' locks apart — a Docker Desktop bind mount,
+  // say — and then DELETE (src/db/journal-mode.js; boot logs the reason).
+  // Local Linux filesystems and other platforms aren't checked. 'WAL' or
   // 'DELETE' skips that check. Applied at boot; every other process follows.
   journalMode: Joi.string().valid('auto', 'WAL', 'DELETE').default('auto'),
   // SQLite page-cache size for the main server connection, in MEBIBYTES.

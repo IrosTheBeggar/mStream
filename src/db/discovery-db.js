@@ -256,6 +256,32 @@ export function openDiscoveryDbIfExists() {
   }
 }
 
+// Boot with collection off: the server leaves discovery.db closed, but a
+// worker can still open an existing file (acoustid does whenever it exists)
+// and inherit its mode. Where this directory needs the DELETE fallback, put
+// an existing file in it now, while the server is its only user — a worker
+// holding it open in WAL later would refuse the switch. WAL needs no such
+// step: the server sets it whenever it opens the file. Best-effort, no
+// migrations: discovery data is optional and must never stop the boot.
+export function settleDiscoveryJournalMode() {
+  if (db) { return; }
+  const p = discoveryDbPath();
+  if (!fs.existsSync(p)) { return; }
+  const mode = resolveJournalMode(config.program.storage.dbDirectory,
+    { override: config.program.db?.journalMode });
+  if (mode !== 'DELETE') { return; }
+  let conn = null;
+  try {
+    conn = new DatabaseSync(p);
+    conn.exec('PRAGMA busy_timeout = 5000');
+    setJournalMode(conn, mode, p);
+  } catch (err) {
+    winston.warn(`discovery DB journal mode not settled: ${err.message}`);
+  } finally {
+    try { conn?.close(); } catch (_err) { /* never opened */ }
+  }
+}
+
 export function closeDiscoveryDb() {
   if (!db) { return; }
   try { db.close(); } catch (err) {

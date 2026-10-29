@@ -183,26 +183,59 @@ export function resolveJournalMode(dir, {
   return mode;
 }
 
-// Put a freshly opened connection in `mode` ('WAL' | 'DELETE'). The mode is
-// stored in the database header, so this decides it for every other
-// process's connection too. A failed switch is logged and leaves the
-// database in the mode it had: leaving WAL needs the database to itself (a
-// process still holding it refuses), and entering it needs shared memory
-// the filesystem may not map — where the rollback journal it stays in is
-// exactly what works.
-export function setJournalMode(db, mode, dbPath, { log = winston } = {}) {
+// How long leaving WAL keeps trying while another process has the database
+// open. That switch takes its EXCLUSIVE lock without the busy handler, so
+// busy_timeout never applies: it fails at once. Same budget as busy_timeout.
+export const LEAVE_WAL_WAIT_MS = 5000;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Put a freshly opened connection in `mode` ('WAL' | 'DELETE') and return
+// the mode it ends up in. The mode is stored in the database header, so this
+// decides it for every other process's connection too.
+//
+// Entering WAL throws what SQLite throws, as opening this way always has: a
+// database that can't be used fails the boot loudly. A filesystem that can't
+// map WAL's shared memory may answer with the old mode instead — a rollback
+// journal, which works there — and that is only logged.
+//
+// Leaving WAL needs the database to itself, so it is retried while another
+// process still holds it; one that holds it past `waitMs` (a second server
+// on the same files, a `sqlite3` shell) wins, and the database stays WAL
+// with an error naming the cure.
+export function setJournalMode(db, mode, dbPath, { log = winston, waitMs = LEAVE_WAL_WAIT_MS } = {}) {
   const want = mode === 'DELETE' ? 'DELETE' : 'WAL';
-  let got = null;
-  let failure = null;
-  try {
-    got = db.prepare(`PRAGMA journal_mode = ${want}`).get()?.journal_mode;
-  } catch (err) {
-    failure = err.message;
+  const pragma = () => db.prepare(`PRAGMA journal_mode = ${want}`).get()?.journal_mode;
+  if (want === 'WAL') {
+    const got = pragma();
+    if (String(got).toLowerCase() !== 'wal') {
+      log.warn(`SQLite: ${dbPath} could not enter WAL; it stays in journal_mode=${got}.`);
+    }
+    return got;
   }
-  if (String(got).toUpperCase() === want) { return got; }
-  try { got = db.prepare('PRAGMA journal_mode').get()?.journal_mode; } catch (_err) { /* reported below */ }
-  log.error(`SQLite: could not put ${dbPath} in journal_mode=${want}`
-    + `${failure ? ` (${failure})` : ''}; it stays ${got ?? 'as it was'}.`
-    + (want === 'DELETE' ? ' Is another process still using it?' : ''));
-  return got;
+
+  const deadline = Date.now() + waitMs;
+  let failure;
+  let busy = false;
+  for (;;) {
+    try {
+      const got = pragma();
+      if (String(got).toLowerCase() === 'delete') { return got; }
+      failure = `still ${got}`;
+      break;
+    } catch (err) {
+      failure = err.message;
+      busy = (err.errcode & 0xff) === 5;
+      if (!busy || Date.now() >= deadline) { break; }
+      sleepSync(50);
+    }
+  }
+  let now = null;
+  try { now = db.prepare('PRAGMA journal_mode').get()?.journal_mode; } catch (_err) { /* reported below */ }
+  log.error(`SQLite: could not put ${dbPath} in journal_mode=DELETE (${failure}); it stays `
+    + `${now ?? 'as it was'}.`
+    + (busy ? ' Another process still has it open: stop it and restart mStream.' : ''));
+  return now;
 }

@@ -159,6 +159,15 @@ export function probeSchemaContract(binPath) {
   return probeIntFlag(binPath, '--schema-contract');
 }
 
+// Binaries that inherit the database's journal mode instead of forcing WAL
+// on open (src/db/journal-mode.js) answer `--journal-mode-contract` with at
+// least this; pre-probe builds exit non-zero → null → "forces WAL". Bump in
+// lock-step with JOURNAL_MODE_CONTRACT in rust-parser/src/main.rs.
+export const JOURNAL_MODE_CONTRACT = 1;
+export function probeJournalModeContract(binPath) {
+  return probeIntFlag(binPath, '--journal-mode-contract');
+}
+
 function probeIntFlag(binPath, flag) {
   try {
     const probe = child.spawnSync(binPath, [flag],
@@ -223,6 +232,20 @@ function findRustParser() {
         + `${contract ?? 'unknown (pre-probe build)'} but this server needs ${SCANNER_SCHEMA_CONTRACT} — `
         + `refusing it to protect album identities; scans use the JS scanner until the binary updates.`);
       return false;
+    }
+    // Journal-mode gate, same shape: with the main database in a rollback
+    // journal (journal-mode.js chose it because WAL loses writes on this
+    // filesystem), a binary that still forces WAL on open would switch it
+    // back to WAL for every process mid-run. JS scanner until the binary
+    // catches up (CI rebuilds bin/ on merge).
+    if (!db.isWalMode()) {
+      const journal = probeJournalModeContract(binPath);
+      if (journal === null || journal < JOURNAL_MODE_CONTRACT) {
+        winston.warn(`${label} rust-parser at ${binPath} predates journal-mode inheritance and would `
+          + 'switch this database from its rollback journal back to WAL — refusing it; scans use the JS '
+          + 'scanner until the binary updates.');
+        return false;
+      }
     }
     return true;
   };

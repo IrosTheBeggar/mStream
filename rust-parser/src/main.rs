@@ -682,6 +682,17 @@ fn main() {
         return;
     }
 
+    // Capability probe: `rust-parser --journal-mode-contract` prints
+    // JOURNAL_MODE_CONTRACT. Binaries before it forced WAL on every database
+    // they opened, which switches one the server put in the DELETE fallback
+    // (src/db/journal-mode.js) back to WAL for every process;
+    // task-queue refuses them while the database is not in WAL. Pre-probe
+    // binaries fall into the JSON-input path and exit non-zero ("too old").
+    if args.len() == 2 && args[1] == "--journal-mode-contract" {
+        println!("{}", JOURNAL_MODE_CONTRACT);
+        return;
+    }
+
     // Hidden developer/test subcommand: `rust-parser --audio-hash <path>`
     // prints the dual-hash result as JSON on stdout and exits. Used by
     // test/audio-hash-parity.test.mjs to compare against the JS impl.
@@ -6401,6 +6412,11 @@ const HASH_GENERATION: i64 = 2;
 // stale prebuilt would otherwise write key-less album rows through the
 // forced migration rescan. Bump in lock-step with schema.js.
 const SCANNER_SCHEMA_CONTRACT: i64 = 73;
+
+// Answered by `--journal-mode-contract`. 1: the scanner inherits the
+// database's journal mode (run_scan sets none). Bump in lock-step with
+// JOURNAL_MODE_CONTRACT in src/db/task-queue.js.
+const JOURNAL_MODE_CONTRACT: i64 = 1;
 const SAMPLE_W_START: u64 = 256 * 1024;
 const SAMPLE_W_MID: u64 = 512 * 1024;
 const SAMPLE_W_END: u64 = 256 * 1024;

@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import winston from 'winston';
 
@@ -190,17 +191,58 @@ describe('setJournalMode', () => {
       const p = path.join(dir, 'x.db');
       const other = new DatabaseSync(p);
       other.exec('PRAGMA journal_mode = WAL; CREATE TABLE t (x)');
-      other.prepare('SELECT count(*) FROM t').get();   // holds its read lock
+      // An open WAL connection keeps a shared lock on the database file for
+      // its lifetime; that alone refuses the switch.
+      other.prepare('SELECT count(*) FROM t').get();
       const db = new DatabaseSync(p);
       const log = recorder();
-      assert.equal(setJournalMode(db, 'DELETE', p, { log }), 'wal');
+      assert.equal(setJournalMode(db, 'DELETE', p, { log, waitMs: 100 }), 'wal');
       assert.equal(log.lines[0][0], 'error');
-      assert.match(log.lines[0][1], /journal_mode=DELETE.*stays wal.*another process/);
+      assert.match(log.lines[0][1], /journal_mode=DELETE \(database is locked\); it stays wal\. Another process/);
       db.close();
       other.close();
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // busy_timeout does not cover leaving WAL (SQLite takes that lock without
+  // the busy handler), so the switch retries on its own.
+  test('leaving WAL waits for another process to let go', async () => {
+    const dir = tmpDir('set-wait');
+    try {
+      const p = path.join(dir, 'x.db');
+      const seed = new DatabaseSync(p);
+      seed.exec('PRAGMA journal_mode = WAL; CREATE TABLE t (x)');
+      seed.close();
+      const holder = spawn(process.execPath, ['--no-warnings', '-e', `
+        const { DatabaseSync } = require('node:sqlite');
+        const db = new DatabaseSync(${JSON.stringify(p)});
+        db.prepare('SELECT count(*) FROM t').get();
+        console.log('holding');
+        setTimeout(() => db.close(), 400);`], { stdio: ['ignore', 'pipe', 'inherit'] });
+      await new Promise((resolve, reject) => {
+        holder.stdout.on('data', (d) => { if (String(d).includes('holding')) { resolve(); } });
+        holder.on('error', reject);
+        holder.on('exit', () => reject(new Error('holder exited before holding the database')));
+      });
+      const db = new DatabaseSync(p);
+      db.exec('PRAGMA busy_timeout = 5000');
+      const log = recorder();
+      const started = Date.now();
+      assert.equal(setJournalMode(db, 'DELETE', p, { log }), 'delete');
+      assert.ok(Date.now() - started >= 100, 'the switch waited out the holder');
+      assert.deepEqual(log.lines, []);
+      db.close();
+      await new Promise((resolve) => { if (holder.exitCode !== null) { resolve(); } else { holder.on('exit', resolve); } });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('entering WAL throws what SQLite throws, as opening always has', () => {
+    const failing = { prepare: () => ({ get: () => { throw new Error('disk I/O error'); } }) };
+    assert.throws(() => setJournalMode(failing, 'WAL', '/x.db', { log: recorder() }), /disk I\/O error/);
   });
 });
 
@@ -288,5 +330,45 @@ describe('initDB / initDiscoveryDb apply the decision', () => {
     discoveryDb.initDiscoveryDb(discPath);
     discoveryDb.closeDiscoveryDb();
     assert.equal(journalModeOf(discPath), 'wal');
+  });
+
+  test('boot with collection off settles an existing discovery.db into DELETE', () => {
+    const discPath = path.join(root, 'db', 'discovery.db');
+    const seed = new DatabaseSync(discPath);   // left in WAL, as builds before the fallback kept it
+    seed.exec('PRAGMA journal_mode = WAL; CREATE TABLE IF NOT EXISTS t (x)');
+    seed.close();
+
+    config.program.db.journalMode = 'WAL';
+    discoveryDb.settleDiscoveryJournalMode();  // nothing to do under WAL
+    assert.equal(journalModeOf(discPath), 'wal');
+
+    config.program.db.journalMode = 'DELETE';
+    discoveryDb.settleDiscoveryJournalMode();
+    assert.equal(journalModeOf(discPath), 'delete');
+    assert.equal(discoveryDb.isDiscoveryDbOpen(), false);   // settled, not opened
+
+    fs.rmSync(discPath, { force: true });
+    discoveryDb.settleDiscoveryJournalMode();  // no file: it never creates one
+    assert.equal(fs.existsSync(discPath), false);
+  });
+
+  test('the server keeps synchronous=FULL on the DELETE journal', () => {
+    const synchronous = () => dbManager.getDB().prepare('PRAGMA synchronous').get().synchronous;
+    config.program.db.synchronous = 'NORMAL';
+    try {
+      config.program.db.journalMode = 'WAL';
+      dbManager.initDB();
+      assert.equal(dbManager.isWalMode(), true);
+      assert.equal(synchronous(), 1);          // NORMAL, as configured
+      config.program.db.journalMode = 'DELETE';
+      dbManager.initDB();
+      assert.equal(dbManager.isWalMode(), false);
+      assert.equal(synchronous(), 2);          // FULL, whatever the setting
+      dbManager.setSynchronous('NORMAL');      // the admin's live toggle
+      assert.equal(synchronous(), 2);
+    } finally {
+      config.program.db.synchronous = 'FULL';
+      dbManager.close();
+    }
   });
 });

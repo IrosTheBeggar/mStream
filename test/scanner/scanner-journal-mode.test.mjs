@@ -100,22 +100,25 @@ for (const [engine, skip, scan] of engines) {
 }
 
 // Every process but the server inherits the mode; only journal-mode.js may
-// set one. A new worker that copies the old `PRAGMA journal_mode = WAL`
-// opener would silently re-enable the mode that loses writes on Docker
-// Desktop bind mounts.
+// set one. A new worker that copies the old WAL-forcing opener would
+// silently re-enable the mode that loses writes on Docker Desktop bind
+// mounts. Whole files, comments included (say it another way there): SQL
+// setters even when a line break splits them, and rusqlite's pragma_update.
 test('only src/db/journal-mode.js sets a journal mode', () => {
   const offenders = [];
-  const setter = /PRAGMA\s+(\w+\.)?journal_mode\s*=/i;
+  const setters = [/PRAGMA\s+(\w+\.)?journal_mode\s*=/gi, /pragma_update\s*\([^)]*journal_mode/g];
   const walk = (dir) => {
     for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, ent.name);
       if (ent.isDirectory()) { walk(p); continue; }
       if (!/\.(m?js|rs)$/.test(ent.name)) { continue; }
       if (p === path.join(REPO_ROOT, 'src', 'db', 'journal-mode.js')) { continue; }
-      fs.readFileSync(p, 'utf8').split('\n').forEach((line, i) => {
-        const code = line.replace(/\/\/.*$/, '');
-        if (setter.test(code)) { offenders.push(`${path.relative(REPO_ROOT, p)}:${i + 1}`); }
-      });
+      const text = fs.readFileSync(p, 'utf8');
+      for (const setter of setters) {
+        for (const m of text.matchAll(setter)) {
+          offenders.push(`${path.relative(REPO_ROOT, p)}:${text.slice(0, m.index).split('\n').length}`);
+        }
+      }
     }
   };
   walk(path.join(REPO_ROOT, 'src'));
