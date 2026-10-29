@@ -328,13 +328,18 @@ function tryMuslRetry(scanObj, reason) {
 // "(node:PID) ExperimentalWarning: …" banner and its "(Use `node
 // --trace-warnings …" follow-up) is not a worker failure — it was painting
 // red error lines over every fresh boot via the node:sqlite experimental
-// warning. Real errors stay error-level.
-function logWorkerStderr(prefix, line) {
+// warning. Nor are ONNX Runtime's own warnings, which the native discovery
+// runtime writes straight to stderr: "onnxruntime cpuid_info warning:
+// Unknown CPU vendor …" on every pass on Apple Silicon Linux VMs (Docker
+// Desktop for Mac), and its logger's "[W:onnxruntime:…]" lines. Real errors
+// stay error-level. Exported for tests.
+export function logWorkerStderr(prefix, line) {
   if (!line) { return; }
   if (/^\(node:\d+\)/.test(line) || line.startsWith('(Use `node ')
       || line.startsWith('[winston]')) {
     winston.debug(`${prefix}: ${line}`);
-  } else if (line.startsWith('Warning:')) {
+  } else if (line.startsWith('Warning:') || /^onnxruntime \S+ warning: /.test(line)
+      || line.includes('[W:onnxruntime:')) {
     winston.warn(`${prefix}: ${line}`);
   } else {
     winston.error(`${prefix} error: ${line}`);
