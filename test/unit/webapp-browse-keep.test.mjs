@@ -73,7 +73,7 @@ function sliceConst(name) {
 const KEEP_FNS = [...SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote|onQueueMoreCapture)\(/gm)].map((m) => m[1]);
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody',
   'searchKey', 'createMusicFileHtml', 'renderDirHtml', 'renderAlbum', 'renderArtist', 'renderSearchRow', 'renderSearchResults',
-  'setBrowserRootPanel', 'discoveryHideHead', 'senddir', 'printdir', 'getFileExplorerPath', 'getDirectoryString2',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'senddir', 'printdir', 'getFileExplorerPath', 'getDirectoryString2',
   'getAlbumsOnClick', 'getAlbumSongs', 'getArtistsAlbums', 'getAllAlbums', 'getGenreSongs', 'redoRecentlyAdded', 'runLocalSearch',
   'openFileExplorerAt', 'applyServerContext', ...KEEP_FNS];
 
@@ -311,6 +311,7 @@ function makeSandbox({ peer = PEER, flagOn = true, listing = LISTING(), view = V
     const knownPeers = new Map([[${PEER.id}, ${JSON.stringify(PEER)}], [${PEER_C.id}, ${JSON.stringify(PEER_C)}]]);
     const discoveryView = { flags: { discoveryPlugins: ${flagOn} } };
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
     ${sliceConst('searchMap')}
     ${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
     let keepGatePending = null;

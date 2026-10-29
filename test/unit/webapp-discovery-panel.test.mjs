@@ -98,6 +98,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
+  'hideMoodFilters', 'moodFilterBody', 'moodPanelHtml', 'discoveryPickMood',
   'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
@@ -314,6 +315,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     let browseGeneration = 0;
     let fileExplorerArray = [];
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
     ${sliceConst('DPAGE_LIMITS')}
     ${sliceConst('discoveryView')}
     ${sliceConst('DPAGE_ICONS')}
@@ -2434,8 +2436,8 @@ describe('Discover page: wiring', () => {
 
   test('applyDiscoveryPing: the flags, the nav entry and the panel\'s link follow the ping', () => {
     const { S, els, bodyClasses } = makeSandbox({ taste: answer });
-    S.applyDiscoveryPing({ discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true });
-    assert.deepEqual(S.view.flags, { discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true });
+    S.applyDiscoveryPing({ discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true, moodFilters: true });
+    assert.deepEqual(S.view.flags, { discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true, moodFilters: true });
     assert.ok(!els.get('nav-discover').classList.contains('super-hide'));
     assert.ok(bodyClasses.contains('has-discover-page'));
     for (const off of [{ discovery: true, discoveryTaste: 0 }, { discovery: false, discoveryTaste: 1 }, { discovery: true }, {}]) {

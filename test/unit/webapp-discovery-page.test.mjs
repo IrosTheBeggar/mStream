@@ -178,6 +178,35 @@ describe('the contract constants agree with the server', () => {
 
 // ── requests ──────────────────────────────────────────────────────────
 
+describe('buildRequests: the mood filter', () => {
+  const MOODY = { ...FLAGS, discoveryTaste: 2, moodFilters: true };
+  const moods = { energy: 'relaxed', tags: ['danceable', 'acoustic'] };
+
+  test('the Discover page sends it on both calls, in the server\'s form', () => {
+    const { main, peers } = D.buildRequests({ flags: MOODY, moods });
+    assert.deepEqual(main.moods, { energy: 'relaxed', tags: ['acoustic', 'danceable'] });
+    assert.deepEqual(peers.moods, main.moods);
+  });
+
+  test('only to a server that takes it (generation 2) and has scores', () => {
+    assert.equal(D.moodsAvailable(MOODY), true);
+    for (const flags of [FLAGS, { ...FLAGS, moodFilters: true }, { ...FLAGS, discoveryTaste: 2 }, { ...MOODY, discovery: false }]) {
+      assert.equal(D.moodsAvailable(flags), false, JSON.stringify(flags));
+      const { main } = D.buildRequests({ flags, moods });
+      assert.ok(main === null || !('moods' in main), JSON.stringify(flags));
+    }
+    assert.equal(D.moodsAvailable({ ...MOODY, discoveryTaste: '2' }), true, 'a string generation still counts');
+  });
+
+  test('never on the explore page, and nothing for an empty or unknown filter', () => {
+    assert.equal('moods' in D.buildRequests({ flags: MOODY, moods, page: 'explore' }).main, false);
+    for (const m of [null, {}, { tags: [] }, { energy: 'sleepy', tags: ['sad'] }, 'relaxed']) {
+      assert.equal('moods' in D.buildRequests({ flags: MOODY, moods: m }).main, false, JSON.stringify(m));
+    }
+    assert.deepEqual(D.cleanMoods({ valence: 'neutral', voice: 'vocals', extra: 1 }), { valence: 'neutral', voice: 'vocals' });
+  });
+});
+
 describe('buildRequests', () => {
   const strip = (b) => { const c = { ...b }; delete c.sources; return c; };
 

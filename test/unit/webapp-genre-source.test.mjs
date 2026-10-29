@@ -55,7 +55,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'createMusicFileHtml',
-  'setBrowserRootPanel', 'discoveryHideHead', 'renderGenre', 'preferredGenreSource',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'renderGenre', 'preferredGenreSource',
   'chooseGenreSource', 'showGenreSourceSwitch', 'getAllGenres', 'getGenreSongsList', 'getGenreSongs',
   'runLocalSearch'];
 
