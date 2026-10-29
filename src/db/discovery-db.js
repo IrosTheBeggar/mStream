@@ -34,7 +34,7 @@ import * as config from '../state/config.js';
 import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode.js';
 
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
-export const DISCOVERY_SCHEMA_VERSION = 3;
+export const DISCOVERY_SCHEMA_VERSION = 4;
 
 // Contract constants for the embedding column. Declared here (and copied
 // into discovery_meta + every export snapshot) so a consumer never has to
@@ -154,10 +154,30 @@ const SCHEMA_V3 = `
     ON discovery_tracks(audio_hash) WHERE album IS NULL;
 `;
 
+// V4: mood heads (2026-10). The embedder's mood/character heads score each
+// track on a fixed set of traits (discovery-features-lib.js, spec.moods).
+// INTERNAL columns — the export allowlist carries only the coarse
+// `danceability` + `mood_tags` that were in the format from the start:
+//   mood_scores   JSON object, every head's 0–1 score
+//   mood_version  the head set that produced them (spec.moods.version), so
+//                 the worker re-analyses embedded rows whose pin is missing
+//                 or old — once — the way model_id drives a model swap
+// The V2 covering index gains mood_version so the enqueue pre-check and the
+// status counts stay index-only when they ask "current model AND current
+// moods?"; the old index is its prefix, so it goes.
+const SCHEMA_V4 = `
+  ALTER TABLE discovery_tracks ADD COLUMN mood_scores TEXT;
+  ALTER TABLE discovery_tracks ADD COLUMN mood_version TEXT;
+  DROP INDEX IF EXISTS idx_discovery_tracks_embedded_model;
+  CREATE INDEX IF NOT EXISTS idx_discovery_tracks_embedded_model_mood
+    ON discovery_tracks(model_id, audio_hash, mood_version) WHERE embedding IS NOT NULL;
+`;
+
 const MIGRATIONS = [
   { version: 1, sql: SCHEMA_V1 },
   { version: 2, sql: SCHEMA_V2 },
   { version: 3, sql: SCHEMA_V3 },
+  { version: 4, sql: SCHEMA_V4 },
 ];
 
 export function discoveryDbPath() {
@@ -464,6 +484,9 @@ export function upsertDiscoveryTrack(fields) {
     fields.year ?? null,
     fields.isrc ?? null,
     fields.releaseGroupMbid ?? null,
+    // V4 mood heads.
+    fields.moodScores ? JSON.stringify(fields.moodScores) : null,
+    fields.moodVersion ?? null,
   ];
 
   getDiscoveryDb().prepare(`
@@ -471,8 +494,9 @@ export function upsertDiscoveryTrack(fields) {
       audio_hash, source_mtime, updated_at, export_id, recording_mbid,
       acoustid_id, artist, title, duration, model_id, model_version,
       embedding, bpm, musical_key, danceability, genre_tags, mood_tags,
-      analyzed_at, album, year, isrc, release_group_mbid
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      analyzed_at, album, year, isrc, release_group_mbid,
+      mood_scores, mood_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(audio_hash) DO UPDATE SET
       source_mtime   = excluded.source_mtime,
       updated_at     = excluded.updated_at,
@@ -494,7 +518,9 @@ export function upsertDiscoveryTrack(fields) {
       album              = excluded.album,
       year               = excluded.year,
       isrc               = excluded.isrc,
-      release_group_mbid = excluded.release_group_mbid
+      release_group_mbid = excluded.release_group_mbid,
+      mood_scores    = excluded.mood_scores,
+      mood_version   = excluded.mood_version
   `).run(...params);
 }
 
