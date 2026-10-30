@@ -9,7 +9,7 @@ import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
-import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause } from './mood-filter.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -226,7 +226,9 @@ export function libraryFilter(user, ignoreVPaths) {
 // echo }. POST body only: the federation browse proxy forwards no query
 // string, and a connected server's list must filter the same way. The
 // answer carries `moods` (the echo) only while this server has scores to
-// filter by; a client shows its filters on that key.
+// filter by; a client shows its filters on that key. The song lists
+// (rated, recent/added) take the same filter but answer bare arrays, with
+// no room for the echo: clients show theirs on server-info's `moodFilters`.
 function browseMoods(req) {
   return applicableMoods(parseMoods(req.body?.moods));
 }
@@ -1189,7 +1191,7 @@ export function setup(mstream) {
   // trackQuery path search uses (renderMetadataByIds), so the response shape
   // stays identical to the old queries — and picks up future metadata fields
   // automatically.
-  function userStatRows(user, statColumn, statFilter, filter, limit) {
+  function userStatRows(user, statColumn, statFilter, filter, limit, moods = null) {
     // The natural OR-form hash join (audio_hash = h OR file_hash = h) is a
     // trap here: without ANALYZE stats the planner serves it — and the
     // pushed-down library filter — from idx_tracks_library, i.e. a whole-
@@ -1198,7 +1200,8 @@ export function setup(mstream) {
     // which together reproduce COALESCE(audio_hash, file_hash) = track_hash
     // exactly), each pinned to its hash index with INDEXED BY, inside a
     // MATERIALIZED CTE so the library filter cannot be pushed back down.
-    // The filter then runs over the handful of resolved rows. INDEXED BY is
+    // The filter (and a mood filter's one track_moods probe per row) then
+    // runs over the handful of resolved rows. INDEXED BY is
     // deliberate: if a migration ever drops either hash index this query
     // errors loudly instead of silently regressing to a scan (the
     // db-stats integration test asserts the plan).
@@ -1218,7 +1221,7 @@ export function setup(mstream) {
       )
       SELECT t.id
       FROM resolved t
-      WHERE ${filter.clause}
+      WHERE ${filter.clause}${moods ? ` AND ${trackMoodClause(moods)}` : ''}
       ORDER BY t.stat DESC${limit != null ? '\n      LIMIT ?' : ''}
     `;
     const params = [user.id, ...filter.params];
@@ -1230,10 +1233,12 @@ export function setup(mstream) {
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
 
+  // POST takes the browse lists' optional `moods` filter (browseMoods).
   function getRatedSongs(req) {
+    const { moods } = browseMoods(req);
     if (!req.user?.id) { return []; }
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    return userStatRows(req.user, 'rating', 'rating > 0', filter, null);
+    return userStatRows(req.user, 'rating', 'rating > 0', filter, null, moods);
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => res.json(getRatedSongs(req)));
@@ -1277,17 +1282,27 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/recent/added', (req, res) => {
     const schema = Joi.object({
       limit: Joi.number().integer().min(1).required(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      // The browse lists' optional mood filter, validated by browseMoods.
+      moods: Joi.any()
     });
     joiValidate(schema, req.body);
+    const { moods } = browseMoods(req);
 
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
     // With every library visible the scope clause excludes nothing, and
     // dropping it is what lets SQLite walk idx_tracks_created_at and stop at
     // LIMIT — otherwise it probes idx_tracks_library for the entire visible
     // set and sorts that in a temp b-tree (45.6 ms → 0.2 ms at 25k tracks).
-    // See libraryFilter for why this is gated on the no-op case only.
-    const scopeSql = filter.coversAllLibraries ? '' : `WHERE ${filter.clause}`;
+    // See libraryFilter for why this is gated on the no-op case only. A mood
+    // filter keeps that walk: one track_moods probe per row until LIMIT
+    // songs match — the newest `limit` matching songs, not a filtered
+    // slice of the newest `limit`.
+    const where = [
+      ...(filter.coversAllLibraries ? [] : [filter.clause]),
+      ...(moods ? [trackMoodClause(moods)] : []),
+    ];
+    const scopeSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const scopeParams = filter.coversAllLibraries ? [] : filter.params;
     const allParams = req.user?.id ? [req.user.id, ...scopeParams] : scopeParams;
 

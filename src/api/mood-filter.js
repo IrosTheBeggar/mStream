@@ -1,8 +1,9 @@
 // Mood filters over track_moods (V80 — src/db/mood-sync.js mirrors the
 // discovery model's mood heads into it): the one definition of what a
 // "relaxed", "neutral" or "vocals" song is, shared by the browse lists
-// (/db/albums, /db/artists), the Discover page (/discovery/taste) and the
-// peer side of its federation fan-out (/federation/discovery/similar).
+// (/db/albums, /db/artists), the song lists (/db/rated, /db/recent/added),
+// the Discover page (/discovery/taste) and the peer side of its federation
+// fan-out (/federation/discovery/similar).
 //
 // A filter is an object of up to four groups. A group left out does not
 // filter:
@@ -91,7 +92,8 @@ export function parseMoodsQuery(raw) {
  * Whether this server can filter by mood RIGHT NOW: the heads are on and
  * at least one song has scores. Answers that can carry a filter say so by
  * echoing it (applicableMoods); a client shows its filters on that echo,
- * or on server-info's `moodFilters` flag for the local Discover page.
+ * or on server-info's `moodFilters` flag for the local Discover page and
+ * the song lists (bare arrays, with no room for an echo).
  */
 export function moodFiltersReady() {
   if (config.program.scanOptions?.analyzeMoods === false) { return false; }
@@ -142,6 +144,12 @@ function majoritySet(col, moods, filter) {
           HAVING 2 * SUM(CASE WHEN ${moodPredicate(moods)} THEN 1 ELSE 0 END) > COUNT(*)`,
     params: [...filter.params],
   };
+}
+
+/** `EXISTS (…)` — the song `${t}.id` matches (one PK probe; a song not
+ * analysed yet never does). The song lists' clause. */
+export function trackMoodClause(moods, t = 't') {
+  return `EXISTS (SELECT 1 FROM track_moods tm WHERE tm.track_id = ${t}.id AND ${moodPredicate(moods)})`;
 }
 
 /** `al.id IN (…)` — albums most of whose visible analysed songs match. */

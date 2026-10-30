@@ -3,7 +3,10 @@
  * /db/artists take an optional `moods` filter and keep the albums / artists
  * MORE than half of whose analysed songs match it; every answer carries
  * `moods` — the filter applied, {} when none — while the server has mood
- * scores, and leaves the key out (filtering nothing) when it has none.
+ * scores, and leaves the key out (filtering nothing) when it has none. The
+ * song lists, /db/rated and /db/recent/added, take the same filter per
+ * song; their answers are bare arrays, so they carry no echo (clients go by
+ * server-info's `moodFilters`).
  *
  * The fixture library's songs get scores written straight into track_moods
  * after the scan, the way the mood sync would. 'Descent' gets none (not
@@ -52,6 +55,12 @@ async function call(method, route, body) {
 const albums = (moods) => call('POST', '/api/v1/db/albums', moods === undefined ? {} : { moods });
 const artists = (body) => call('POST', '/api/v1/db/artists', body);
 const names = (r) => r.body.albums.map((a) => a.name);
+const rated = (moods) => call('POST', '/api/v1/db/rated', moods === undefined ? {} : { moods });
+const recent = (limit, moods) => call('POST', '/api/v1/db/recent/added', { limit, ...(moods !== undefined && { moods }) });
+const titles = (r) => r.body.map((s) => s.metadata.title);
+
+// Which songs each value holds for, by the scores above ('Descent' has none).
+const RELAXED = new Set(['Orbit', 'Return', 'Highway', 'Neon', 'Sketch 1']);
 
 before(async () => {
   server = await startServer();
@@ -139,6 +148,64 @@ describe('/db/artists mood filter', () => {
   });
 });
 
+describe('/db/rated mood filter', () => {
+  before(async () => {
+    // Rated through the route, highest first: Be Somebody, Orbit, Return,
+    // Static, Descent.
+    const paths = new Map((await recent(100)).body.map((s) => [s.metadata.title, s.filepath]));
+    for (const [title, rating] of [['Be Somebody', 9], ['Orbit', 8], ['Return', 6], ['Static', 4], ['Descent', 2]]) {
+      const r = await call('POST', '/api/v1/db/rate-song', { filepath: paths.get(title), rating });
+      assert.equal(r.status, 200, title);
+    }
+  });
+
+  test('no filter: every rated song, highest first', async () => {
+    const r = await rated();
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'still a bare array');
+    assert.deepEqual(titles(r), ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
+  });
+
+  test('a filter keeps the rated songs that match, in rating order', async () => {
+    assert.deepEqual(titles(await rated({ energy: 'relaxed' })), ['Orbit', 'Return']);
+    assert.deepEqual(titles(await rated({ voice: 'vocals' })), ['Be Somebody', 'Static'], 'Descent has no scores');
+    assert.deepEqual(titles(await rated({ energy: 'relaxed', tags: ['acoustic'] })), ['Return']);
+    assert.deepEqual(titles(await rated({ valence: 'happy', energy: 'relaxed' })), []);
+  });
+
+  test('GET is the unfiltered list; a bad filter is a 400', async () => {
+    assert.deepEqual(titles(await call('GET', '/api/v1/db/rated')),
+      ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
+    assert.equal((await rated({ energy: 'sleepy' })).status, 400);
+    assert.equal((await rated('relaxed')).status, 400);
+  });
+});
+
+describe('/db/recent/added mood filter', () => {
+  test('the limit counts matching songs: the newest `limit` that match', async () => {
+    const newest = titles(await recent(100));
+    assert.equal(newest.length, 9);
+    const r = await recent(3, { energy: 'relaxed' });
+    assert.equal(r.status, 200);
+    assert.ok(Array.isArray(r.body), 'still a bare array');
+    assert.deepEqual(titles(r), newest.filter((t) => RELAXED.has(t)).slice(0, 3));
+    assert.deepEqual(titles(await recent(100, { energy: 'relaxed' })), newest.filter((t) => RELAXED.has(t)));
+  });
+
+  test('groups and tags combine per song', async () => {
+    assert.deepEqual(titles(await recent(100, { energy: 'aggressive', voice: 'vocals' })).sort(),
+      ['Be Somebody', 'Rise', 'Static']);
+    assert.deepEqual(titles(await recent(100, { tags: ['party', 'danceable'] })).sort(), ['Be Somebody', 'Rise']);
+    assert.deepEqual(titles(await recent(100, { valence: 'neutral' })).sort(), ['Highway', 'Orbit']);
+  });
+
+  test('an empty filter filters nothing; a bad one is a 400', async () => {
+    assert.equal(titles(await recent(100, {})).length, 9, 'Descent included');
+    assert.equal((await recent(5, { voice: 'choir' })).status, 400);
+    assert.equal((await recent(5, { tempo: 'fast' })).status, 400);
+  });
+});
+
 describe('mood filters without scores', () => {
   test('the capability flag follows the scores', async () => {
     const api = await call('GET', '/api/');
@@ -159,6 +226,8 @@ describe('mood filters without scores', () => {
     assert.deepEqual(names(r), ['Be Somebody', 'Later Works', 'Night Drive', 'Untitled EP']);
     assert.equal('moods' in r.body, false);
     assert.deepEqual((await artists({ moods: { energy: 'relaxed' } })).body, { artists: ['Icarus', 'Vosto'] });
+    assert.deepEqual(titles(await rated({ energy: 'relaxed' })), ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
+    assert.equal(titles(await recent(100, { energy: 'aggressive' })).length, 9);
     assert.equal((await call('GET', '/api/v1/ping')).body.moodFilters, false);
     // Still validated: a bad filter is refused either way.
     assert.equal((await albums({ valence: 'angry' })).status, 400);
