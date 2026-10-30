@@ -1428,6 +1428,28 @@ describe('Discover page: changes re-ask', () => {
 });
 
 describe('Discover page: the configuration bar', () => {
+  test('Strict: right after Filters while a filter is set, pressed while strict; the asks carry it', async () => {
+    const { S, click, calls } = makeSandbox({ taste: answer, flags: { ...FLAGS_ALL, discoveryTaste: 2, moodFilters: true } });
+    await S.discoveryPanel();
+    assert.ok(S.page().includes('data-dp="moods"'));
+    assert.ok(!S.page().includes('data-dp="moodStrict"'), 'nothing set: no switch');
+    click({ 'data-dp': 'moods' });
+    click({ 'data-dp': 'mood', 'data-v': 'energy:relaxed' });
+    await flush(); await flush();
+    const html = S.page();
+    assert.equal(findDrawn(html, { 'data-dp': 'moodStrict' }).attrs['aria-pressed'], 'false');
+    assert.ok(html.indexOf('data-dp="moodStrict"') > html.indexOf('data-dp="moods"'));
+    assert.ok(html.indexOf('data-dp="moodStrict"') < html.indexOf('data-dp="options"'));
+    click({ 'data-dp': 'moodStrict' });
+    await flush(); await flush();
+    assert.equal(findDrawn(S.page(), { 'data-dp': 'moodStrict' }).attrs['aria-pressed'], 'true');
+    assert.deepEqual(tasteCalls(calls).at(-1).moods, { energy: 'relaxed', strict: true });
+    click({ 'data-dp': 'moodClear' });
+    await flush(); await flush();
+    assert.ok(!S.page().includes('data-dp="moodStrict"'), 'gone with the filter');
+    assert.equal('moods' in tasteCalls(calls).at(-1), false);
+  });
+
   test('the bar: the window form, More options, then refresh — no tagline, no back link, no seed strip in the body', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();

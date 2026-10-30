@@ -70,7 +70,7 @@ const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'songListMoods',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'syncMoodStrict', 'songListMoods', 'strongFirst', 'closeMatchesDivider',
   'getFileExplorerPath', 'printdir',
   'getAllGenres', 'getGenreSongs', 'getAllAlbums', 'getArtistsAlbums',
   'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
@@ -440,5 +440,28 @@ describe('runLocalSearch — on a federated peer', () => {
     assert.equal(genresAfter.length, 1);
     assert.ok(genresAfter[0].includes('data-genre="Jazz"'));
     assert.ok(genresBefore.includes(genresAfter[0]));
+  });
+});
+
+describe('runLocalSearch — a mood-filtered song list', () => {
+  // As the server answers a filtered Rated: rating order, each song's fit.
+  const FITTED = [
+    { filepath: 'music/Return.flac', metadata: { title: 'Return', artist: 'Icarus', rating: 9 }, moodFit: 'close' },
+    { filepath: 'music/Static.flac', metadata: { title: 'Static', artist: 'Vosto', rating: 8 }, moodFit: 'strong' },
+    { filepath: 'music/Neon.flac', metadata: { title: 'Neon', artist: 'Vosto', rating: 7 }, moodFit: 'close' },
+  ];
+  // Each row's song (its path, escaped, appears on the row and its
+  // buttons: one per row), and '—' for the divider.
+  const drawn = (html) => html.split(/(?=<li )/)
+    .map((row) => (/mood-fit-divider/.test(row) ? '—' : (row.match(/(Return|Static|Neon)\.flac/) ?? [])[1]))
+    .filter(Boolean);
+
+  test('the close matches keep their divider, under the strong fits the filter kept', async () => {
+    const S = makeSandbox({ getRated: canned(FITTED) });
+    await S.getRatedSongs();
+    assert.deepEqual(drawn(S.html()), ['Static', '—', 'Return', 'Neon']);
+    assert.deepEqual(drawn(S.filter('vosto')), ['Static', '—', 'Neon']);
+    assert.deepEqual(drawn(S.filter('icarus')), ['—', 'Return'], 'no strong fit kept: the divider leads');
+    assert.deepEqual(drawn(S.filter('static')), ['Static']);
   });
 });

@@ -14,7 +14,12 @@
  *     where the ping says this server can filter, never on a connected
  *     server's list; those lists send the filter only then;
  *   - pressing a value again lets it go, tags toggle, Clear empties the
- *     page's filter — and each change asks the list again, as a newer ask.
+ *     page's filter — and each change asks the list again, as a newer ask;
+ *   - Strict sits beside the button while a filter is set, rides in the
+ *     wire form only beside a group, and goes with the filter's last choice
+ *     (Discover's moodStrict action alike);
+ *   - Rated and Recently Added draw their strong fits first, in the list's
+ *     own order, and the close matches under one divider.
  *
  * Same technique as webapp-album-cards.test.mjs: the real functions are
  * sliced out of m.js and run against stub globals.
@@ -50,8 +55,9 @@ function sliceConst(name) {
   throw new Error(`could not find the end of const ${name}`);
 }
 
-const FNS = ['escapeHtml', 'moodFilterBody', 'moodPanelHtml', 'showMoodFilters', 'hideMoodFilters', 'toggleMoodPanel',
-  'pickMood', 'toggleMoodTag', 'clearMoodFilters', 'moodFilterChanged', 'discoveryPickMood', 'songListMoods'];
+const FNS = ['escapeHtml', 'moodFilterBody', 'moodPanelHtml', 'showMoodFilters', 'syncMoodStrict', 'hideMoodFilters', 'toggleMoodPanel',
+  'pickMood', 'toggleMoodTag', 'toggleMoodStrict', 'clearMoodFilters', 'moodFilterChanged', 'discoveryPickMood', 'songListMoods',
+  'strongFirst', 'closeMatchesDivider'];
 
 // An element with a working classList and attributes; querySelectorAll
 // finds nothing (the pressed states are asserted through the HTML).
@@ -77,9 +83,10 @@ function el() {
 }
 
 function makeSandbox() {
-  const els = new Map([['mood_filter_btn', el()], ['mood_filters', el()]]);
+  const els = new Map([['mood_filter_btn', el()], ['mood_filters', el()], ['mood_strict_btn', el()]]);
   els.get('mood_filter_btn').classList.add('super-hide');
   els.get('mood_filters').classList.add('super-hide');
+  els.get('mood_strict_btn').classList.add('super-hide');
   const asked = [];
   const globals = {
     document: { getElementById: (id) => els.get(id) ?? null },
@@ -238,6 +245,99 @@ describe('mood filters: changing the filter', () => {
   });
 });
 
+describe('mood filters: Strict', () => {
+  test('in the wire form only beside a group that filters', () => {
+    const { S } = makeSandbox();
+    S.MOODS.filters.albums = { energy: 'relaxed', strict: true };
+    assert.deepEqual(S.moodFilterBody('albums'), { energy: 'relaxed', strict: true });
+    S.MOODS.filters.albums = { strict: true };
+    assert.equal(S.moodFilterBody('albums'), null, 'strict alone filters nothing');
+    S.MOODS.filters.albums = { energy: 'relaxed', strict: false };
+    assert.deepEqual(S.moodFilterBody('albums'), { energy: 'relaxed' });
+  });
+
+  test('the switch shows while a filter is set; pressing it asks again', () => {
+    const { S, els, asked } = makeSandbox();
+    const strict = els.get('mood_strict_btn');
+    S.showMoodFilters('recent', { moods: {} });
+    assert.ok(strict.classList.contains('super-hide'), 'nothing set: no switch');
+    S.toggleMoodStrict();
+    assert.equal(asked.length, 0, 'nothing set: it does nothing');
+    S.pickMood('energy', 'relaxed');
+    assert.ok(!strict.classList.contains('super-hide'));
+    assert.equal(strict.getAttribute('aria-pressed'), 'false');
+    S.toggleMoodStrict();
+    assert.equal(strict.getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(S.moodFilterBody('recent'), { energy: 'relaxed', strict: true });
+    assert.deepEqual(asked.map((a) => a.list), ['recent', 'recent']);
+    S.toggleMoodStrict();
+    assert.deepEqual(S.moodFilterBody('recent'), { energy: 'relaxed' });
+    assert.equal(strict.getAttribute('aria-pressed'), 'false');
+  });
+
+  test('it goes with the last choice and with Clear; each list keeps its own', () => {
+    const { S, els } = makeSandbox();
+    const strict = els.get('mood_strict_btn');
+    S.MOODS.filters.artists = { valence: 'sad', strict: true };
+    S.showMoodFilters('albums', { moods: {} });
+    S.pickMood('energy', 'relaxed');
+    S.toggleMoodStrict();
+    S.pickMood('energy', 'relaxed');
+    assert.ok(strict.classList.contains('super-hide'));
+    S.pickMood('valence', 'happy');
+    assert.deepEqual(S.moodFilterBody('albums'), { valence: 'happy' }, 'not left behind');
+    S.toggleMoodStrict();
+    S.clearMoodFilters();
+    S.pickMood('valence', 'happy');
+    assert.deepEqual(S.moodFilterBody('albums'), { valence: 'happy' });
+    S.showMoodFilters('artists', { moods: { valence: 'sad', strict: true } });
+    assert.equal(strict.getAttribute('aria-pressed'), 'true', 'another list shows its own');
+    S.showMoodFilters('artists', { artists: [] });
+    assert.ok(strict.classList.contains('super-hide'), 'hidden with the button');
+  });
+
+  test("Discover's moodStrict: only while a filter is set, and gone with it", () => {
+    const { S, asked } = makeSandbox();
+    S.discoveryPickMood('moodStrict');
+    assert.equal(asked.length, 0);
+    S.discoveryPickMood('mood', 'energy:relaxed');
+    S.discoveryPickMood('moodStrict');
+    assert.deepEqual(S.moodFilterBody('discover'), { energy: 'relaxed', strict: true });
+    S.discoveryPickMood('mood', 'energy:relaxed');
+    S.discoveryPickMood('mood', 'energy:relaxed');
+    assert.deepEqual(S.moodFilterBody('discover'), { energy: 'relaxed' }, 'it went with the last choice');
+    S.discoveryPickMood('moodStrict');
+    S.discoveryPickMood('moodClear', 'all');
+    S.discoveryPickMood('moodTag', 'party');
+    assert.deepEqual(S.moodFilterBody('discover'), { tags: ['party'] });
+    assert.equal(asked.length, 7);
+  });
+});
+
+describe('mood filters: strong fits first', () => {
+  const song = (title, moodFit) => ({ filepath: `lib/${title}.mp3`, metadata: { title }, ...(moodFit && { moodFit }) });
+
+  test("the strong fits in the list's own order, then the close ones", () => {
+    const { S } = makeSandbox();
+    const list = [song('a', 'close'), song('b', 'strong'), song('c', 'close'), song('d', 'strong')];
+    assert.deepEqual(S.strongFirst(list).map((x) => x.metadata.title), ['b', 'd', 'a', 'c']);
+    const plain = [song('a'), song('b')];
+    assert.equal(S.strongFirst(plain), plain, 'unfiltered: as it came');
+    const strong = [song('a', 'strong'), song('b', 'strong')];
+    assert.equal(S.strongFirst(strong), strong, 'strict: as it came');
+  });
+
+  test('one divider, over the first close match — at the top when none is strong', () => {
+    const { S } = makeSandbox();
+    const [s, c1, c2] = [song('s', 'strong'), song('c1', 'close'), song('c2', 'close')];
+    assert.equal(S.closeMatchesDivider(s, undefined), '');
+    assert.match(S.closeMatchesDivider(c1, s), /<li class="mood-fit-divider" role="presentation">moods\.closeMatches<\/li>/);
+    assert.equal(S.closeMatchesDivider(c2, c1), '');
+    assert.match(S.closeMatchesDivider(c1, undefined), /mood-fit-divider/);
+    assert.equal(S.closeMatchesDivider(song('x'), undefined), '', 'unfiltered');
+  });
+});
+
 describe('mood filters: the song lists', () => {
   test("they go by the ping's flag, and never on a connected server's list", () => {
     const { S } = makeSandbox();
@@ -263,13 +363,14 @@ describe('mood filters: the song lists', () => {
 
 // The two views themselves, against a stub server: what they send and
 // whether the bar's button shows.
-function makeViews() {
-  const els = new Map([['mood_filter_btn', el()], ['mood_filters', el()], ['filelist', el()],
+function makeViews({ answer } = {}) {
+  const els = new Map([['mood_filter_btn', el()], ['mood_filters', el()], ['mood_strict_btn', el()], ['filelist', el()],
     ['recently-added-limit', { value: '25' }]]);
   els.get('mood_filter_btn').classList.add('super-hide');
   els.get('mood_filters').classList.add('super-hide');
+  els.get('mood_strict_btn').classList.add('super-hide');
   const sent = [];
-  const song = { filepath: 'lib/a.mp3', metadata: { title: 'A', artist: 'X', rating: 8 } };
+  const songs = answer ?? [{ filepath: 'lib/a.mp3', metadata: { title: 'A', artist: 'X', rating: 8 } }];
   const globals = {
     document: { getElementById: (id) => els.get(id) ?? null },
     t: (k) => k,
@@ -277,12 +378,12 @@ function makeViews() {
     getLoadingSvg: () => '',
     MSTREAMPLAYER: { ignoreVPaths: {} },
     MSTREAMAPI: {
-      getRated: async (body) => { sent.push({ to: 'rated', body }); return [song]; },
-      getRecentlyAdded: async (limit, ignoreVPaths, moods) => { sent.push({ to: 'recent', limit, moods }); return [song]; },
-      peer: { recentlyAdded: async (id, limit) => { sent.push({ to: 'peer', id, limit }); return [song]; } },
+      getRated: async (body) => { sent.push({ to: 'rated', body }); return songs; },
+      getRecentlyAdded: async (limit, ignoreVPaths, moods) => { sent.push({ to: 'recent', limit, moods }); return songs; },
+      peer: { recentlyAdded: async (id, limit) => { sent.push({ to: 'peer', id, limit }); return songs; } },
     },
     artImgAttr: () => '',
-    createMusicFileHtml: () => '<li></li>',
+    createMusicFileHtml: (fp, title) => `<li data-title="${title}"></li>`,
     localIgnoreVPaths: () => [],
     keepGateFor: async () => {},
     browseKeepHold: () => {},
@@ -290,7 +391,8 @@ function makeViews() {
     browseKeepBack: () => false,
     boilerplateFailure: (err) => { throw err; },
   };
-  const fns = ['moodFilterBody', 'showMoodFilters', 'hideMoodFilters', 'songListMoods', 'getRatedSongs', 'redoRecentlyAdded'];
+  const fns = ['escapeHtml', 'moodFilterBody', 'showMoodFilters', 'syncMoodStrict', 'hideMoodFilters', 'songListMoods',
+    'strongFirst', 'closeMatchesDivider', 'getRatedSongs', 'redoRecentlyAdded'];
   const body = `
     'use strict';
     let browseGeneration = 0;
@@ -298,9 +400,10 @@ function makeViews() {
     let programState = [];
     let peerContext = null;
     const discoveryView = { flags: {} };
+    ${sliceConst('entityMap')}
     ${sliceConst('MOODS')}
     ${fns.map(sliceFn).join('\n\n')}
-    return { ${fns.join(', ')}, MOODS,
+    return { ${fns.join(', ')}, MOODS, list: () => currentBrowsingList,
       setFlag: (on) => { discoveryView.flags.moodFilters = on; }, setPeer: (p) => { peerContext = p; } };
   `;
   const names = Object.keys(globals);
@@ -347,5 +450,32 @@ describe('mood filters: Rated and Recently Added', () => {
     await V.redoRecentlyAdded();
     assert.deepEqual(sent[1], { to: 'peer', id: 7, limit: '25' });
     assert.ok(els.get('mood_filter_btn').classList.contains('super-hide'));
+  });
+});
+
+describe('mood filters: Rated and Recently Added, strong fits first', () => {
+  const song = (title, moodFit) => ({ filepath: `lib/${title}.mp3`, metadata: { title, artist: 'X', rating: 6 }, moodFit });
+  // Rating (or newest-first) order, as the server answers it.
+  const ANSWER = [song('Return', 'close'), song('Static', 'strong'), song('Neon', 'close'), song('Orbit', 'strong')];
+  const drawn = (html) => [...html.matchAll(/data-title="([^"]+)"|class="mood-fit-divider"/g)].map((m) => m[1] ?? '—');
+
+  for (const [name, draw] of [['Rated', (V) => V.getRatedSongs()], ['Recently Added', (V) => V.redoRecentlyAdded()]]) {
+    test(`${name}: the strong fits, the divider, the close matches — and the list the bar's verbs read`, async () => {
+      const { V, els } = makeViews({ answer: ANSWER });
+      V.setFlag(true);
+      V.MOODS.filters.rated = { valence: 'sad' };
+      V.MOODS.filters.recent = { valence: 'sad' };
+      await draw(V);
+      assert.deepEqual(drawn(els.get('filelist').innerHTML), ['Static', 'Orbit', '—', 'Return', 'Neon']);
+      assert.deepEqual(V.list().map((x) => [x.title, x.moodFit]),
+        [['Static', 'strong'], ['Orbit', 'strong'], ['Return', 'close'], ['Neon', 'close']]);
+    });
+  }
+
+  test('no fits (unfiltered, or strict): no divider, the order as it came', async () => {
+    const plain = ANSWER.map(({ moodFit: _fit, ...rest }) => rest);
+    const { V, els } = makeViews({ answer: plain });
+    await V.getRatedSongs();
+    assert.deepEqual(drawn(els.get('filelist').innerHTML), ['Return', 'Static', 'Neon', 'Orbit']);
   });
 });

@@ -636,6 +636,8 @@
   "moods.party": "Party",
   "moods.danceable": "Danceable",
   "moods.clear": "Clear",
+  "moods.strict": "Strict",
+  "moods.closeMatches": "Close matches",
   "panel.songs": "Songs",
   "panel.starred": "Starred",
   "panel.recentlyPlayed": "Recently Played",

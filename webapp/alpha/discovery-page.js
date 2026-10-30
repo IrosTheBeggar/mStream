@@ -227,7 +227,8 @@
   }
 
   // A mood filter in the server's form — known values only, tags in its
-  // order — or null when nothing filters.
+  // order, `strict` only when true — or null when nothing filters (strict
+  // alone raises no bar).
   function cleanMoods(m) {
     if (!isObj(m)) { return null; }
     const out = {};
@@ -236,7 +237,9 @@
     }
     const tags = MOOD_TAGS.filter((tag) => arr(m.tags).indexOf(tag) !== -1);
     if (tags.length) { out.tags = tags; }
-    return Object.keys(out).length ? out : null;
+    if (!Object.keys(out).length) { return null; }
+    if (m.strict === true) { out.strict = true; }
+    return out;
   }
 
   function cleanLimits(limits) {

@@ -3346,6 +3346,9 @@ async function getArtistsAlbums(artist) {
 // #mood_filters, is hidden until the button opens it, and every other panel
 // hides it again (setBrowserRootPanel) — so the panel's own visibility is
 // its open state. The button is orange with a dot while a filter is set.
+// Beside it while one is, #mood_strict_btn: Strict (the filter's `strict`)
+// keeps only what fits strongly. Without it, the song lists put their
+// strong fits first and the close ones under a divider (strongFirst).
 const MOODS = {
   scales: [
     ['valence', ['happy', 'neutral', 'sad'], 'moods.valenceGroup'],
@@ -3365,7 +3368,9 @@ function moodFilterBody(list, f = MOODS.filters[list] || {}) {
   }
   const tags = MOODS.tags.filter((tag) => (f.tags || []).includes(tag));
   if (tags.length) { out.tags = tags; }
-  return Object.keys(out).length ? out : null;
+  if (!Object.keys(out).length) { return null; }
+  if (f.strict === true) { out.strict = true; }
+  return out;
 }
 
 // One pressed value per scale (pressed again, it lets go), any number of
@@ -3405,6 +3410,17 @@ function showMoodFilters(list, response) {
   btn.classList.remove('super-hide');
   btn.classList.toggle('mood-on', moodFilterBody(list) !== null);
   btn.setAttribute('aria-expanded', String(!panel.classList.contains('super-hide')));
+  syncMoodStrict(list);
+}
+
+// The bar's Strict switch: shown while the list's filter is set, pressed
+// while it is strict.
+function syncMoodStrict(list) {
+  const btn = document.getElementById('mood_strict_btn');
+  if (!btn) { return; }
+  const body = moodFilterBody(list);
+  btn.classList.toggle('super-hide', body === null);
+  btn.setAttribute('aria-pressed', String(body?.strict === true));
 }
 
 // The song lists (Rated, Recently Added) answer bare arrays, with no room
@@ -3415,8 +3431,25 @@ function songListMoods() {
   return !peerContext && discoveryView.flags.moodFilters === true ? { moods: {} } : null;
 }
 
+// A filtered song list, strong fits first: its strong fits in the list's
+// own order, then the close ones (each song's `moodFit`, from the server).
+// A list with no close match — unfiltered, strict — is as it came.
+function strongFirst(songs) {
+  if (!songs.some((s) => s.moodFit === 'close')) { return songs; }
+  return [...songs.filter((s) => s.moodFit !== 'close'), ...songs.filter((s) => s.moodFit === 'close')];
+}
+
+// The divider over the close matches: before a close match that follows a
+// strong fit, or opens the list.
+function closeMatchesDivider(song, prev) {
+  return song.moodFit === 'close' && prev?.moodFit !== 'close'
+    ? `<li class="mood-fit-divider" role="presentation">${escapeHtml(t('moods.closeMatches'))}</li>`
+    : '';
+}
+
 function hideMoodFilters() {
   document.getElementById('mood_filter_btn')?.classList.add('super-hide');
+  document.getElementById('mood_strict_btn')?.classList.add('super-hide');
   const panel = document.getElementById('mood_filters');
   if (panel) {
     panel.classList.add('super-hide');
@@ -3449,6 +3482,13 @@ function toggleMoodTag(tag) {
   moodFilterChanged();
 }
 
+function toggleMoodStrict() {
+  const f = MOODS.filters[MOODS.list];
+  if (!f || moodFilterBody(MOODS.list) === null) { return; }
+  f.strict = !f.strict;
+  moodFilterChanged();
+}
+
 function clearMoodFilters() {
   if (!MOODS.filters[MOODS.list]) { return; }
   MOODS.filters[MOODS.list] = {};
@@ -3462,6 +3502,8 @@ function clearMoodFilters() {
 function moodFilterChanged() {
   const list = MOODS.list;
   const f = MOODS.filters[list] || {};
+  // Strict belongs to a set filter: it goes with the last choice.
+  if (moodFilterBody(list) === null) { delete f.strict; }
   const panel = document.getElementById('mood_filters');
   panel?.querySelectorAll('[data-mood-group]').forEach((b) => {
     b.setAttribute('aria-pressed', String(f[b.getAttribute('data-mood-group')] === b.getAttribute('data-mood-value')));
@@ -3471,6 +3513,7 @@ function moodFilterChanged() {
   });
   panel?.querySelector('.mood-clear')?.classList.toggle('super-hide', moodFilterBody(list) === null);
   document.getElementById('mood_filter_btn')?.classList.toggle('mood-on', moodFilterBody(list) !== null);
+  syncMoodStrict(list);
   // A newer ask wins: one still out for the old filter draws nothing.
   browseGeneration++;
   if (list === 'albums') { getAllAlbums({ refresh: true }); }
@@ -3480,7 +3523,8 @@ function moodFilterChanged() {
 }
 
 // A mood button on Discover: the lists' rules (pickMood, toggleMoodTag,
-// clearMoodFilters) on the page's own filter, then the page asks again.
+// toggleMoodStrict, clearMoodFilters) on the page's own filter, then the
+// page asks again.
 function discoveryPickMood(act, val) {
   const f = MOODS.filters.discover;
   if (act === 'mood') {
@@ -3492,9 +3536,13 @@ function discoveryPickMood(act, val) {
     const tags = new Set(f.tags || []);
     if (tags.has(val)) { tags.delete(val); } else { tags.add(val); }
     f.tags = [...tags];
+  } else if (act === 'moodStrict') {
+    if (moodFilterBody('discover') === null) { return; }
+    f.strict = !f.strict;
   } else {
     MOODS.filters.discover = {};
   }
+  if (moodFilterBody('discover') === null) { delete MOODS.filters.discover.strict; }
   redoDiscovery();
   // Clear hides itself: the keyboard goes back to the Filters button.
   if (act === 'moodClear') { discoveryRefocus('[data-dp="moods"]'); }
@@ -3772,7 +3820,8 @@ async function getRatedSongs(opts) {
     showMoodFilters('rated', can);
     //parse through the json array and make an array of corresponding divs
     let files = '';
-    response.forEach(value => {
+    const songs = strongFirst(response);
+    songs.forEach((value, i) => {
       let rating = (value.metadata.rating / 2);
       if (!Number.isInteger(rating)) {
         rating = rating.toFixed(1);
@@ -3787,9 +3836,10 @@ async function getRatedSongs(opts) {
         name: value.metadata.artist ? value.metadata.artist + ' - ' + value.metadata.title : value.filepath,
         metadata: value.metadata,
         path: value.filepath,
-        title, aa, rating, subtitle
+        title, aa, rating, subtitle, moodFit: value.moodFit
       });
 
+      files += closeMatchesDivider(value, songs[i - 1]);
       files += createMusicFileHtml(value.filepath, title, aa, rating, subtitle);
     });
 
@@ -3940,7 +3990,8 @@ async function redoRecentlyAdded() {
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
-    response.forEach(el => {
+    const songs = strongFirst(response);
+    songs.forEach((el, i) => {
       const title = el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop();
       const aa = artImgAttr(el.metadata['album-art'], 's');
       const subtitle = el.metadata.artist ? el.metadata.artist : '';
@@ -3950,9 +4001,10 @@ async function redoRecentlyAdded() {
         name: el.metadata.title ? el.metadata.artist + ' - ' + el.metadata.title : el.filepath.split("/").pop(),
         metadata: el.metadata,
         path: el.filepath,
-        title, aa, subtitle
+        title, aa, subtitle, moodFit: el.moodFit
       });
 
+      filelist += closeMatchesDivider(el, songs[i - 1]);
       filelist += createMusicFileHtml(el.filepath, title, aa, undefined, subtitle);
     });
 
@@ -4800,6 +4852,8 @@ function discoveryHeadHtml(windowDays) {
   // that takes them; orange with a dot while one is set.
   const moods = discoveryView.page !== 'explore' && DISCOVERYPAGE.moodsAvailable(discoveryView.flags)
     ? `<button type="button" class="mood-filter-btn dpage-moods-btn${moodFilterBody('discover') ? ' mood-on' : ''}" data-dp="moods" aria-expanded="${discoveryView.moodsOpen ? 'true' : 'false'}"${discoveryView.moodsOpen ? ' aria-controls="dpage-moods"' : ''} aria-label="${escapeHtml(t('moods.filters'))}" title="${escapeHtml(t('moods.filters'))}"><svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg></button>`
+      // Strict, while a filter is set (the browse bar's #mood_strict_btn).
+      + (moodFilterBody('discover') ? `<button type="button" class="mood-strict-btn" data-dp="moodStrict" aria-pressed="${moodFilterBody('discover').strict === true}">${escapeHtml(t('moods.strict'))}</button>` : '')
     : '';
   return `<div class="dpage-bar">
     <span class="grow"></span>
@@ -5356,7 +5410,7 @@ function discoveryAction(act, el) {
     v.moodsOpen = !v.moodsOpen;
     renderDiscovery();
     discoveryRefocus('[data-dp="moods"]');
-  } else if (act === 'mood' || act === 'moodTag' || act === 'moodClear') {
+  } else if (act === 'mood' || act === 'moodTag' || act === 'moodStrict' || act === 'moodClear') {
     discoveryPickMood(act, val);
   } else if (act === 'options') {
     v.optionsOpen = !v.optionsOpen;
@@ -7182,6 +7236,7 @@ function runLocalSearch(el) {
 
   const searchVal = el.value;
   let filelist = '';
+  let prevFile;
   currentBrowsingList.forEach(x => {
     const lowerCase = x.name !== null ? x.name.toLowerCase() : 'null';
     if (lowerCase.indexOf(searchVal.toLowerCase()) !== -1) {
@@ -7205,7 +7260,10 @@ function runLocalSearch(el) {
           // Replay the args the panel itself passed to createMusicFileHtml.
           // Deriving the path here (getFileExplorerPath() + x.name) only ever
           // held for the file explorer, and silently rewrote every DB-panel
-          // row's data-file_location to a path that does not exist.
+          // row's data-file_location to a path that does not exist. A
+          // filtered song list's close matches keep their divider.
+          filelist += closeMatchesDivider(x, prevFile);
+          prevFile = x;
           filelist += createMusicFileHtml(x.path, x.title, x.aa, x.rating, x.subtitle);
         }
       }

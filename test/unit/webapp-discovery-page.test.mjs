@@ -205,6 +205,13 @@ describe('buildRequests: the mood filter', () => {
     }
     assert.deepEqual(D.cleanMoods({ valence: 'neutral', voice: 'vocals', extra: 1 }), { valence: 'neutral', voice: 'vocals' });
   });
+
+  test('strict rides along beside a group, never alone', () => {
+    assert.deepEqual(D.buildRequests({ flags: MOODY, moods: { energy: 'relaxed', strict: true } }).main.moods,
+      { energy: 'relaxed', strict: true });
+    assert.deepEqual(D.cleanMoods({ energy: 'relaxed', strict: 'yes' }), { energy: 'relaxed' });
+    assert.equal(D.cleanMoods({ strict: true }), null);
+  });
 });
 
 describe('buildRequests', () => {

@@ -88,7 +88,7 @@ const HELPERS = ['escapeHtml', 'peerAttr', 'peerOf', 'browseApi', 'localIgnoreVP
 const RENDERERS = ['renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderSearchResults', 'renderSearchRow'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'songListMoods',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'syncMoodStrict', 'songListMoods', 'strongFirst', 'closeMatchesDivider',
   'getFileExplorerPath', 'printdir', 'onPlaylistClick',
   'getGenreSongs', 'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch', 'setupSearchPanel', 'federatedSearchOffered'];
