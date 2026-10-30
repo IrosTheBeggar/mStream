@@ -427,12 +427,27 @@ jobs:
           # `--compile` codesign failure on macOS 27, oven-sh/bun#39764);
           # 1.4.2 (2026-09-05) is a small follow-up (11 fixes: worker_threads
           # 'online' event order, a JavaScriptCore upgrade, memory fixes —
-          # nothing in networking, spawn or `--compile`). Validated locally
-          # 2026-09-17 before pinning: the socket-inheritance probe re-listens
-          # on attempt 1 (regular and baseline builds), the reboot-keeps-*
-          # integration bun legs pass, and a win-x64 bundle built with the
-          # pre-fetched baseline runtime completes a discovery pass.
-          bun-version: 1.4.2
+          # nothing in networking, spawn or `--compile`). 1.4.3 (2026-10-10)
+          # and 1.4.4 (2026-10-22) are large: TLS certificate-name hardening
+          # (CVE-2026-48618), node:http lifecycle fixes, node:http responses
+          # over 16 KiB sent in one write, far lower idle-server CPU, node:fs
+          # opening with O_CLOEXEC, SQLite 3.53.4. Changes we had to check:
+          # a second listen() on a LISTENING server now throws
+          # ERR_SERVER_ALREADY_LISTEN (re-listening after an EADDRINUSE
+          # 'error', as serveIt and kept-listener.js do, still works);
+          # bun:sqlite's exec() now throws for a failing statement anywhere in
+          # a batch, not only the last (node:sqlite parity); `ws` now runs on
+          # Bun's native WebSocket, where an 'error' with no listener throws
+          # (remote.js listens on the server and on every connection).
+          # Validated locally 2026-10-30 before pinning: the socket-inheritance
+          # probe re-listens on attempt 1 (regular and baseline builds),
+          # node:http bodies either side of 16 KiB arrive whole, the bun legs
+          # of the reboot-keeps-*, supervision, bun:sqlite and autodj suites
+          # pass, and a win-x64 bundle built with the pre-fetched baseline
+          # runtime passes this file's smoke steps (1), (1b) and (3)-(6),
+          # streams, Range-serves and transcodes, outlives a malformed
+          # WebSocket frame, and completes a discovery pass.
+          bun-version: 1.4.4
 
       - name: Install production dependencies
         run: npm ci --omit=dev
