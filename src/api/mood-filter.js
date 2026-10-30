@@ -18,6 +18,14 @@
 // neutral when neither reaches it (relaxed / aggressive alike). A song with
 // no track_moods row (not analysed yet) matches no filter.
 //
+// A score is the head's confidence, not an intensity: a song at 0.9
+// relaxed is one the model is surer of, not a more relaxed one. A filter's
+// `strict: true` asks every group to hold strongly — a head that must hold
+// at MOOD_STRONG, one that must not (neutral's two, vocals' instrumental)
+// at its mirror. Without it, a song list tells each song's fit (moodFits):
+// 'strong' when the strict filter would keep it too, 'close' when only this
+// one does, and clients list the strong fits first.
+//
 // Albums and artists match when MORE than half of their analysed songs
 // match — "most of it is relaxed" — counted over the songs the caller can
 // see. The subqueries are non-correlated `id IN (… GROUP BY … HAVING …)`
@@ -33,6 +41,10 @@ import WebError from '../util/web-error.js';
 // The mood heads' tagThreshold (discovery-features-lib.js): the score at
 // which a head's label is exported, and here the score at which it holds.
 export const MOOD_THRESHOLD = 0.5;
+// A strict filter's bar, and a song list's strong fit: 0.7 to hold, and
+// 0.3 or less (the mirror, as the heads are two-class) to not hold.
+export const MOOD_STRONG = 0.7;
+const MOOD_STRONG_NOT = 0.3;
 
 export const VALENCE = Object.freeze(['happy', 'neutral', 'sad']);
 export const ENERGY = Object.freeze(['relaxed', 'neutral', 'aggressive']);
@@ -46,11 +58,13 @@ export const moodFilterSchema = Joi.object({
   energy: Joi.string().valid(...ENERGY),
   voice: Joi.string().valid(...VOICE),
   tags: Joi.array().items(Joi.string().valid(...MOOD_TAGS)).unique().max(MOOD_TAGS.length),
+  strict: Joi.boolean(),
 });
 
 /**
  * The canonical form of a validated filter: only the groups that filter,
- * tags in MOOD_TAGS order — or null when nothing does.
+ * tags in MOOD_TAGS order, `strict` only when true — or null when nothing
+ * filters (strict alone raises no bar).
  */
 export function normalizeMoods(value) {
   if (!value || typeof value !== 'object') { return null; }
@@ -60,7 +74,9 @@ export function normalizeMoods(value) {
   if (value.voice) { out.voice = value.voice; }
   const tags = MOOD_TAGS.filter((t) => Array.isArray(value.tags) && value.tags.includes(t));
   if (tags.length) { out.tags = tags; }
-  return Object.keys(out).length ? out : null;
+  if (!Object.keys(out).length) { return null; }
+  if (value.strict === true) { out.strict = true; }
+  return out;
 }
 
 /** Validate + normalize a request's filter (undefined/null → null). */
@@ -114,23 +130,30 @@ export function applicableMoods(requested) {
 }
 
 // Head-score conditions, one per group value, over a track_moods alias.
-// The threshold is a constant, not a bound parameter, so every caller can
-// splice the predicate anywhere (CASE WHEN, a WHERE, a HAVING).
-function scale(tm, value, [lo, hi]) {
-  const t = MOOD_THRESHOLD;
-  if (value === 'neutral') { return `(${tm}.${lo} < ${t} AND ${tm}.${hi} < ${t})`; }
-  if (value === lo) { return `(${tm}.${lo} >= ${t} AND ${tm}.${lo} >= ${tm}.${hi})`; }
-  return `(${tm}.${hi} >= ${t} AND ${tm}.${hi} > ${tm}.${lo})`;
+// The bars are constants, not bound parameters, so every caller can splice
+// the predicate anywhere (CASE WHEN, a WHERE, a HAVING). `on` is what a
+// head that must hold meets, `off` what one that must not does.
+function bars(strict) {
+  return strict
+    ? { on: `>= ${MOOD_STRONG}`, off: `<= ${MOOD_STRONG_NOT}` }
+    : { on: `>= ${MOOD_THRESHOLD}`, off: `< ${MOOD_THRESHOLD}` };
+}
+
+function scale(tm, value, [lo, hi], b) {
+  if (value === 'neutral') { return `(${tm}.${lo} ${b.off} AND ${tm}.${hi} ${b.off})`; }
+  if (value === lo) { return `(${tm}.${lo} ${b.on} AND ${tm}.${lo} >= ${tm}.${hi})`; }
+  return `(${tm}.${hi} ${b.on} AND ${tm}.${hi} > ${tm}.${lo})`;
 }
 
 /** The SQL condition a song's track_moods row (alias `tm`) must meet. */
 export function moodPredicate(moods, tm = 'tm') {
+  const b = bars(moods.strict);
   const parts = [];
-  if (moods.valence) { parts.push(scale(tm, moods.valence, ['happy', 'sad'])); }
-  if (moods.energy) { parts.push(scale(tm, moods.energy, ['relaxed', 'aggressive'])); }
-  if (moods.voice === 'instrumental') { parts.push(`${tm}.instrumental >= ${MOOD_THRESHOLD}`); }
-  if (moods.voice === 'vocals') { parts.push(`${tm}.instrumental < ${MOOD_THRESHOLD}`); }
-  for (const tag of moods.tags || []) { parts.push(`${tm}.${tag} >= ${MOOD_THRESHOLD}`); }
+  if (moods.valence) { parts.push(scale(tm, moods.valence, ['happy', 'sad'], b)); }
+  if (moods.energy) { parts.push(scale(tm, moods.energy, ['relaxed', 'aggressive'], b)); }
+  if (moods.voice === 'instrumental') { parts.push(`${tm}.instrumental ${b.on}`); }
+  if (moods.voice === 'vocals') { parts.push(`${tm}.instrumental ${b.off}`); }
+  for (const tag of moods.tags || []) { parts.push(`${tm}.${tag} ${b.on}`); }
   return parts.length ? parts.join(' AND ') : '1=1';
 }
 
@@ -178,6 +201,17 @@ export function matchingTrackIds(d, moods, ids) {
     for (const r of rows) { out.add(r.id); }
   }
   return out;
+}
+
+/**
+ * A filtered song list's fits, as (id) => 'strong' | 'close': strong when
+ * the strict filter keeps the song too. `ids` are the list's songs, all of
+ * which match `moods`; a strict list's are all strong.
+ */
+export function moodFits(d, moods, ids) {
+  if (moods.strict) { return () => 'strong'; }
+  const strong = matchingTrackIds(d, { ...moods, strict: true }, ids);
+  return (id) => (strong.has(id) ? 'strong' : 'close');
 }
 
 /**

@@ -109,7 +109,8 @@ export function buildFeatures() {
     // /db/recent/added: bare arrays, with no room for an echo) and Auto DJ
     // (/db/random-songs, whose schema is strict); the browse lists read the
     // `moods` key their own answers carry (a connected server's included).
-    // Every server that sends the key takes `moods` on all of them.
+    // Every server that sends the key takes `moods` on all of them, its
+    // `strict` included, and its song lists carry each song's `moodFit`.
     moodFilters: moodFiltersReady(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,

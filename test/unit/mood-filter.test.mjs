@@ -11,7 +11,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  MOOD_THRESHOLD, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
+  MOOD_THRESHOLD, moodFits, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
 } from '../../src/api/mood-filter.js';
 import { EMBEDDING_MODELS } from '../../src/db/discovery-features-lib.js';
 import { mergePeerAnswers } from '../../src/api/discovery-federation.js';
@@ -28,16 +28,17 @@ const SONGS = {
   gap: [0.9, null, 0.8, 0.1, 0.9, 0.0, 0.0, 0.0],      // no sad score: no valence value holds
 };
 
-function songsDb() {
+function songsDb(songs = SONGS) {
   const d = new DatabaseSync(':memory:');
   d.exec(`CREATE TABLE track_moods (track_id INTEGER PRIMARY KEY, danceable REAL, happy REAL, sad REAL,
     relaxed REAL, aggressive REAL, party REAL, acoustic REAL, instrumental REAL)`);
   const ins = d.prepare(`INSERT INTO track_moods (track_id, ${HEADS.join(', ')}) VALUES (?, ${HEADS.map(() => '?').join(', ')})`);
-  const names = Object.keys(SONGS);
-  names.forEach((name, i) => ins.run(i + 1, ...SONGS[name]));
+  const names = Object.keys(songs);
+  names.forEach((name, i) => ins.run(i + 1, ...songs[name]));
   const match = (moods) => d.prepare(`SELECT track_id FROM track_moods tm WHERE ${moodPredicate(moods)}`).all()
     .map((r) => names[r.track_id - 1]).sort();
-  return { d, match };
+  const id = (name) => names.indexOf(name) + 1;
+  return { d, match, id };
 }
 
 describe('mood filter: what a song matches', () => {
@@ -81,6 +82,42 @@ describe('mood filter: what a song matches', () => {
     assert.deepEqual(match({}), Object.keys(SONGS).sort());
   });
 
+  describe('strict', () => {
+    // mild is neutral, neutral and vocals — none of them strongly.
+    const { match: strict } = songsDb({ ...SONGS, mild: [0.4, 0.2, 0.4, 0.2, 0.4, 0.0, 0.0, 0.0] });
+    const both = (moods) => [strict(moods), strict({ ...moods, strict: true })];
+
+    test('a head that must hold holds at 0.7', () => {
+      assert.deepEqual(both({ energy: 'relaxed' }), [['blue', 'calm', 'gap', 'tie'], ['blue', 'calm', 'gap']]);
+      assert.deepEqual(both({ valence: 'happy' }), [['bright', 'tie'], ['bright']]);
+      assert.deepEqual(both({ voice: 'instrumental' }), [['blue', 'calm', 'gap', 'tie'], ['blue', 'calm', 'gap']]);
+      assert.deepEqual(both({ tags: ['acoustic'] }), [['blue', 'torn'], ['blue']]);
+    });
+
+    test('one that must not hold, at 0.3 or less', () => {
+      assert.deepEqual(both({ valence: 'neutral' }), [['calm', 'flat', 'mild'], ['calm', 'flat']]);
+      assert.deepEqual(both({ energy: 'neutral' }), [['flat', 'mild'], ['flat']]);
+      assert.deepEqual(both({ voice: 'vocals' }), [['bright', 'flat', 'mild', 'torn'], ['bright', 'torn']]);
+    });
+
+    test('the stronger head still wins a scale', () => {
+      assert.deepEqual(both({ valence: 'sad' }), [['blue', 'torn'], ['torn']]);
+      // Both over 0.7: strongly sad, never happy.
+      const { match: rival } = songsDb({ rival: [0.8, 0.9, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0] });
+      assert.deepEqual(rival({ valence: 'sad', strict: true }), ['rival']);
+      assert.deepEqual(rival({ valence: 'happy', strict: true }), []);
+    });
+  });
+
+  test("a song list's fits: strong when the strict filter keeps the song too", () => {
+    const { d, id } = songsDb();
+    const relaxed = ['blue', 'calm', 'gap', 'tie'];
+    const fit = moodFits(d, { energy: 'relaxed' }, relaxed.map(id));
+    assert.deepEqual(relaxed.map((n) => fit(id(n))), ['strong', 'strong', 'strong', 'close']);
+    const tied = moodFits(d, { energy: 'relaxed', strict: true }, [id('blue')]);
+    assert.equal(tied(id('blue')), 'strong', 'every song of a strict list');
+  });
+
   test('the song lists\' clause: a song by id, never one without scores', () => {
     const d = new DatabaseSync(':memory:');
     d.exec(`CREATE TABLE track_moods (track_id INTEGER PRIMARY KEY, danceable REAL, happy REAL, sad REAL,
@@ -108,6 +145,9 @@ describe('mood filter: request forms', () => {
   test('normalized: only the groups that filter, tags in a fixed order', () => {
     assert.deepEqual(normalizeMoods({ tags: ['danceable', 'acoustic'] }), { tags: ['acoustic', 'danceable'] });
     assert.deepEqual(normalizeMoods({ valence: 'happy', tags: [] }), { valence: 'happy' });
+    assert.deepEqual(normalizeMoods({ strict: true, energy: 'relaxed' }), { energy: 'relaxed', strict: true });
+    assert.deepEqual(normalizeMoods({ energy: 'relaxed', strict: false }), { energy: 'relaxed' });
+    assert.equal(normalizeMoods({ strict: true }), null, 'strict alone filters nothing');
     assert.equal(normalizeMoods({ tags: [] }), null);
     assert.equal(normalizeMoods({}), null);
     assert.equal(normalizeMoods(null), null);
@@ -118,7 +158,9 @@ describe('mood filter: request forms', () => {
     assert.equal(parseMoods(null), null);
     assert.deepEqual(parseMoods({ energy: 'relaxed', voice: 'vocals', tags: ['party'] }),
       { energy: 'relaxed', voice: 'vocals', tags: ['party'] });
-    for (const bad of [{ valence: 'angry' }, { mood: 'happy' }, { tags: ['party', 'party'] }, { tags: ['sad'] }, 'relaxed', []]) {
+    assert.deepEqual(parseMoods({ voice: 'vocals', strict: true }), { voice: 'vocals', strict: true });
+    for (const bad of [{ valence: 'angry' }, { mood: 'happy' }, { tags: ['party', 'party'] }, { tags: ['sad'] }, 'relaxed', [],
+      { energy: 'relaxed', strict: 'yes' }]) {
       assert.throws(() => parseMoods(bad), { name: 'ValidationError' }, JSON.stringify(bad));
     }
   });
@@ -126,6 +168,7 @@ describe('mood filter: request forms', () => {
   test('parseMoodsQuery: one JSON object in a string, else a 400', () => {
     assert.equal(parseMoodsQuery(undefined), null);
     assert.deepEqual(parseMoodsQuery('{"energy":"relaxed"}'), { energy: 'relaxed' });
+    assert.deepEqual(parseMoodsQuery('{"energy":"relaxed","strict":true}'), { energy: 'relaxed', strict: true });
     for (const bad of ['nope', ['{}'], 'x'.repeat(600)]) {
       assert.throws(() => parseMoodsQuery(bad), (err) => err.status === 400, String(bad).slice(0, 20));
     }

@@ -1106,6 +1106,11 @@ components:
         happy, `neutral` when neither holds (`relaxed` / `aggressive` alike). `vocals` is an
         instrumental score under 0.5. Every tag given must hold. Songs not analysed yet
         match no filter. Unknown groups and values are a 400.
+
+        A score is the model's confidence, not an intensity. `strict: true` asks every
+        group to hold strongly: a score that must hold at 0.7 or more, one that must not
+        (`neutral`'s two, `vocals`' instrumental) at 0.3 or less. On its own, with no
+        group, it filters nothing.
       properties:
         valence: { type: string, enum: [happy, neutral, sad] }
         energy: { type: string, enum: [relaxed, neutral, aggressive] }
@@ -1114,7 +1119,22 @@ components:
           type: array
           uniqueItems: true
           items: { type: string, enum: [acoustic, party, danceable] }
+        strict: { type: boolean }
       example: { energy: relaxed, voice: instrumental }
+
+    MoodFitSong:
+      allOf:
+        - { $ref: "#/components/schemas/Metadata" }
+        - type: object
+          properties:
+            moodFit:
+              type: string
+              enum: [strong, close]
+              description: |
+                How the song fits the list's mood filter: `strong` when the strict form of
+                the filter keeps it too (every song of a strict list), `close` when only the
+                filter asked for does. On every song of a filtered answer, which stays in the
+                list's own order — clients show the strong fits first. Absent unfiltered.
 
     MoodEcho:
       allOf:
@@ -1734,8 +1754,9 @@ paths:
                           schema is strict); the browse lists read the
                           `moods` key their own answers carry instead (a
                           connected server's included). A server that sends this key
-                          takes `moods` on all of those routes. Absent on
-                          older servers.
+                          takes `moods` on all of those routes, `strict`
+                          included, and its song lists tell each song's
+                          `moodFit`. Absent on older servers.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -4308,9 +4329,10 @@ paths:
       summary: Get tracks the user has rated
       description: >
         Tracks rated > 0, sorted highest first. POST takes an optional `moods` filter
-        (MoodFilter): only the rated songs that match it. The answer is the bare array
-        either way, so it carries no echo — show the filter on server-info's
-        `moodFilters`. While that is false, a filter is validated but filters nothing.
+        (MoodFilter): only the rated songs that match it, each with its `moodFit`. The
+        answer is the bare array either way, so it carries no echo — show the filter on
+        server-info's `moodFilters`. While that is false, a filter is validated but
+        filters nothing.
       responses:
         "200":
           description: Rated tracks.
@@ -4318,7 +4340,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/Metadata" }
+                items: { $ref: "#/components/schemas/MoodFitSong" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       <<: *ratedOp
@@ -4372,9 +4394,9 @@ paths:
       summary: Recently added tracks
       description: >
         The `limit` newest tracks. With a `moods` filter (MoodFilter), the `limit` newest
-        tracks that match it. The answer is a bare array, so it carries no echo — show the
-        filter on server-info's `moodFilters`. While that is false, a filter is validated
-        but filters nothing.
+        tracks that match it, each with its `moodFit`. The answer is a bare array, so it
+        carries no echo — show the filter on server-info's `moodFilters`. While that is
+        false, a filter is validated but filters nothing.
       requestBody:
         required: true
         content:
@@ -4394,7 +4416,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/Metadata" }
+                items: { $ref: "#/components/schemas/MoodFitSong" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/db/stats/recently-played:

@@ -8,7 +8,9 @@
  * song; their answers are bare arrays, so they carry no echo (clients go by
  * server-info's `moodFilters`). Auto DJ's /db/random-songs takes it as an
  * always-on condition — never relaxed, so a filter nothing meets is a 400 —
- * and echoes it like the browse lists.
+ * and echoes it like the browse lists. Every route takes `strict: true`
+ * (each group holds at 0.7, or at 0.3 for what must not hold), and a
+ * filtered song list's songs carry their `moodFit`.
  *
  * The fixture library's songs get scores written straight into track_moods
  * after the scan, the way the mood sync would. 'Descent' gets none (not
@@ -19,9 +21,9 @@
  *                          Orbit        neutral · relaxed · instrumental · danceable
  *   Icarus · Later Works   Return       sad · relaxed · instrumental · acoustic
  *                          Descent      (no scores)
- *   Vosto · Night Drive    Highway      neutral · relaxed · instrumental
+ *   Vosto · Night Drive    Highway      neutral (not strongly) · relaxed · instrumental
  *                          Neon         happy (a tie) · relaxed · instrumental · danceable
- *                          Static       sad · aggressive · vocals · acoustic
+ *                          Static       sad · aggressive · vocals (not strongly) · acoustic
  *   Vosto · Untitled EP    Sketch 1     happy · relaxed · instrumental · party (all on 0.5)
  */
 
@@ -37,9 +39,9 @@ const SCORES = {
   Rise: [0.7, 0.2, 0.1, 0.8, 0.2, 0.0, 0.8, 0.8],
   Orbit: [0.2, 0.1, 0.8, 0.1, 0.9, 0.0, 0.1, 0.6],
   Return: [0.3, 0.6, 0.7, 0.1, 0.8, 0.7, 0.0, 0.1],
-  Highway: [0.1, 0.2, 0.9, 0.0, 0.9, 0.0, 0.0, 0.2],
+  Highway: [0.4, 0.2, 0.9, 0.0, 0.9, 0.0, 0.0, 0.2],
   Neon: [0.6, 0.6, 0.6, 0.3, 0.7, 0.0, 0.0, 0.7],
-  Static: [0.2, 0.7, 0.3, 0.6, 0.2, 0.6, 0.0, 0.1],
+  Static: [0.2, 0.7, 0.3, 0.6, 0.4, 0.6, 0.0, 0.1],
   'Sketch 1': [0.5, 0.5, 0.5, 0.5, 0.5, 0.0, 0.5, 0.1],
 };
 
@@ -65,6 +67,9 @@ const picked = (r) => r.body.songs.map((s) => s.metadata.title);
 
 // Which songs each value holds for, by the scores above ('Descent' has none).
 const RELAXED = new Set(['Orbit', 'Return', 'Highway', 'Neon', 'Sketch 1']);
+// ...and strongly (0.7 or more): Neon is at 0.6, Sketch 1 at 0.5.
+const STRONGLY_RELAXED = new Set(['Orbit', 'Return', 'Highway']);
+const fits = (r) => r.body.map((s) => [s.metadata.title, s.moodFit]);
 
 before(async () => {
   server = await startServer();
@@ -117,6 +122,19 @@ describe('/db/albums mood filter', () => {
     assert.deepEqual(names(await albums({ valence: 'happy' })), ['Be Somebody', 'Untitled EP']);
   });
 
+  test('strict: most of an album must fit strongly, and the echo says so', async () => {
+    // Later Works: Return at 0.7. Night Drive: Highway alone (Neon 0.6) —
+    // 1 of 3. Untitled EP: Sketch 1 at 0.5.
+    const r = await albums({ energy: 'relaxed', strict: true });
+    assert.deepEqual(names(r), ['Later Works']);
+    assert.deepEqual(r.body.moods, { energy: 'relaxed', strict: true });
+    assert.deepEqual((await albums({ energy: 'relaxed', strict: false })).body.moods, { energy: 'relaxed' });
+    const alone = await albums({ strict: true });
+    assert.equal(alone.body.albums.length, 4, 'on its own, strict filters nothing');
+    assert.deepEqual(alone.body.moods, {});
+    assert.equal((await albums({ energy: 'relaxed', strict: 'yes' })).status, 400);
+  });
+
   test('GET answers carry the key too', async () => {
     const r = await call('GET', '/api/v1/db/albums');
     assert.equal(r.status, 200);
@@ -139,6 +157,12 @@ describe('/db/artists mood filter', () => {
     assert.deepEqual((await artists({ moods: { energy: 'relaxed' } })).body, { artists: ['Vosto'], moods: { energy: 'relaxed' } });
     assert.deepEqual((await artists({ moods: { tags: ['danceable'] } })).body.artists, ['Icarus']);
     assert.deepEqual((await artists({ moods: { valence: 'happy' } })).body.artists, [], 'both have 2 of 4');
+  });
+
+  test('strict: the same rule', async () => {
+    // Vosto: Highway alone fits strongly (1 of 4).
+    assert.deepEqual((await artists({ moods: { energy: 'relaxed', strict: true } })).body,
+      { artists: [], moods: { energy: 'relaxed', strict: true } });
   });
 
   test('the widened list (include) is filtered the same way', async () => {
@@ -177,6 +201,13 @@ describe('/db/rated mood filter', () => {
     assert.deepEqual(titles(await rated({ valence: 'happy', energy: 'relaxed' })), []);
   });
 
+  test('each song carries its fit; the list stays in rating order', async () => {
+    // Return is sad at 0.6 (close) and rated above Static, sad at 0.7.
+    assert.deepEqual(fits(await rated({ valence: 'sad' })), [['Return', 'close'], ['Static', 'strong']]);
+    assert.deepEqual(fits(await rated({ valence: 'sad', strict: true })), [['Static', 'strong']]);
+    assert.ok((await rated()).body.every((s) => !('moodFit' in s)), 'unfiltered: no fits');
+  });
+
   test('GET is the unfiltered list; a bad filter is a 400', async () => {
     assert.deepEqual(titles(await call('GET', '/api/v1/db/rated')),
       ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
@@ -203,8 +234,24 @@ describe('/db/recent/added mood filter', () => {
     assert.deepEqual(titles(await recent(100, { valence: 'neutral' })).sort(), ['Highway', 'Orbit']);
   });
 
+  test('each song carries its fit; strict counts strong fits', async () => {
+    const newest = titles(await recent(100));
+    const r = await recent(100, { energy: 'relaxed' });
+    assert.deepEqual(fits(r), titles(r).map((t) => [t, STRONGLY_RELAXED.has(t) ? 'strong' : 'close']));
+    const strict = await recent(2, { energy: 'relaxed', strict: true });
+    assert.deepEqual(titles(strict), newest.filter((t) => STRONGLY_RELAXED.has(t)).slice(0, 2));
+    assert.ok(strict.body.every((s) => s.moodFit === 'strong'));
+  });
+
+  test('strict: what must not hold, at 0.3 or less', async () => {
+    // Highway's happy is 0.4, Static's instrumental 0.4.
+    assert.deepEqual(titles(await recent(100, { valence: 'neutral', strict: true })), ['Orbit']);
+    assert.deepEqual(titles(await recent(100, { voice: 'vocals', strict: true })).sort(), ['Be Somebody', 'Rise']);
+  });
+
   test('an empty filter filters nothing; a bad one is a 400', async () => {
     assert.equal(titles(await recent(100, {})).length, 9, 'Descent included');
+    assert.ok((await recent(100, { strict: true })).body.every((s) => !('moodFit' in s)), 'nothing filters: no fits');
     assert.equal((await recent(5, { voice: 'choir' })).status, 400);
     assert.equal((await recent(5, { tempo: 'fast' })).status, 400);
   });
@@ -218,6 +265,12 @@ describe('Auto DJ (/db/random-songs) mood filter', () => {
     assert.deepEqual(r.body.moods, { energy: 'relaxed' });
     const narrow = await dj({ limit: 25, moods: { voice: 'vocals', tags: ['acoustic'] } });
     assert.deepEqual(picked(narrow), ['Static']);
+  });
+
+  test('strict: only the strong fits, and the echo says so', async () => {
+    const r = await dj({ limit: 25, moods: { energy: 'relaxed', strict: true } });
+    assert.deepEqual(picked(r).sort(), [...STRONGLY_RELAXED].sort());
+    assert.deepEqual(r.body.moods, { energy: 'relaxed', strict: true });
   });
 
   test('without a filter: every song can come, and the echo is {}', async () => {
@@ -262,6 +315,7 @@ describe('mood filters without scores', () => {
     assert.equal('moods' in r.body, false);
     assert.deepEqual((await artists({ moods: { energy: 'relaxed' } })).body, { artists: ['Icarus', 'Vosto'] });
     assert.deepEqual(titles(await rated({ energy: 'relaxed' })), ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
+    assert.ok((await rated({ energy: 'relaxed', strict: true })).body.every((s) => !('moodFit' in s)), 'no fits either');
     assert.equal(titles(await recent(100, { energy: 'aggressive' })).length, 9);
     const pick = await dj({ limit: 25, moods: { energy: 'aggressive' } });
     assert.equal(pick.body.songs.length, 9, 'Auto DJ unfiltered too');
