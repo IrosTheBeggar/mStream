@@ -88,7 +88,8 @@ const HELPERS = ['escapeHtml', 'peerAttr', 'peerOf', 'browseApi', 'localIgnoreVP
 const RENDERERS = ['renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderSearchResults', 'renderSearchRow'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'getFileExplorerPath', 'printdir', 'onPlaylistClick',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'songListMoods',
+  'getFileExplorerPath', 'printdir', 'onPlaylistClick',
   'getGenreSongs', 'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch', 'setupSearchPanel', 'federatedSearchOffered'];
 
@@ -209,6 +210,7 @@ function makeSandbox(api, { server = {}, livePlaylist = null } = {}) {
     const searchToggles = { albums: true, artists: true, files: false, titles: true, lyrics: true, federated: false };
     ${sliceConst('entityMap')}
     ${sliceConst('searchMap')}
+    ${sliceConst('MOODS')}
     ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
     ${RENDERERS.map(sliceFn).join('\n\n')}

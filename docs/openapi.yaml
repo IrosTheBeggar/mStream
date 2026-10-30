@@ -1728,10 +1728,13 @@ paths:
                           A mood filter would find something right now: the
                           mood heads are on and some songs have scores. The
                           Discover page shows its filters on this (with
-                          `discoveryTaste >= 2`); the browse lists read the
-                          `moods` key their own answers carry instead (a
-                          connected server's included). Absent on older
-                          servers.
+                          `discoveryTaste >= 2`), and so do the song lists
+                          (`/db/rated`, `/db/recent/added`, whose answers are
+                          bare arrays); the browse lists read the `moods` key
+                          their own answers carry instead (a connected
+                          server's included). A server that sends this key
+                          takes `moods` on all of those routes. Absent on
+                          older servers.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -4292,7 +4295,11 @@ paths:
     get: &ratedOp
       tags: [Stats]
       summary: Get tracks the user has rated
-      description: Tracks rated > 0, sorted highest first.
+      description: >
+        Tracks rated > 0, sorted highest first. POST takes an optional `moods` filter
+        (MoodFilter): only the rated songs that match it. The answer is the bare array
+        either way, so it carries no echo — show the filter on server-info's
+        `moodFilters`. While that is false, a filter is validated but filters nothing.
       responses:
         "200":
           description: Rated tracks.
@@ -4307,7 +4314,12 @@ paths:
       requestBody:
         content:
           application/json:
-            schema: { $ref: "#/components/schemas/IgnoreVPaths" }
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/IgnoreVPaths" }
+                - type: object
+                  properties:
+                    moods: { $ref: "#/components/schemas/MoodFilter" }
 
   /api/v1/db/rate-song:
     post:
@@ -4347,6 +4359,11 @@ paths:
     post:
       tags: [Stats]
       summary: Recently added tracks
+      description: >
+        The `limit` newest tracks. With a `moods` filter (MoodFilter), the `limit` newest
+        tracks that match it. The answer is a bare array, so it carries no echo — show the
+        filter on server-info's `moodFilters`. While that is false, a filter is validated
+        but filters nothing.
       requestBody:
         required: true
         content:
@@ -4357,6 +4374,7 @@ paths:
                   required: [limit]
                   properties:
                     limit: { type: integer, minimum: 1 }
+                    moods: { $ref: "#/components/schemas/MoodFilter" }
                 - { $ref: "#/components/schemas/IgnoreVPaths" }
       responses:
         "200":

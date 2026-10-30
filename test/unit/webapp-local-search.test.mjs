@@ -70,7 +70,8 @@ const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'getFileExplorerPath', 'printdir',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'songListMoods',
+  'getFileExplorerPath', 'printdir',
   'getAllGenres', 'getGenreSongs', 'getAllAlbums', 'getArtistsAlbums',
   'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch'];

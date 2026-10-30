@@ -38,7 +38,8 @@ export function setup(mstream) {
       // new capability must be added here too (the drift-lock test checks).
       discoveryTaste: features.discoveryTaste,
       // Mood scores to filter by, right now (api/mood-filter.js) — the
-      // Discover page's filters gate on it; same flag on /api/.
+      // Discover page's and the song lists' filters gate on it; same flag
+      // on /api/.
       moodFilters: features.moodFilters,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,

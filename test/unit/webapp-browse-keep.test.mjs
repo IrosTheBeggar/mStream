@@ -73,7 +73,8 @@ function sliceConst(name) {
 const KEEP_FNS = [...SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote|onQueueMoreCapture)\(/gm)].map((m) => m[1]);
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody',
   'searchKey', 'createMusicFileHtml', 'renderDirHtml', 'renderAlbum', 'renderArtist', 'renderSearchRow', 'renderSearchResults',
-  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'senddir', 'printdir', 'getFileExplorerPath', 'getDirectoryString2',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'songListMoods',
+  'senddir', 'printdir', 'getFileExplorerPath', 'getDirectoryString2',
   'getAlbumsOnClick', 'getAlbumSongs', 'getArtistsAlbums', 'getAllAlbums', 'getGenreSongs', 'redoRecentlyAdded', 'runLocalSearch',
   'openFileExplorerAt', 'applyServerContext', ...KEEP_FNS];
 

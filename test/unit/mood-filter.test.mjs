@@ -11,7 +11,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  MOOD_THRESHOLD, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery,
+  MOOD_THRESHOLD, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
 } from '../../src/api/mood-filter.js';
 import { EMBEDDING_MODELS } from '../../src/db/discovery-features-lib.js';
 import { mergePeerAnswers } from '../../src/api/discovery-federation.js';
@@ -79,6 +79,22 @@ describe('mood filter: what a song matches', () => {
 
   test('no group: the predicate holds for every row', () => {
     assert.deepEqual(match({}), Object.keys(SONGS).sort());
+  });
+
+  test('the song lists\' clause: a song by id, never one without scores', () => {
+    const d = new DatabaseSync(':memory:');
+    d.exec(`CREATE TABLE track_moods (track_id INTEGER PRIMARY KEY, danceable REAL, happy REAL, sad REAL,
+      relaxed REAL, aggressive REAL, party REAL, acoustic REAL, instrumental REAL);
+      CREATE TABLE songs (id INTEGER PRIMARY KEY, name TEXT)`);
+    const ins = d.prepare(`INSERT INTO track_moods (track_id, ${HEADS.join(', ')}) VALUES (?, ${HEADS.map(() => '?').join(', ')})`);
+    ins.run(1, ...SONGS.calm);
+    ins.run(2, ...SONGS.bright);
+    d.exec("INSERT INTO songs VALUES (1, 'calm'), (2, 'bright'), (3, 'unscored')");
+    const names = (moods) => d.prepare(`SELECT s.name FROM songs s WHERE ${trackMoodClause(moods, 's')} ORDER BY s.id`)
+      .all().map((r) => r.name);
+    assert.deepEqual(names({ energy: 'relaxed' }), ['calm']);
+    assert.deepEqual(names({ voice: 'vocals' }), ['bright']);
+    assert.deepEqual(names({}), ['calm', 'bright'], 'no group still needs scores');
   });
 
   test("the threshold is every mood model's tag threshold", () => {
