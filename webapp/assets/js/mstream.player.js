@@ -350,6 +350,18 @@ const MSTREAMPLAYER = (() => {
       }
     }
 
+    // Mood filter — server-applied as an always-on base condition (the
+    // filter is src/api/mood-filter.js). Gated on the ping's
+    // `moodFilters` flag the way the sonic params gate on `discovery`:
+    // the route's schema is strict, so a server without the filter would
+    // 400 every pick. Only on the wire when something is set.
+    if (autodjLoaded
+        && AUTODJ.state.djMoodEnabled
+        && MSTREAMAPI.currentServer.moodFilters === true) {
+      const moods = AUTODJ.cleanMoods(AUTODJ.state.djMoods);
+      if (moods) { body.moods = moods; }
+    }
+
     // Sonic similarity — constrain picks to the discovery-embedding
     // neighborhood of the session anchor (PR #697 server API). Gated on
     // the ping capability flag so feature-off servers never receive the
@@ -633,6 +645,11 @@ const MSTREAMPLAYER = (() => {
           }
           continue;
         }
+        // A mood-filtered ask: a server that answered without the echo
+        // (no mood scores) picked unfiltered — its songs would play off
+        // the mood, so they are not candidates. One older than the filter
+        // refuses the key outright: an error, skipped above.
+        if (shared.moods && !(a.res && a.res.moods)) { continue; }
         const songs = a.res && Array.isArray(a.res.songs) ? a.res.songs : [];
         if (songs.length === 0) { continue; }
         if (Array.isArray(a.res.ignoreList)) { retryLists.set(a.peer ? String(a.peer.id) : 'local', a.res.ignoreList); }

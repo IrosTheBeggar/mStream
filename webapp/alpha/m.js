@@ -3358,8 +3358,7 @@ const MOODS = {
 };
 
 // A page's filter in the server's wire form, or null when nothing filters.
-function moodFilterBody(list) {
-  const f = MOODS.filters[list] || {};
+function moodFilterBody(list, f = MOODS.filters[list] || {}) {
   const out = {};
   for (const [group] of MOODS.scales) {
     if (f[group]) { out[group] = f[group]; }
@@ -3372,17 +3371,18 @@ function moodFilterBody(list) {
 // One pressed value per scale (pressed again, it lets go), any number of
 // tags, and Clear while anything is set. The lists' buttons call their
 // handlers; Discover's carry data-dp actions for its own dispatcher (and
-// its focus restore after a redraw).
-function moodPanelHtml(list) {
-  const f = MOODS.filters[list] || {};
+// its focus restore after a redraw); Auto DJ's carry none — its panel
+// listens on the row and keeps the filter itself ([f]).
+function moodPanelHtml(list, f = MOODS.filters[list] || {}) {
   const dp = list === 'discover';
-  const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : `onclick="${handler}"`);
+  const dj = list === 'autodj';
+  const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : dj ? '' : `onclick="${handler}"`);
   const scale = ([group, values, label]) => `<div class="mood-seg" role="group" aria-label="${escapeHtml(t(label))}">${values.map((v) =>
     `<button type="button" class="mood-seg-btn" data-mood-group="${group}" data-mood-value="${v}" aria-pressed="${f[group] === v}" ${on(`pickMood('${group}', '${v}')`, 'mood', `${group}:${v}`)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
   const tags = `<div class="mood-tags" role="group" aria-label="${escapeHtml(t('moods.tagsGroup'))}">${MOODS.tags.map((tag) =>
     `<button type="button" class="mood-chip" data-mood-tag="${tag}" aria-pressed="${(f.tags || []).includes(tag)}" ${on(`toggleMoodTag('${tag}')`, 'moodTag', tag)}>${escapeHtml(t(`moods.${tag}`))}</button>`).join('')}</div>`;
   return MOODS.scales.map(scale).join('') + tags
-    + `<button type="button" class="mood-clear${moodFilterBody(list) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>`;
+    + `<button type="button" class="mood-clear${moodFilterBody(list, f) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>`;
 }
 
 // After a list's answer: the button when the answer says the server can
@@ -4270,6 +4270,8 @@ const DPAGE_ICONS = { play: '<svg xmlns="http://www.w3.org/2000/svg" width="13" 
 function applyDiscoveryPing(response) {
   const r = response || {};
   MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
+  // Auto DJ's mood filter reads it here (mstream.player.js).
+  MSTREAMAPI.currentServer.moodFilters = r.moodFilters === true;
   discoveryView.flags = {
     discovery: r.discovery === true,
     discoveryTaste: MSTREAMAPI.currentServer.discoveryTaste,
@@ -6355,6 +6357,21 @@ async function autoDjPanel() {
     // Trim the float tail: 150s → 2.5, 120s → 2 (not 2.0).
     return String(Math.round((n / 60) * 100) / 100);
   };
+  // Mood — the browse lists' segments and chips (moodPanelHtml), kept as
+  // AUTODJ.state.djMoods. Only where the server can filter by mood (the
+  // ping's `moodFilters`): the route refuses the key otherwise.
+  const moodFilterRow = MSTREAMAPI.currentServer.moodFilters === true ? `
+    <div class="autodj-opt-row autodj-opt-col">
+      <div class="dj-filter-head">
+        <div class="autodj-opt-label" id="dj-mood-label">${t('autoDJ.moodFilterLabel')}</div>
+        <label class="toggle-sw">
+          <input type="checkbox" id="dj-mood-on" aria-labelledby="dj-mood-label" ${AUTODJ.state.djMoodEnabled ? 'checked' : ''}>
+          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
+        </label>
+      </div>
+      <div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', AUTODJ.state.djMoods)}</div>
+    </div>` : '';
+
   const durationOn = AUTODJ.state.djDurationEnabled;
   const durationFilterRow = `
     <div class="autodj-opt-row autodj-opt-col">
@@ -6543,6 +6560,7 @@ async function autoDjPanel() {
         <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
         ${keywordFilterRow}
         ${genreFilterRow}
+        ${moodFilterRow}
         ${durationFilterRow}
       </div>
     </div>`;
@@ -7038,6 +7056,59 @@ async function autoDjPanel() {
   durUnknownEl.onchange = (e) => {
     AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
   };
+
+  // ── Mood ───────────────────────────────────────────────────────
+  //
+  // The buttons carry no handlers (moodPanelHtml's Auto DJ form): one
+  // listener on the row reads the pressed button and stores the new
+  // filter, then the pressed states change in place so the focused
+  // button keeps focus. The toggle gates the buttons; the filter
+  // survives toggling, like the genre list.
+  const moodOnEl = document.getElementById('dj-mood-on');
+  const moodBox = document.getElementById('dj-moods');
+  if (moodOnEl && moodBox) {
+    const syncMoods = () => {
+      const f = AUTODJ.state.djMoods;
+      moodBox.querySelectorAll('[data-mood-group]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(f[b.getAttribute('data-mood-group')] === b.getAttribute('data-mood-value')));
+      });
+      moodBox.querySelectorAll('[data-mood-tag]').forEach((b) => {
+        b.setAttribute('aria-pressed', String((f.tags || []).includes(b.getAttribute('data-mood-tag'))));
+      });
+      moodBox.querySelector('.mood-clear')?.classList.toggle('super-hide', AUTODJ.cleanMoods(f) === null);
+      moodBox.querySelectorAll('button').forEach((b) => { b.disabled = !AUTODJ.state.djMoodEnabled; });
+    };
+    syncMoods();
+    moodOnEl.onchange = (e) => {
+      AUTODJ.setState({ djMoodEnabled: !!e.target.checked });
+      syncMoods();
+    };
+    moodBox.onclick = (e) => {
+      const btn = e.target.closest('button');
+      if (!btn || btn.disabled) { return; }
+      const f = { ...AUTODJ.state.djMoods };
+      const group = btn.getAttribute('data-mood-group');
+      const tag = btn.getAttribute('data-mood-tag');
+      if (group) {
+        const value = btn.getAttribute('data-mood-value');
+        f[group] = f[group] === value ? undefined : value;
+      } else if (tag) {
+        const tags = new Set(f.tags || []);
+        if (tags.has(tag)) { tags.delete(tag); } else { tags.add(tag); }
+        f.tags = [...tags];
+      } else if (btn.classList.contains('mood-clear')) {
+        AUTODJ.setState({ djMoods: {} });
+        syncMoods();
+        // Clear hides itself: the keyboard goes back to the toggle.
+        moodOnEl.focus();
+        return;
+      } else {
+        return;
+      }
+      AUTODJ.setState({ djMoods: AUTODJ.cleanMoods(f) || {} });
+      syncMoods();
+    };
+  }
 
   // Initial sync — the `ignoreVPaths` legacy global IS still read by
   // every browse/search panel in m.js, so we keep it in lockstep with

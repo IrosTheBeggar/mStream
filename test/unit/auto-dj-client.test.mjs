@@ -1530,6 +1530,42 @@ describe('genre filter — persistence', () => {
   });
 });
 
+describe('mood filter', () => {
+  test('cleanMoods keeps known values only, tags in the server order', () => {
+    assert.deepEqual(
+      AUTODJ.cleanMoods({ valence: 'angry', energy: 'relaxed', voice: 'vocals', tags: ['party', 'sad', 'acoustic'] }),
+      { energy: 'relaxed', voice: 'vocals', tags: ['acoustic', 'party'] },
+    );
+    for (const nothing of [null, undefined, 'relaxed', ['relaxed'], {}, { tags: [] }, { valence: 'angry' }]) {
+      assert.equal(AUTODJ.cleanMoods(nothing), null, JSON.stringify(nothing));
+    }
+  });
+
+  test('off and empty by default', () => {
+    assert.equal(AUTODJ.state.djMoodEnabled, false);
+    assert.deepEqual(AUTODJ.state.djMoods, {});
+  });
+
+  test('hydrates from localStorage, cleaned — a junk value would 400 every pick', () => {
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodEnabled', JSON.stringify(true));
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoods',
+      JSON.stringify({ energy: 'relaxed', tempo: 'fast', tags: ['danceable', 'loud'] }));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodEnabled, true);
+    assert.deepEqual(AUTODJ.state.djMoods, { energy: 'relaxed', tags: ['danceable'] });
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoods', JSON.stringify('relaxed'));
+    AUTODJ._internals.rehydrate();
+    assert.deepEqual(AUTODJ.state.djMoods, {});
+  });
+
+  test('a preference: reset() keeps it', () => {
+    AUTODJ.setState({ djMoodEnabled: true, djMoods: { valence: 'sad' } });
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.djMoodEnabled, true);
+    assert.deepEqual(AUTODJ.state.djMoods, { valence: 'sad' });
+  });
+});
+
 describe('genres-list cache', () => {
   test('getCachedGenresList returns null before any set', () => {
     AUTODJ.invalidateGenresCache();

@@ -2011,6 +2011,16 @@ select {
   .mood-filter-btn { width: 44px; height: 44px; }
   .mood-seg-btn, .mood-chip, .mood-clear { height: 44px; }
 }
+/* Auto DJ's Mood row: the same segments and chips, laid out in the row
+   like its other filters' controls; off while the row's toggle is. */
+.dj-moods {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  width: 100%;
+}
+.dj-moods button:disabled { opacity: .45; cursor: default; pointer-events: none; }
 /* On Discover the panel is part of the bar's gray chrome (#dpage-head),
    like "More options", not a card under it. */
 .mood-filters.dpage-moods {
