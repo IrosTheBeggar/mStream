@@ -1920,6 +1920,107 @@ select {
   padding: 3px 9px;
 }
 
+/* The mood filters (m.js showMoodFilters / moodPanelHtml): the browse
+   bar's Filters button — orange with a dot while a filter is set — and the
+   panel it opens under the bar (Discover draws the same panel in its bar's
+   host). Scales are joined segments (one value each), tags loose chips. */
+.mood-filter-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  margin: 0 2px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.mood-filter-btn svg path { fill: #fff; transition: fill .15s; }
+.mood-filter-btn:hover svg path { fill: #999; }
+.mood-filter-btn.mood-on svg path { fill: #fa832b; }
+.mood-filter-dot { display: none; fill: #fa832b; }
+.mood-filter-btn.mood-on .mood-filter-dot { display: inline; }
+.mood-filter-btn:focus { background-color: transparent; }
+.mood-filter-btn[aria-expanded="true"], .mood-filter-btn[aria-expanded="true"]:focus { background-color: #31353d; }
+.mood-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  margin: 2px 8px 8px;
+  padding: 10px 12px;
+  background: #262a33;
+  border: 1px solid #444c56;
+  border-radius: 8px;
+}
+.mood-seg {
+  display: inline-flex;
+  flex-shrink: 0;
+  border: 1px solid #444c56;
+  border-radius: 18px;
+  overflow: hidden;
+  background: #1a1d23;
+}
+.mood-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.mood-seg-btn, .mood-chip, .mood-clear {
+  appearance: none;
+  height: 34px;
+  padding: 0 13px;
+  border: 0;
+  background: transparent;
+  color: #d0d3da;
+  font-size: 13px;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.mood-seg-btn + .mood-seg-btn { border-left: 1px solid #444c56; }
+.mood-chip {
+  border: 1px solid #444c56;
+  border-radius: 18px;
+  background: #1a1d23;
+}
+.mood-seg-btn:focus { background-color: transparent; }
+.mood-chip:focus { background-color: #1a1d23; }
+.mood-seg-btn:hover:not([aria-pressed="true"]), .mood-chip:hover:not([aria-pressed="true"]) { background-color: #2a2f37; }
+.mood-seg-btn[aria-pressed="true"], .mood-chip[aria-pressed="true"] {
+  background-color: #fa832b;
+  border-color: #fa832b;
+  color: #111;
+  font-weight: 600;
+}
+.mood-clear {
+  margin-left: auto;
+  padding: 0 8px;
+  color: #8ea0f0;
+}
+.mood-clear:focus { background-color: transparent; }
+.mood-clear:hover { color: #dfe3ea; }
+.mood-filter-btn:focus-visible, .mood-seg-btn:focus-visible, .mood-chip:focus-visible, .mood-clear:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: -2px;
+}
+@media (pointer: coarse) {
+  .mood-filter-btn { width: 44px; height: 44px; }
+  .mood-seg-btn, .mood-chip, .mood-clear { height: 44px; }
+}
+/* On Discover the panel is part of the bar's gray chrome (#dpage-head),
+   like "More options", not a card under it. */
+.mood-filters.dpage-moods {
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid #2c313a;
+  border-radius: 0;
+}
+
 /* Anchor for the suggestion dropdown — keep it relative so the
    absolutely-positioned panel sticks to the input. */
 .dj-genre-combo {

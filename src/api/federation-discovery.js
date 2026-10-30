@@ -26,6 +26,7 @@ import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import { requireIndex, resolveVisible, decodeSeedVector } from './discovery.js';
 import { renderMetadataObj, libraryFilter } from './db.js';
+import { parseMoodsQuery, applicableMoods, hashMatcher } from './mood-filter.js';
 import { joiValidate } from '../util/validation.js';
 
 const DEFAULT_LIMIT = 25;
@@ -41,6 +42,12 @@ export function setup(mstream) {
       limit: Joi.number().integer().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
     });
     const { value: body } = joiValidate(schema, req.body);
+    // An optional mood filter (api/mood-filter.js) in the `moods` query
+    // parameter — the body schema above stays strict, and a caller sends
+    // the filter where a server older than it ignores it. Applied, it is
+    // echoed back (`moods`): the caller keeps rows only from answers that
+    // carry the echo (discovery-federation.js mergePeerAnswers).
+    const { moods, echo } = applicableMoods(parseMoodsQuery(req.query?.moods));
 
     const index = requireIndex();   // 403 while discovery is off/unavailable
     const model = { id: index.modelId, version: index.modelVersion };
@@ -52,7 +59,7 @@ export function setup(mstream) {
     // Index exists but holds zero vectors (nothing embedded yet): a valid
     // empty answer — and there is no dim to validate the query against.
     if (index.dim === null) {
-      return res.json({ model, results: [] });
+      return res.json({ model, results: [], ...(echo && { moods: echo }) });
     }
 
     const q = decodeSeedVector(index, body.embedding);
@@ -78,13 +85,18 @@ export function setup(mstream) {
     // otherwise walk the ENTIRE ranking — a full-index visibility sweep of
     // synchronous main-thread SQL per request, on a machine-facing route.
     // withGenres:false — this response never renders track genres.
-    const maxConsidered = Math.max(body.limit * 50, 2000);
+    // A mood filter walks 4× deeper (it drops most near neighbours) and
+    // tests each candidate with one indexed lookup before the visibility
+    // probe, so the cost per considered row stays a single small query.
+    const matches = moods ? hashMatcher(db.getDB(), moods) : null;
+    const maxConsidered = Math.max(body.limit * 50, 2000) * (moods ? 4 : 1);
     let considered = 0;
     let capped = false;
     // topK = the walk's cap (see the local similar/tracks route — audit M9).
     for (const { entry, similarity } of sim.rankTracks(index, q, null, maxConsidered)) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
+      if (matches && !matches(entry.hash)) { continue; }
       const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy inside the caller's granted libraries
       const rendered = renderMetadataObj(row);
@@ -119,6 +131,6 @@ export function setup(mstream) {
       });
     }
 
-    res.json({ model, capped, results });
+    res.json({ model, capped, results, ...(echo && { moods: echo }) });
   });
 }

@@ -9,6 +9,7 @@ import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -219,6 +220,15 @@ export function libraryFilter(user, ignoreVPaths) {
     params: libIds,
     coversAllLibraries
   };
+}
+
+// The browse lists' optional mood filter (api/mood-filter.js) — { moods,
+// echo }. POST body only: the federation browse proxy forwards no query
+// string, and a connected server's list must filter the same way. The
+// answer carries `moods` (the echo) only while this server has scores to
+// filter by; a client shows its filters on that key.
+function browseMoods(req) {
+  return applicableMoods(parseMoods(req.body?.moods));
 }
 
 // Base query: tracks joined with artists, albums, library, optionally
@@ -732,15 +742,21 @@ export function setup(mstream) {
     const orderBy = sortMode === 'order'
       ? 'COALESCE(a.order_name, a.name) COLLATE NOCASE, a.name COLLATE NOCASE'
       : 'a.name COLLATE NOCASE';
+    // Optional mood filter (api/mood-filter.js): artists most of whose
+    // songs — as the track's primary artist — match, whichever roles
+    // `include` lists them by.
+    const { moods, echo } = browseMoods(req);
+    const mood = moods ? artistMoodClause(moods, filter) : null;
+    const answer = (rows) => ({ artists: rows.map(r => r.name), ...(echo && { moods: echo }) });
     if (include.length === 0) {
       const rows = d().prepare(`
         SELECT DISTINCT a.name
         FROM artists a
         JOIN tracks t ON t.artist_id = a.id
-        WHERE ${filter.clause}
+        WHERE ${filter.clause}${mood ? ` AND ${mood.sql}` : ''}
         ORDER BY ${orderBy}
-      `).all(...filter.params);
-      return { artists: rows.map(r => r.name) };
+      `).all(...filter.params, ...(mood ? mood.params : []));
+      return answer(rows);
     }
 
     // Widened: a UNION of index-driven artist-id sets, one per source, each
@@ -762,12 +778,13 @@ export function setup(mstream) {
                      WHERE aa.album_id IN (SELECT t.album_id FROM tracks t WHERE ${filter.clause})`);
       params.push(...filter.params);
     }
+    if (mood) { params.push(...mood.params); }
     const rows = d().prepare(`
       SELECT a.name FROM artists a
-      WHERE a.id IN (${sources.join('\n             UNION\n             ')})
+      WHERE a.id IN (${sources.join('\n             UNION\n             ')})${mood ? `\n        AND ${mood.sql}` : ''}
       ORDER BY ${orderBy}
     `).all(...params);
-    return { artists: rows.map(r => r.name) };
+    return answer(rows);
   }
 
   mstream.get('/api/v1/db/artists', (req, res) => res.json(getArtists(req)));
@@ -895,6 +912,10 @@ export function setup(mstream) {
 
   function getAlbums(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    // Optional mood filter (api/mood-filter.js): albums most of whose
+    // songs match.
+    const { moods, echo } = browseMoods(req);
+    const mood = moods ? albumMoodClause(moods, filter) : null;
     // `, al.year DESC, al.album_art_file` pins the order among same-name
     // albums, which `ORDER BY al.name` alone left to the plan (the rewrite
     // changed the plan, and the UI renders response order — see the
@@ -904,12 +925,13 @@ export function setup(mstream) {
       SELECT ${ALBUM_ITEM_COLUMNS}
       FROM albums al
       LEFT JOIN artists pa ON pa.id = al.artist_id
-      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})${mood ? `
+        AND ${mood.sql}` : ''}
       ${ALBUM_ITEM_GROUP}
       ORDER BY al.name COLLATE NOCASE, al.year DESC, al.album_art_file
-    `).all(...filter.params);
+    `).all(...filter.params, ...(mood ? mood.params : []));
 
-    return { albums: albumItems(d(), rows) };
+    return { albums: albumItems(d(), rows), ...(echo && { moods: echo }) };
   }
 
   mstream.get('/api/v1/db/albums', (req, res) => res.json(getAlbums(req)));

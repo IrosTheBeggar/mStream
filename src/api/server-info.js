@@ -51,6 +51,7 @@ import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
+import { moodFiltersReady } from './mood-filter.js';
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -99,7 +100,14 @@ export function buildFeatures() {
     // and clients gate on `>= n` with no version floors. A version fact —
     // clients show the page on `discovery === true && discoveryTaste >= 1`;
     // whether there is anything to seed from is the route's answer.
-    discoveryTaste: 1,
+    // 2: the body takes `moods`, a mood filter (api/mood-filter.js) — the
+    // route's Joi is strict, so a client sends it only from 2 on.
+    discoveryTaste: 2,
+    // A mood filter would find something RIGHT NOW: the mood heads are on
+    // and some songs have scores (api/mood-filter.js). The local Discover
+    // page shows its filters on this; the browse lists read the `moods`
+    // key their own answers carry (a connected server's included).
+    moodFilters: moodFiltersReady(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.
