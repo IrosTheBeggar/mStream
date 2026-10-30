@@ -22,7 +22,8 @@
 //     terminal step then materialised the whole library per pick).
 //
 // Orthogonal to both modes are the ALWAYS-ON base conditions — the
-// genre filter, the sonic-similarity pool, and the duration window.
+// genre filter, the mood filter, the sonic-similarity pool, and the
+// duration window.
 // The waterfall relaxes BPM/key/artist constraints WITHIN them and
 // never relaxes them, so an over-narrow one 400s rather than serving
 // a pick outside the user's stated promise.
@@ -61,6 +62,7 @@ import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack, fetc
 import { PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
+import { parseMoods, applicableMoods, trackMoodClause } from './mood-filter.js';
 import { nameKey } from '../db/name-key.js';
 import WebError from '../util/web-error.js';
 
@@ -844,6 +846,16 @@ export function runRandomSongs(req, body) {
     baseParams.push(...duration.params);
   }
 
+  // Mood filter (api/mood-filter.js) — ALWAYS-ON like the genre filter:
+  // the waterfall relaxes BPM / key / artists within it and never the
+  // mood, so a filter nothing in scope meets is the 400 below rather
+  // than a pick off the user's mood. `body.moods` is the route's parsed,
+  // applicable filter (null while the server has no scores to filter
+  // by); one track_moods probe per candidate row.
+  if (body.moods) {
+    baseConditions.push(trackMoodClause(body.moods));
+  }
+
   // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
   // DJ candidates — the player can't stream an .m3u, so serving one spins
   // the client's queue-ahead loop on an unplayable pick. Being artist-less,
@@ -1329,6 +1341,9 @@ export function setup(mstream) {
       minDuration: Joi.number().min(0).max(86400).optional(),
       maxDuration: Joi.number().min(0).max(86400).optional(),
       allowUnknownDuration: Joi.boolean().optional(),
+      // The browse lists' mood filter (api/mood-filter.js), validated —
+      // strictly, a 400 on anything else — by parseMoods below.
+      moods: Joi.any(),
       // Sonic similarity (discovery embeddings) — both-or-neither, enforced
       // by the .and() below.
       //   • similarTo:     1-8 file paths. One = plain seed; several average
@@ -1384,6 +1399,11 @@ export function setup(mstream) {
       }, 'duration window ordering');
     const { value } = joiValidate(schema, req.body || {});
 
-    res.json(runRandomSongs(req, value));
+    // The answer echoes the filter it applied ({} when none) while this
+    // server has mood scores, and leaves `moods` out otherwise — what a
+    // server older than the filter answers — so a caller that asked a
+    // connected server can tell an unfiltered pick from a filtered one.
+    const { moods, echo } = applicableMoods(parseMoods(value.moods));
+    res.json({ ...runRandomSongs(req, { ...value, moods }), ...(echo && { moods: echo }) });
   });
 }

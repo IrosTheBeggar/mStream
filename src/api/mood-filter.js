@@ -2,8 +2,8 @@
 // discovery model's mood heads into it): the one definition of what a
 // "relaxed", "neutral" or "vocals" song is, shared by the browse lists
 // (/db/albums, /db/artists), the song lists (/db/rated, /db/recent/added),
-// the Discover page (/discovery/taste) and the peer side of its federation
-// fan-out (/federation/discovery/similar).
+// Auto DJ (/db/random-songs), the Discover page (/discovery/taste) and the
+// peer side of its federation fan-out (/federation/discovery/similar).
 //
 // A filter is an object of up to four groups. A group left out does not
 // filter:
