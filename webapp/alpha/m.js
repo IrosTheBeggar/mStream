@@ -433,8 +433,9 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('mkdir_btn').classList.add('super-hide');
   // The Genres panel's switch; getAllGenres shows it when there's a choice.
   document.getElementById('genre_source')?.classList.add('super-hide');
-  // The mood filters: Albums and Artists show them again (showMoodFilters),
-  // with the panel closed — hidden by default on every visit.
+  // The mood filters: Albums, Artists, Rated and Recently Added show them
+  // again (showMoodFilters), with the panel closed — hidden by default on
+  // every visit.
   hideMoodFilters();
 
   // Inside a peer view every panel says whose library it is showing.
@@ -3335,12 +3336,13 @@ async function getArtistsAlbums(artist) {
 }
 
 /////////////// Mood filters
-// The browse lists' mood filters (Albums, Artists; the server half is
-// src/api/mood-filter.js) — and Discover's, drawn in its own bar. One
-// filter per page for the visit: a value per scale (`valence`, `energy`,
-// `voice`) and a `tags` list, a group left out filtering nothing. The bar's
-// #mood_filter_btn shows when the list's answer carries `moods` (this
-// server, or the connected one being browsed, can filter); its panel,
+// The browse lists' mood filters (Albums, Artists, Rated, Recently Added;
+// the server half is src/api/mood-filter.js) — and Discover's, drawn in its
+// own bar. One filter per page for the visit: a value per scale (`valence`,
+// `energy`, `voice`) and a `tags` list, a group left out filtering nothing.
+// The bar's #mood_filter_btn shows when the list's answer carries `moods`
+// (this server, or the connected one being browsed, can filter) — or, for
+// the song lists, on the ping's flag (songListMoods); its panel,
 // #mood_filters, is hidden until the button opens it, and every other panel
 // hides it again (setBrowserRootPanel) — so the panel's own visibility is
 // its open state. The button is orange with a dot while a filter is set.
@@ -3351,7 +3353,7 @@ const MOODS = {
     ['voice', ['instrumental', 'vocals'], 'moods.voiceGroup'],
   ],
   tags: ['acoustic', 'party', 'danceable'],
-  filters: { albums: {}, artists: {}, discover: {} },
+  filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {} },
   list: null,   // the list the bar's button and panel belong to
 };
 
@@ -3403,6 +3405,14 @@ function showMoodFilters(list, response) {
   btn.classList.remove('super-hide');
   btn.classList.toggle('mood-on', moodFilterBody(list) !== null);
   btn.setAttribute('aria-expanded', String(!panel.classList.contains('super-hide')));
+}
+
+// The song lists (Rated, Recently Added) answer bare arrays, with no room
+// for the browse lists' echo, so they go by the ping's `moodFilters`: this
+// server's own lists only — a connected server's Recently Added has no
+// filters. Returns what showMoodFilters reads off a browse list's answer.
+function songListMoods() {
+  return !peerContext && discoveryView.flags.moodFilters === true ? { moods: {} } : null;
 }
 
 function hideMoodFilters() {
@@ -3465,6 +3475,8 @@ function moodFilterChanged() {
   browseGeneration++;
   if (list === 'albums') { getAllAlbums({ refresh: true }); }
   else if (list === 'artists') { getAllArtists({ refresh: true }); }
+  else if (list === 'rated') { getRatedSongs({ refresh: true }); }
+  else if (list === 'recent') { redoRecentlyAdded(); }
 }
 
 // A mood button on Discover: the lists' rules (pickMood, toggleMoodTag,
@@ -3740,19 +3752,24 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
 }
 
 ////////////// Rated Songs
-async function getRatedSongs() {
-  setBrowserRootPanel(t('panel.starred'));
+async function getRatedSongs(opts) {
+  // A mood-filter change asks again in place: the bar and its open panel stay.
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.starred')); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allRated' }];
 
   const gen = browseGeneration;
   try {
+    const can = songListMoods();
+    const moods = can && moodFilterBody('rated');
     const response = await MSTREAMAPI.getRated({
       ignoreVPaths: Object.keys(MSTREAMPLAYER.ignoreVPaths).filter((vpath) => {
         return MSTREAMPLAYER.ignoreVPaths[vpath] === true;
-      })
+      }),
+      ...(moods && { moods })
     });
     if (gen !== browseGeneration) { return; }
+    showMoodFilters('rated', can);
     //parse through the json array and make an array of corresponding divs
     let files = '';
     response.forEach(value => {
@@ -3912,11 +3929,14 @@ async function redoRecentlyAdded() {
   try {
     const limit = document.getElementById('recently-added-limit').value;
     const gate = keepGateFor(peerContext);
+    const can = songListMoods();
+    const moods = can && moodFilterBody('recent');
     const response = peerContext
       ? await MSTREAMAPI.peer.recentlyAdded(peerContext.id, limit)
-      : await MSTREAMAPI.getRecentlyAdded(limit, localIgnoreVPaths());
+      : await MSTREAMAPI.getRecentlyAdded(limit, localIgnoreVPaths(), moods);
     await gate;
     if (gen !== browseGeneration) { return; }
+    showMoodFilters('recent', can);
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';

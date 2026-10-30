@@ -440,8 +440,9 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/rated", postObject);
   }
 
-  mstreamModule.getRecentlyAdded =  (limit, ignoreVPaths) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths });
+  // `moods`: an optional mood filter (the newest `limit` songs that match).
+  mstreamModule.getRecentlyAdded =  (limit, ignoreVPaths, moods) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths, ...(moods && { moods }) });
   }
 
   mstreamModule.getRecentlyPlayed =  (limit, ignoreVPaths) => {

@@ -9,7 +9,10 @@
  *     Clear only while something is set; Discover's buttons carry data-dp
  *     actions instead of handlers;
  *   - the bar's Filters button shows only when the list's answer carries
- *     `moods`, starts closed, and is marked while a filter is set;
+ *     `moods`, starts closed, and is marked while a filter is set — and on
+ *     the song lists (Rated, Recently Added: bare arrays, no echo) only
+ *     where the ping says this server can filter, never on a connected
+ *     server's list; those lists send the filter only then;
  *   - pressing a value again lets it go, tags toggle, Clear empties the
  *     page's filter — and each change asks the list again, as a newer ask.
  *
@@ -48,7 +51,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'moodFilterBody', 'moodPanelHtml', 'showMoodFilters', 'hideMoodFilters', 'toggleMoodPanel',
-  'pickMood', 'toggleMoodTag', 'clearMoodFilters', 'moodFilterChanged', 'discoveryPickMood'];
+  'pickMood', 'toggleMoodTag', 'clearMoodFilters', 'moodFilterChanged', 'discoveryPickMood', 'songListMoods'];
 
 // An element with a working classList and attributes; querySelectorAll
 // finds nothing (the pressed states are asserted through the HTML).
@@ -83,16 +86,21 @@ function makeSandbox() {
     t: (k) => k,
     getAllAlbums: (opts) => asked.push({ list: 'albums', opts }),
     getAllArtists: (opts) => asked.push({ list: 'artists', opts }),
+    getRatedSongs: (opts) => asked.push({ list: 'rated', opts }),
+    redoRecentlyAdded: (opts) => asked.push({ list: 'recent', opts }),
     redoDiscovery: () => asked.push({ list: 'discover' }),
     discoveryRefocus: () => {},
   };
   const body = `
     'use strict';
     let browseGeneration = 0;
+    let peerContext = null;
+    const discoveryView = { flags: {} };
     ${sliceConst('entityMap')}
     ${sliceConst('MOODS')}
     ${FNS.map(sliceFn).join('\n\n')}
-    return { ${FNS.join(', ')}, MOODS, generation: () => browseGeneration };
+    return { ${FNS.join(', ')}, MOODS, generation: () => browseGeneration,
+      setFlag: (on) => { discoveryView.flags.moodFilters = on; }, setPeer: (p) => { peerContext = p; } };
   `;
   const names = Object.keys(globals);
   const S = new Function(...names, body)(...names.map((n) => globals[n]));
@@ -216,5 +224,117 @@ describe('mood filters: changing the filter', () => {
     S.discoveryPickMood('moodClear', 'all');
     assert.equal(S.moodFilterBody('discover'), null);
     assert.equal(asked.filter((a) => a.list === 'discover').length, 3);
+  });
+});
+
+describe('mood filters: the song lists', () => {
+  test("they go by the ping's flag, and never on a connected server's list", () => {
+    const { S } = makeSandbox();
+    assert.equal(S.songListMoods(), null, 'no flag (an older server, or no scores)');
+    S.setFlag(true);
+    assert.deepEqual(S.songListMoods(), { moods: {} });
+    S.setPeer({ id: 7, name: 'Peer' });
+    assert.equal(S.songListMoods(), null);
+  });
+
+  test('a change asks Rated again in place and Recently Added again; each list keeps its own filter', () => {
+    const { S, asked } = makeSandbox();
+    S.showMoodFilters('rated', { moods: {} });
+    S.pickMood('energy', 'relaxed');
+    assert.deepEqual(asked.at(-1), { list: 'rated', opts: { refresh: true } });
+    S.showMoodFilters('recent', { moods: {} });
+    S.toggleMoodTag('party');
+    assert.deepEqual(asked.at(-1), { list: 'recent', opts: undefined });
+    assert.deepEqual(S.moodFilterBody('rated'), { energy: 'relaxed' });
+    assert.deepEqual(S.moodFilterBody('recent'), { tags: ['party'] });
+  });
+});
+
+// The two views themselves, against a stub server: what they send and
+// whether the bar's button shows.
+function makeViews() {
+  const els = new Map([['mood_filter_btn', el()], ['mood_filters', el()], ['filelist', el()],
+    ['recently-added-limit', { value: '25' }]]);
+  els.get('mood_filter_btn').classList.add('super-hide');
+  els.get('mood_filters').classList.add('super-hide');
+  const sent = [];
+  const song = { filepath: 'lib/a.mp3', metadata: { title: 'A', artist: 'X', rating: 8 } };
+  const globals = {
+    document: { getElementById: (id) => els.get(id) ?? null },
+    t: (k) => k,
+    setBrowserRootPanel: () => {},
+    getLoadingSvg: () => '',
+    MSTREAMPLAYER: { ignoreVPaths: {} },
+    MSTREAMAPI: {
+      getRated: async (body) => { sent.push({ to: 'rated', body }); return [song]; },
+      getRecentlyAdded: async (limit, ignoreVPaths, moods) => { sent.push({ to: 'recent', limit, moods }); return [song]; },
+      peer: { recentlyAdded: async (id, limit) => { sent.push({ to: 'peer', id, limit }); return [song]; } },
+    },
+    artImgAttr: () => '',
+    createMusicFileHtml: () => '<li></li>',
+    localIgnoreVPaths: () => [],
+    keepGateFor: async () => {},
+    browseKeepHold: () => {},
+    browseKeepDrawn: () => {},
+    browseKeepBack: () => false,
+    boilerplateFailure: (err) => { throw err; },
+  };
+  const fns = ['moodFilterBody', 'showMoodFilters', 'hideMoodFilters', 'songListMoods', 'getRatedSongs', 'redoRecentlyAdded'];
+  const body = `
+    'use strict';
+    let browseGeneration = 0;
+    let currentBrowsingList = [];
+    let programState = [];
+    let peerContext = null;
+    const discoveryView = { flags: {} };
+    ${sliceConst('MOODS')}
+    ${fns.map(sliceFn).join('\n\n')}
+    return { ${fns.join(', ')}, MOODS,
+      setFlag: (on) => { discoveryView.flags.moodFilters = on; }, setPeer: (p) => { peerContext = p; } };
+  `;
+  const names = Object.keys(globals);
+  const V = new Function(...names, body)(...names.map((n) => globals[n]));
+  return { V, els, sent };
+}
+
+describe('mood filters: Rated and Recently Added', () => {
+  test('without the flag: no filter sent, even a set one, and no button', async () => {
+    const { V, els, sent } = makeViews();
+    V.MOODS.filters.rated = { energy: 'relaxed' };
+    V.MOODS.filters.recent = { energy: 'relaxed' };
+    await V.getRatedSongs();
+    await V.redoRecentlyAdded();
+    assert.equal('moods' in sent[0].body, false);
+    assert.equal(sent[1].moods, null);
+    assert.ok(els.get('mood_filter_btn').classList.contains('super-hide'));
+  });
+
+  test('with it: the button shows, marked while set, and the set filter is sent', async () => {
+    const { V, els, sent } = makeViews();
+    V.setFlag(true);
+    await V.getRatedSongs();
+    assert.equal('moods' in sent[0].body, false, 'nothing set: no key');
+    const btn = els.get('mood_filter_btn');
+    assert.ok(!btn.classList.contains('super-hide'));
+    assert.ok(!btn.classList.contains('mood-on'));
+    V.MOODS.filters.rated = { voice: 'vocals', tags: ['danceable', 'acoustic'] };
+    await V.getRatedSongs({ refresh: true });
+    assert.deepEqual(sent[1].body.moods, { voice: 'vocals', tags: ['acoustic', 'danceable'] });
+    assert.ok(btn.classList.contains('mood-on'));
+    V.MOODS.filters.recent = { valence: 'sad' };
+    await V.redoRecentlyAdded();
+    assert.deepEqual(sent[2], { to: 'recent', limit: '25', moods: { valence: 'sad' } });
+  });
+
+  test("a connected server's Recently Added: asked unfiltered, no button", async () => {
+    const { V, els, sent } = makeViews();
+    V.setFlag(true);
+    V.MOODS.filters.recent = { valence: 'sad' };
+    await V.redoRecentlyAdded();
+    assert.ok(!els.get('mood_filter_btn').classList.contains('super-hide'));
+    V.setPeer({ id: 7, name: 'Peer' });
+    await V.redoRecentlyAdded();
+    assert.deepEqual(sent[1], { to: 'peer', id: 7, limit: '25' });
+    assert.ok(els.get('mood_filter_btn').classList.contains('super-hide'));
   });
 });
