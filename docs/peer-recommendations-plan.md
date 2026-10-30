@@ -60,7 +60,7 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
     - "Nothing new" plus New seeds.
     - Scan pending: Discover's scan-pending card. This is a logged deviation, kept because it names the reason.
     - Error or failed call: "Try again" alone.
-    - Switched off (a peers 403, a taste 403, or taste `network: null` on a non-random answer): one re-ping, then the entry hides and the client leaves the page (web: file explorer; phone: pop the frame; terminal: Files). There is no off card.
+    - Switched off (a peers 403, a taste 403, or taste `network: null` on an unfiltered, non-random answer): one re-ping, then the entry hides and the client leaves the page (web: file explorer; phone: pop the frame; terminal: Files). There is no off card.
 19. **[review] Copy text** = `Artist - Title`, or just `Title` when the artist is empty, on every client. This includes the webapp's existing `copyDiscoverP2p` (`vp.js:4236`), which today gives "- Title". Copy list = the current tab's leads in list order, joined by `\n` with no trailing newline. The toast is "Copied".
 20. **[flag] i18n.** The page's keys go into every locale file of each client: web 12 (EN + de es fr it ja ko nl pl pt ru zh), phone 10 ARBs, terminal 10 yml. The webapp also translates the Discover config-bar keys the page reuses (`nav.discover`, `panel.discover`, `dpage.basedOnLast`, `dpage.bar.*`, `dpage.window.*`, `dpage.verb.newSeeds`): the 11 locale files carry no `dpage.*` key today, so the bar would otherwise stay English beside translated page text.
 21. **Terminal specifics.**
@@ -196,13 +196,13 @@ networkOnRandomSeed: Joi.boolean().default(false),
   - Unknown, blocked or unheld ids are ignored; if no requested id is held, `reason: 'not-on-shelf'`.
   - The keys are validated, and ignored, when `sources` lacks `network`.
 - **Walk**: `shelfSpaces(modelId, only, stats)` (`discovery-p2p.js:191-199`) skips blocked peers and ids outside `only`, and counts `stats.held`. `searchPeers` (`:224-226`) takes `{peers}` and returns `held` internally. The per-song `p2p/similar` route keeps its wire shape (`:248-255`).
-- **S6**: `:551` becomes `want.has('network') && p2pOn && (!random || body.networkOnRandomSeed)`. The vector is the single random pick's own (`collectSeeds :232-246`), so every lead's `seedHash` is that pick. Federation stays `!random`. Discover never sends the key, so it is unchanged.
+- **S6**: `:551` becomes `want.has('network') && p2pOn && (!random || body.networkOnRandomSeed) && !moods`. The vector is the single random pick's own (`collectSeeds :232-246`), so every lead's `seedHash` is that pick. Federation stays `!random`. Discover never sends the key, so it is unchanged. A `moods` filter (generation 2, #1092) leaves `network` null on any seed, a random one included, so the page never sends `moods`: the mood filters stay on Discover.
 - **`network.reason`**: `null | 'empty-shelf' | 'not-on-shelf' | 'no-compatible' | 'nothing-new' | 'scan-pending' | 'error'`.
   - `null` when there are results or `limit.network` is 0.
   - `scan-pending` in the `analyzed.length === 0` branch (`:574-579`).
   - `error` in the walk's catch (`:426-430`).
   - Otherwise: held 0 → `not-on-shelf` when filtered, else `empty-shelf`; held but 0 searched → `no-compatible`; else `nothing-new`.
-  - With p2p off, `network` stays `null` (non-random answers). Clients read that as switched off (§2 item 18).
+  - With p2p off, `network` stays `null` (unfiltered, non-random answers). Clients read that as switched off (§2 item 18).
 - **Leads**: `stampNetworkRows` (`:467-484`) gets the label map and adds two fields **after** `sendableRow` (`:452`):
   - `peer: {endpointId, name, label}`;
   - `tile: {key, hue, letter}` from `leadTile(rec)` (§5.1).
@@ -219,7 +219,7 @@ networkOnRandomSeed: Joi.boolean().default(false),
 - **R4 Add landed**: an id **this client POSTed** is now `onShelf` (or `add.state == 'done'`), or `shelf.searchable` went 0 → > 0 while "No peers yet" shows. Then re-ask the current tab pinned to the batch, deferred while a clip is live. Adds by other clients or by rotation only update the strip.
 - **R5 `reason: 'not-on-shelf'`, or the selected peer gone from the shelf in a poll**: select All and re-ask pinned (or use the cached All).
 - **R6 Poll**: `GET /p2p/peers` on open, then every 15 s, or every 3 s while any row shows `adding` or an own POST is out. Paused while hidden or covered (one poll on return). Stopped on leave.
-- **R7 Off**: a peers 403, a taste 403, or `network: null` on a non-random 200 → one re-ping. If the gate is now false, hide the entry and leave the page.
+- **R7 Off**: a peers 403, a taste 403, or `network: null` on an unfiltered, non-random 200 → one re-ping. If the gate is now false, hide the entry and leave the page.
 - **R8**: the terminal debounces keyboard tab stepping (←/→) by 250 ms; clicks and taps ask at once. The last ask wins everywhere (seq fence).
 
 ### 3.6 Existing routes the clients use (no server change)
@@ -245,7 +245,7 @@ networkOnRandomSeed: Joi.boolean().default(false),
 | P3 | Shelf mechanics: error codes, in-flight guard, reservations and discount, evict-in-the-swap-block, orphan sweep, `onlineWindowMs()`, `onShelfChange`, `isBlocked` / `recordEviction` exports, `onStop` | `src/state/discovery-peer-dbs.js`, NEW `test/unit/discovery-peer-dbs-inflight.test.mjs` (fetchPeer dedupe and reservations across `reconcile()` / `rotatePeerDbs()` with injected timers and deps; the integration suite cannot reach `startAutoFetch` without a sidecar, `discovery-p2p-stack.js:154, 192`) | P1 | 1 d |
 | P3b | Add state machine + test switches | NEW `src/state/discovery-peer-add.js`, NEW `test/unit/discovery-peer-add.test.mjs`; `src/state/discovery-p2p.js`: `fetch()` (`:431-437`) honours `MSTREAM_TEST_P2P_FAKE_FETCH_DIR`; `resolveSidecarBinary()` (`:141-160`) returns null under `MSTREAM_TEST_P2P_NO_SIDECAR=1` | P1, P3 | 0.75 d |
 | P4 | Routes + flags | `src/api/discovery-p2p.js` (peers route, `shelfSpaces` / `searchPeers` filter), `src/api/admin.js` (`peer-dbs/add`, the fetch route through the shared path, `:735` → `onlineWindowMs()`, `:790` prefix), `src/api/discovery-taste.js` (keys, S6, reason, label, tile), `src/api/server-info.js`, `src/api/playlist.js` | P2, P3b | 1 d |
-| P5 | Fixtures, integration tests, stage | NEW `test/helpers/p2p-shelf.mjs` (from the inline copies at `test/integration/discovery-p2p.test.mjs:54-113`, `discovery-taste.test.mjs:133-182`), NEW `test/integration/discovery-peer-recs.test.mjs`, `test/integration/discovery-taste.test.mjs:874-881` (1 → 2), NEW `test/stage/peer-recs-stage.mjs` | P4 | 1.25 d |
+| P5 | Fixtures, integration tests, stage | NEW `test/helpers/p2p-shelf.mjs` (from the inline copies at `test/integration/discovery-p2p.test.mjs:54-113`, `discovery-taste.test.mjs:133-182`), NEW `test/integration/discovery-peer-recs.test.mjs`, `test/integration/discovery-taste.test.mjs:922-931` (2 → 3), NEW `test/stage/peer-recs-stage.mjs` | P4 | 1.25 d |
 | P6 | OpenAPI | `docs/openapi.yaml`, then `npm run docs:api:validate` | contract frozen (can run beside P4) | 0.5 d |
 
 Notes for builders:
@@ -469,7 +469,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 ### 4.2 Phone (`mstream_music`, Flutter)
 **Entry and gating.**
 - `Server.peerRecsAvailable` (`lib/objects/server.dart`, beside `:88-98`; json `:436-437`, `:489`).
-- Computed in both folds of `lib/singletons/server_list.dart`: `_applyServerInfo` (after `:553`) and `_applyPingPayload` (after `:612`), with `@visibleForTesting static bool hasPeerRecs(...)` = all four flags (ints for taste ≥ 2 and peers ≥ 1).
+- Computed in both folds of `lib/singletons/server_list.dart`: `_applyServerInfo` (after `:553`) and `_applyPingPayload` (after `:612`), with `@visibleForTesting static bool hasPeerRecs(...)` = all four flags (ints for taste ≥ 3 and peers ≥ 1).
 - Pinned false in `_applyFederatedDefaults` (`:2576-2591`); added to both change lists (`:419-450`).
 - The LISTEN card goes after Discover in `lib/singletons/browser_list.dart:403-405`: `DisplayItem(server, 'Peer Recommendations', 'execAction', 'peerRecs', Icon(Icons.travel_explore))`. Label in `lib/l10n/enum_labels.dart:165`.
 - Full width via NEW pure `lib/widgets/home_card_rows.dart` (`homeCardRows`, `kWideHomeCards = {'peerRecs'}`), used by `flush()` (`lib/screens/browser.dart:809-829`).
@@ -517,7 +517,7 @@ Order: PH1 ∥ PH3 → PH2 ∥ PH4 → PH5 → PH6 ∥ PH7 → PH0 → PH8 → P
 - **Not added**: `peerRecsFromDeezer` / `peerRecsFromItunes` [review: attribution verbatim].
 
 **Tests.**
-- `server_flags_taste_test`: the `hasPeerRecs` truth table (taste 1 / 2 / '2' / 2.5; peers absent / 0 / 1 / true; p2p or discovery false); both folds; the federated pin; a change redraws home.
+- `server_flags_taste_test`: the `hasPeerRecs` truth table (taste 1 / 2 / 3 / '3' / 3.5, only the int 3 on: 2 is a mood-filters-only server; peers absent / 0 / 1 / true; p2p or discovery false); both folds; the federated pin; a change redraws home.
 - `server_test`: the JSON round trip.
 - `taste_response_test`: every `reason`; `peerEndpointId` / `peerLabel` / `tile` parsed; `raw` unchanged; `TasteRequest.toJson` golden R1 body.
 - `peer_recs_test`: the §3.2 sample; bad ids dropped; every add code; signature stability.

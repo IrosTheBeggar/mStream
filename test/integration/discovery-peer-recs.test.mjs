@@ -872,7 +872,7 @@ describe('peer recs: taste generation 3', () => {
     assert.deepEqual(bad, []);
   });
 
-  test('22. Discover\'s body (no generation-2 key) answers as before', async () => {
+  test('22. Discover\'s body (no generation-3 key) answers as before', async () => {
     const GEN1 = ['dropped', 'excluded', 'fallback', 'library', 'model', 'network', 'notAnalyzed', 'peers',
       'seedSource', 'seeds', 'widenedFrom', 'window'];
     // Pinned in one order, so the centroid is the same bits every call.
