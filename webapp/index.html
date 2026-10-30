@@ -613,6 +613,13 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none"/><path d="M15 9l-2 5-4 1 2-5z" fill="#DDD"/></svg>
       <span data-i18n="nav.discover">Discover</span>
     </div>
+    <!-- Peer Recommendations — the p2p network's leads (m.js peerRecsPanel).
+         Hidden until the ping advertises discoveryP2p, discoveryTaste >= 3
+         and discoveryP2pPeers >= 1 (DISCOVERYPAGE.peerRecsAvailable). -->
+    <div id="nav-peer-recs" class="local-only side-nav-item my-waves super-hide" onclick="changeView(peerRecsPanel, this);" data-panel="peerRecs">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M3 10h14"/><path d="M10 3c-2.2 2-3.2 4.4-3.2 7s1 5 3.2 7"/><path d="M10 3c2.2 2 3.2 4.4 3.2 7s-1 5-3.2 7"/><circle cx="17.6" cy="17.6" r="2.6"/><path d="M19.5 19.5 22 22"/></svg>
+      <span data-i18n="nav.peerRecs">Peer Recommendations</span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(getRatedSongs, this)" data-panel="allRated">
       <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 62 62" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
       <span data-i18n="nav.rated">Rated</span>
@@ -878,6 +885,10 @@
         <div id="filelist">
           <h4 data-i18n="label.welcomeToMStream">Welcome To mStream!</h4>
         </div>
+        <!-- Peer Recommendations' preview band (m.js peerRecsBandDraw): the
+             clip playing, at the foot of the column, out of the scroller;
+             hidden on every other panel and while nothing previews. -->
+        <div id="dpage-band" class="super-hide"></div>
         <div style="visibility:hidden; position: absolute;" class="pop-f" id="pop-f" role="tooltip">
           <div class="pop-f pop-playlist">Add To Playlist:</div>
         </div>
@@ -1147,7 +1158,9 @@
                Listen, Keep a copy (or, when the copy is off and another
                plug-in can fetch the song, Get it in its place), then Find
                elsewhere. A network row's: its previews, Get it (the admin's
-               invite row first), then Find elsewhere. Keyboard: focus
+               invite row first), then Find elsewhere. A Peer
+               Recommendations lead's: its tile and its peer line, then
+               Preview, Get it…, Find elsewhere and Copy. Keyboard: focus
                starts on Close and stays in the window (vp.js
                onDiscoverModalKey); on close it goes back to the opener. -->
           <div v-if="discover.modal.open && discover.modal.track" class="dmodal-shadow" v-on:click.self="closeDiscoverModal">
@@ -1155,10 +1168,15 @@
               <button type="button" class="dmodal-close" ref="dmodalClose" v-on:click="closeDiscoverModal" :aria-label="tt('discover.modal.close')" :title="tt('discover.modal.close')"><dm-icon name="close" :size="16"></dm-icon></button>
               <div class="dmodal-head">
                 <!-- The art: the cover; an artist's window a person in a
-                     circle; a folder's the file explorer's own folder -->
-                <div class="dmodal-art" aria-hidden="true" v-bind:class="{ 'dmodal-art-real': dmArt(), 'dmodal-art-artist': dmArtistFocus(), 'dmodal-art-folder': dmFolderFocus() }" :style="dmArt() ? { backgroundImage: 'url(' + dmArt() + ')' } : null">
+                     circle; a folder's the file explorer's own folder.
+                     From Peer Recommendations: the art a preview earned
+                     (an <img>, no referrer), else the lead's tile — its
+                     letter on its hue (dmTile) -->
+                <div class="dmodal-art" aria-hidden="true" v-bind:class="{ 'dmodal-art-real': dmArt(), 'dmodal-art-artist': dmArtistFocus(), 'dmodal-art-folder': dmFolderFocus(), 'dmodal-tile': dmTile() }" :style="dmArtStyle()">
                   <dm-icon v-if="dmArtistFocus()" name="person" :size="28"></dm-icon>
                   <svg v-else-if="dmFolderFocus()" xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 48 48"><path fill="#FFA000" d="M38 12H22l-4-4H8c-2.2 0-4 1.8-4 4v24c0 2.2 1.8 4 4 4h31c1.7 0 3-1.3 3-3V16c0-2.2-1.8-4-4-4z"/><path fill="#FFCA28" d="M42.2 18H15.3c-1.9 0-3.6 1.4-3.9 3.3L8 40h31.7c1.9 0 3.6-1.4 3.9-3.3l2.5-14c.5-2.4-1.4-4.7-3.9-4.7z"/></svg>
+                  <img v-else-if="dmPeerRecs() && dmArt()" class="dmodal-art-img" :src="dmArt()" alt="" referrerpolicy="no-referrer">
+                  <template v-else-if="dmTile()">{{ dmTile().letter }}</template>
                   <svg v-else-if="!dmArt()" xmlns="http://www.w3.org/2000/svg" width="28" height="28" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>
                 </div>
                 <div class="dmodal-head-text">
@@ -1357,124 +1375,166 @@
                 </section>
               </template>
 
-              <!-- 30-second previews: one tile per provider, the whole tile
-                   the play / stop button. A provider is asked only when its
-                   tile is pressed. Never for a connected server's row: the
-                   whole song already plays (Listen). -->
-              <section v-if="discover.modal.source !== 'federation' && discoverPreviewPlugins().length" class="dmodal-section">
-                <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.preview') }}</h3></div>
-                <div class="dm-tiles">
-                  <div v-for="pp in discoverPreviewPlugins()" :key="pp.name" class="dm-opt dm-opt-btn" role="button" tabindex="0"
-                       v-bind:class="{ 'dm-opt-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error', 'dm-opt-playing': discover.modal.playing === pp.name }"
-                       :title="tt(discover.modal.playing === pp.name ? 'discover.modal.stop' : 'discover.modal.play')" :aria-pressed="discover.modal.playing === pp.name ? 'true' : 'false'"
-                       v-on:click="toggleDiscoverPreview(pp)" v-on:keydown.enter.prevent="toggleDiscoverPreview(pp)" v-on:keydown.space.prevent="toggleDiscoverPreview(pp)">
-                    <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-on': discover.modal.playing === pp.name }">
-                      <svg v-if="discover.modal.playing === pp.name" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
-                      <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              <!-- Peer Recommendations' window (plan §2 item 15): Preview,
+                   Get it…, then Find elsewhere and its own Copy row — what
+                   the board draws, nothing more (no tiles, no destination
+                   bar, no lookup card, no invite row, no hints).
+                   PREVIEW: one control bound to the page's clip (vp.js
+                   dmClip*, discover.clip) — the page's own play icon, so a
+                   clip started here plays on in the page's band — its
+                   position, then the provider's attribution verbatim once a
+                   resolve answered (a link only to an https page), or "No
+                   preview". GET IT…: one chip per acquire plug-in, titled by
+                   the plug-in; a press starts the server's best match, and
+                   the chip shows its job (dmGetItChips). -->
+              <template v-if="dmPeerRecs()">
+                <section v-if="dmClipProvider()" class="dmodal-section">
+                  <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('peerRecs.preview') }}</h3></div>
+                  <div class="dm-clip">
+                    <button type="button" class="dm-clip-btn" v-bind:class="{ 'is-busy': dmClipBusy(), 'is-none': dmClipNone() === 'none' }" :aria-pressed="dmClipOn() ? 'true' : 'false'" :aria-disabled="dmClipNone() === 'none' ? 'true' : null" :aria-label="tt(dmClipOn() ? 'peerRecs.a11y.pauseSong' : 'peerRecs.a11y.previewSong', { title: dmHeadTitle() })" v-on:click="dmClipToggle"><dm-icon :name="dmClipOn() ? 'pause' : 'play'" :size="16"></dm-icon></button>
+                    <div class="dm-clip-body">
+                      <div class="dm-clip-time"><span>{{ dmClipClock()[0] }}</span><div class="dm-clip-bar" role="progressbar" :aria-label="tt('peerRecs.a11y.position')" aria-valuemin="0" :aria-valuemax="Math.round(dmClipOf().seconds)" :aria-valuenow="Math.round(dmClipOf().at)"><i :style="{ width: dmClipPct() + '%' }"></i></div><span>{{ dmClipClock()[1] }}</span></div>
+                      <a v-if="dmClipPreview() && dmClipPreview().link" class="dm-clip-attrib" :href="dmClipPreview().link" target="_blank" rel="noopener noreferrer">{{ dmClipPreview().text }}</a>
+                      <span v-else-if="dmClipPreview()" class="dm-clip-attrib">{{ dmClipPreview().text }}</span>
+                      <span v-else-if="dmClipNone()" class="dm-clip-attrib dm-clip-none">{{ tt('peerRecs.noPreview') }}</span>
+                    </div>
+                  </div>
+                </section>
+                <section v-if="dmGetItChips().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('peerRecs.getIt') }}</h3></div>
+                  <div class="dm-chips">
+                    <button v-for="c in dmGetItChips()" :key="c.plugin.name" type="button" class="dm-getit" v-bind:class="'dm-getit-' + c.state" :aria-disabled="c.press ? null : 'true'" :aria-label="c.aria" v-on:click="dmGetIt(c)"><dm-icon :name="c.icon" :size="14"></dm-icon>{{ c.plugin.title }}</button>
+                  </div>
+                </section>
+              </template>
+
+              <template v-else>
+                <!-- 30-second previews: one tile per provider, the whole tile
+                     the play / stop button. A provider is asked only when its
+                     tile is pressed. Never for a connected server's row: the
+                     whole song already plays (Listen). -->
+                <section v-if="discover.modal.source !== 'federation' && discoverPreviewPlugins().length" class="dmodal-section">
+                  <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.preview') }}</h3></div>
+                  <div class="dm-tiles">
+                    <div v-for="pp in discoverPreviewPlugins()" :key="pp.name" class="dm-opt dm-opt-btn" role="button" tabindex="0"
+                         v-bind:class="{ 'dm-opt-muted': discoverPreviewState(pp.name).status === 'none' || discoverPreviewState(pp.name).status === 'error', 'dm-opt-playing': discover.modal.playing === pp.name }"
+                         :title="tt(discover.modal.playing === pp.name ? 'discover.modal.stop' : 'discover.modal.play')" :aria-pressed="discover.modal.playing === pp.name ? 'true' : 'false'"
+                         v-on:click="toggleDiscoverPreview(pp)" v-on:keydown.enter.prevent="toggleDiscoverPreview(pp)" v-on:keydown.space.prevent="toggleDiscoverPreview(pp)">
+                      <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-on': discover.modal.playing === pp.name }">
+                        <svg v-if="discover.modal.playing === pp.name" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                        <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+                      </div>
+                      <div class="dm-opt-body">
+                        <div class="dm-opt-title">{{ pp.title }}<span v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.match" class="dm-tag dm-tag-ok">match {{ Math.round(discoverPreviewState(pp.name).preview.match * 100) }}%</span></div>
+                        <div class="dm-opt-sub">
+                          <template v-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.modal.lookingUp') }}</template>
+                          <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ tt('discover.modal.previewNone') }}</template>
+                          <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ tt('discover.modal.previewFailed') }}</template>
+                          <template v-else-if="discoverPreviewState(pp.name).preview">{{ discoverPreviewState(pp.name).preview.title }}<template v-if="discoverPreviewState(pp.name).preview.artist"> &middot; {{ discoverPreviewState(pp.name).preview.artist }}</template><template v-if="discoverPreviewState(pp.name).preview.album"> &middot; {{ discoverPreviewState(pp.name).preview.album }}</template></template>
+                          <template v-else>{{ tt('discover.modal.previewIdle') }}</template>
+                        </div>
+                        <div v-if="discoverPreviewState(pp.name).preview" class="dm-attrib">{{ discoverPreviewState(pp.name).preview.attribution }}</div>
+                      </div>
+                      <div v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.link" class="dm-opt-act">
+                        <a class="dm-btn dm-btn-ghost dm-btn-icon" :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener" :title="tt('discover.modal.open')" :aria-label="tt('discover.modal.open')" v-on:click.stop v-on:keydown.enter.stop v-on:keydown.space.stop>
+                          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
+                        </a>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <!-- Get it: where a file would land, the admin's invite to
+                     the peer that has the song, then one row per acquire
+                     plug-in (a row IS its job). Absent when none of those
+                     apply: no acquire plug-in listed or this account may not
+                     start jobs, and no invite row. A connected server's
+                     window offers it only in Keep a copy's place
+                     (dmGetItRows): with the copy on, the exact file is one
+                     press away — a download it already has a job for still
+                     shows, under Keep's bar (dmGetItBar). Its own bar draws
+                     a download (dm-dest download): from no server, so the
+                     server's name and folder variables drop out. -->
+                <section v-if="dmGetItRows().length || dmFederateVisible()" class="dmodal-section">
+                  <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.getIt') }}</h3><span v-if="dmGetItLive()" class="dmodal-hint">{{ tt('discover.modal.getItLiveHint') }}</span></div>
+                  <dm-dest v-if="dmGetItBar()" scope="song" download></dm-dest>
+                  <!-- Federate: the admin's invite row (network rows only) -->
+                  <div v-if="dmFederateVisible()" class="dm-opt" v-bind:class="{ 'dm-opt-wrap': discover.modal.federate.form && discover.modal.federate.state !== 'sent' }">
+                    <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-ok': discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent', 'dm-opt-ic-err': discover.modal.federate.state === 'failed' }">
+                      <svg v-if="discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
+                      <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
                     </div>
                     <div class="dm-opt-body">
-                      <div class="dm-opt-title">{{ pp.title }}<span v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.match" class="dm-tag dm-tag-ok">match {{ Math.round(discoverPreviewState(pp.name).preview.match * 100) }}%</span></div>
-                      <div class="dm-opt-sub">
-                        <template v-if="discoverPreviewState(pp.name).status === 'loading'">{{ tt('discover.modal.lookingUp') }}</template>
-                        <template v-else-if="discoverPreviewState(pp.name).status === 'none'">{{ tt('discover.modal.previewNone') }}</template>
-                        <template v-else-if="discoverPreviewState(pp.name).status === 'error'">{{ tt('discover.modal.previewFailed') }}</template>
-                        <template v-else-if="discoverPreviewState(pp.name).preview">{{ discoverPreviewState(pp.name).preview.title }}<template v-if="discoverPreviewState(pp.name).preview.artist"> &middot; {{ discoverPreviewState(pp.name).preview.artist }}</template><template v-if="discoverPreviewState(pp.name).preview.album"> &middot; {{ discoverPreviewState(pp.name).preview.album }}</template></template>
-                        <template v-else>{{ tt('discover.modal.previewIdle') }}</template>
-                      </div>
-                      <div v-if="discoverPreviewState(pp.name).preview" class="dm-attrib">{{ discoverPreviewState(pp.name).preview.attribution }}</div>
+                      <template v-if="discover.modal.federate.state === 'paired'">
+                        <div class="dm-opt-title">{{ tt('discover.modal.paired', { name: discover.modal.federate.peerName }) }}</div>
+                        <div class="dm-opt-sub">{{ tt('discover.modal.pairedSub') }}</div>
+                      </template>
+                      <template v-else-if="discover.modal.federate.state === 'sent'">
+                        <div class="dm-opt-title">{{ tt('discover.modal.inviteSent', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
+                        <div class="dm-opt-sub">{{ tt('discover.modal.inviteSentSub') }}</div>
+                      </template>
+                      <template v-else>
+                        <div class="dm-opt-title">{{ tt('discover.modal.inviteTitle', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
+                        <div class="dm-opt-sub">
+                          <template v-if="discover.modal.federate.state === 'checking'">{{ tt('discover.modal.checking') }}</template>
+                          <template v-else-if="discover.modal.federate.state === 'failed'">{{ tt('discover.modal.inviteFailed') }}<template v-if="discover.modal.federate.error"> &middot; {{ discover.modal.federate.error }}</template></template>
+                          <template v-else>{{ tt('discover.modal.inviteSub') }}</template>
+                        </div>
+                      </template>
                     </div>
-                    <div v-if="discoverPreviewState(pp.name).preview && discoverPreviewState(pp.name).preview.link" class="dm-opt-act">
-                      <a class="dm-btn dm-btn-ghost dm-btn-icon" :href="discoverPreviewState(pp.name).preview.link" target="_blank" rel="noopener" :title="tt('discover.modal.open')" :aria-label="tt('discover.modal.open')" v-on:click.stop v-on:keydown.enter.stop v-on:keydown.space.stop>
-                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zM5 5c-1.11 0-2 .9-2 2v12c0 1.1.89 2 2 2h12c1.1 0 2-.9 2-2v-7h-2v7H5V7h7V5H5z"/></svg>
-                      </a>
+                    <div v-if="discover.modal.federate.state === 'idle' && !discover.modal.federate.form" class="dm-opt-act">
+                      <button type="button" class="dm-btn dm-btn-primary" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.invite') }}</button>
+                    </div>
+                    <div v-else-if="discover.modal.federate.state === 'failed' && !discover.modal.federate.form" class="dm-opt-act">
+                      <button type="button" class="dm-btn" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.retry') }}</button>
+                    </div>
+                    <div v-if="discover.modal.federate.form && discover.modal.federate.state !== 'sent' && discover.modal.federate.state !== 'paired'" class="dm-form">
+                      <input class="dm-input browser-default" type="text" maxlength="500" v-model="discover.modal.federate.message" :placeholder="tt('discover.modal.inviteMessage')" :aria-label="tt('discover.modal.inviteMessage')">
+                      <button type="button" class="dm-btn dm-btn-primary" v-bind:class="{ 'is-busy': discover.modal.federate.state === 'sending' }" :aria-disabled="discover.modal.federate.state === 'sending' ? 'true' : null" v-on:click="dmSendInvite">{{ tt('discover.modal.sendRequest') }}</button>
+                      <button type="button" class="dm-btn dm-btn-ghost" v-on:click="dmInviteForm(false)">{{ tt('discover.modal.cancel') }}</button>
                     </div>
                   </div>
-                </div>
-              </section>
-
-              <!-- Get it: where a file would land, the admin's invite to
-                   the peer that has the song, then one row per acquire
-                   plug-in (a row IS its job). Absent when none of those
-                   apply: no acquire plug-in listed or this account may not
-                   start jobs, and no invite row. A connected server's
-                   window offers it only in Keep a copy's place
-                   (dmGetItRows): with the copy on, the exact file is one
-                   press away — a download it already has a job for still
-                   shows, under Keep's bar (dmGetItBar). Its own bar draws
-                   a download (dm-dest download): from no server, so the
-                   server's name and folder variables drop out. -->
-              <section v-if="dmGetItRows().length || dmFederateVisible()" class="dmodal-section">
-                <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.getIt') }}</h3><span v-if="dmGetItLive()" class="dmodal-hint">{{ tt('discover.modal.getItLiveHint') }}</span></div>
-                <dm-dest v-if="dmGetItBar()" scope="song" download></dm-dest>
-                <!-- Federate: the admin's invite row (network rows only) -->
-                <div v-if="dmFederateVisible()" class="dm-opt" v-bind:class="{ 'dm-opt-wrap': discover.modal.federate.form && discover.modal.federate.state !== 'sent' }">
-                  <div class="dm-opt-ic" v-bind:class="{ 'dm-opt-ic-ok': discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent', 'dm-opt-ic-err': discover.modal.federate.state === 'failed' }">
-                    <svg v-if="discover.modal.federate.state === 'paired' || discover.modal.federate.state === 'sent'" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M9 16.17 4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></svg>
-                    <svg v-else xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24"><path fill="currentColor" d="M20 13H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1v-6c0-.55-.45-1-1-1zM7 19c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zM20 3H4c-.55 0-1 .45-1 1v6c0 .55.45 1 1 1h16c.55 0 1-.45 1-1V4c0-.55-.45-1-1-1zM7 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"/></svg>
-                  </div>
-                  <div class="dm-opt-body">
-                    <template v-if="discover.modal.federate.state === 'paired'">
-                      <div class="dm-opt-title">{{ tt('discover.modal.paired', { name: discover.modal.federate.peerName }) }}</div>
-                      <div class="dm-opt-sub">{{ tt('discover.modal.pairedSub') }}</div>
-                    </template>
-                    <template v-else-if="discover.modal.federate.state === 'sent'">
-                      <div class="dm-opt-title">{{ tt('discover.modal.inviteSent', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
-                      <div class="dm-opt-sub">{{ tt('discover.modal.inviteSentSub') }}</div>
-                    </template>
-                    <template v-else>
-                      <div class="dm-opt-title">{{ tt('discover.modal.inviteTitle', { peer: discover.modal.federate.peerName || tt('discover.modal.anonPeer') }) }}</div>
-                      <div class="dm-opt-sub">
-                        <template v-if="discover.modal.federate.state === 'checking'">{{ tt('discover.modal.checking') }}</template>
-                        <template v-else-if="discover.modal.federate.state === 'failed'">{{ tt('discover.modal.inviteFailed') }}<template v-if="discover.modal.federate.error"> &middot; {{ discover.modal.federate.error }}</template></template>
-                        <template v-else>{{ tt('discover.modal.inviteSub') }}</template>
-                      </div>
-                    </template>
-                  </div>
-                  <div v-if="discover.modal.federate.state === 'idle' && !discover.modal.federate.form" class="dm-opt-act">
-                    <button type="button" class="dm-btn dm-btn-primary" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.invite') }}</button>
-                  </div>
-                  <div v-else-if="discover.modal.federate.state === 'failed' && !discover.modal.federate.form" class="dm-opt-act">
-                    <button type="button" class="dm-btn" v-on:click="dmInviteForm(true)">{{ tt('discover.modal.retry') }}</button>
-                  </div>
-                  <div v-if="discover.modal.federate.form && discover.modal.federate.state !== 'sent' && discover.modal.federate.state !== 'paired'" class="dm-form">
-                    <input class="dm-input browser-default" type="text" maxlength="500" v-model="discover.modal.federate.message" :placeholder="tt('discover.modal.inviteMessage')" :aria-label="tt('discover.modal.inviteMessage')">
-                    <button type="button" class="dm-btn dm-btn-primary" v-bind:class="{ 'is-busy': discover.modal.federate.state === 'sending' }" :aria-disabled="discover.modal.federate.state === 'sending' ? 'true' : null" v-on:click="dmSendInvite">{{ tt('discover.modal.sendRequest') }}</button>
-                    <button type="button" class="dm-btn dm-btn-ghost" v-on:click="dmInviteForm(false)">{{ tt('discover.modal.cancel') }}</button>
-                  </div>
-                </div>
-                <!-- A plug-in with a lookup shows what it would fetch first
-                     (the card) until a job exists; then the row is its job. -->
-                <template v-for="gr in dmGetItRows()">
-                  <dm-lookup-row v-if="dmLookupRow(gr)" :key="'lookup-' + gr.plugin.name" :plugin="gr.plugin" :lookup="dmLookupState(gr.plugin.name)" :query="dmSearchWords()"
-                                 :busy="discover.modal.jobBusy[gr.plugin.name] === true" :error="discover.modal.jobErrors[gr.plugin.name] || ''"
-                                 v-on:lookup="dmLookup(gr.plugin)" v-on:choose="dmLookupChoose(gr.plugin, $event)" v-on:download="dmJobStart(gr.plugin, $event ? { url: $event } : null)"
-                                 v-on:play="playDiscoverFile($event); closeDiscoverModal()" v-on:queue="queueDiscoverFile($event)"></dm-lookup-row>
-                  <dm-job-row v-else :key="'job-' + gr.plugin.name" :row="gr.row"
-                              :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
-                              :start-label="tt('discover.modal.download')"
-                              :busy="discover.modal.jobBusy[gr.plugin.name] === true"
-                              v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
-                </template>
-              </section>
+                  <!-- A plug-in with a lookup shows what it would fetch first
+                       (the card) until a job exists; then the row is its job. -->
+                  <template v-for="gr in dmGetItRows()">
+                    <dm-lookup-row v-if="dmLookupRow(gr)" :key="'lookup-' + gr.plugin.name" :plugin="gr.plugin" :lookup="dmLookupState(gr.plugin.name)" :query="dmSearchWords()"
+                                   :busy="discover.modal.jobBusy[gr.plugin.name] === true" :error="discover.modal.jobErrors[gr.plugin.name] || ''"
+                                   v-on:lookup="dmLookup(gr.plugin)" v-on:choose="dmLookupChoose(gr.plugin, $event)" v-on:download="dmJobStart(gr.plugin, $event ? { url: $event } : null)"
+                                   v-on:play="playDiscoverFile($event); closeDiscoverModal()" v-on:queue="queueDiscoverFile($event)"></dm-lookup-row>
+                    <dm-job-row v-else :key="'job-' + gr.plugin.name" :row="gr.row"
+                                :title="gr.plugin.title" :idle-sub="tt('discover.modal.getItSub', { query: dmSearchWords() })" :hint="gr.plugin.description"
+                                :start-label="tt('discover.modal.download')"
+                                :busy="discover.modal.jobBusy[gr.plugin.name] === true"
+                                v-on:start="dmJobStart(gr.plugin)" v-on:cancel="dmJobCancel(gr.plugin)" v-on:play="dmJobPlay(gr.plugin)" v-on:queue="dmJobQueue(gr.plugin)"></dm-job-row>
+                  </template>
+                </section>
+              </template>
 
               <!-- Find elsewhere, last in every window: the links plug-in's
                    pages — a canonical one first, then "Search" and the
                    catalogues — and the title to paste anywhere else. In
                    album focus they are the album's (dmLinksRecommendation);
                    a server whose plug-in only searches songs has none, and
-                   the section is absent there (dmFindVisible). -->
+                   the section is absent there (dmFindVisible). From Peer
+                   Recommendations: the links alone, once they answered — no
+                   hint, no "Search" — and Copy its own row after it. -->
               <section v-if="dmFindVisible()" class="dmodal-section">
-                <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.findElsewhere') }}</h3><span v-if="!discover.modal.loading && discover.modal.links.length" class="dmodal-hint">{{ tt('discover.modal.findHint') }}</span></div>
+                <div class="dmodal-section-h"><h3 class="dmodal-label">{{ tt('discover.modal.findElsewhere') }}</h3><span v-if="!dmPeerRecs() && !discover.modal.loading && discover.modal.links.length" class="dmodal-hint">{{ tt('discover.modal.findHint') }}</span></div>
                 <div class="dm-chips">
                   <span v-if="discover.modal.loading" class="dmodal-note">{{ tt('discover.modal.lookingUp') }}</span>
                   <span v-else-if="discover.modal.error" class="dmodal-note dmodal-note-plain">{{ tt('discover.modal.linksFailed') }}</span>
                   <template v-else>
                     <a v-for="l in dmLinks('canonical')" :key="l.id" class="dm-chip dm-chip-canon" :href="l.url" target="_blank" rel="noopener">{{ l.label }}</a>
-                    <span v-if="dmLinks('search').length" class="dm-chips-lead" aria-hidden="true">{{ tt('discover.modal.search') }}</span>
+                    <span v-if="!dmPeerRecs() && dmLinks('search').length" class="dm-chips-lead" aria-hidden="true">{{ tt('discover.modal.search') }}</span>
                     <a v-for="l in dmLinks('search')" :key="l.id" class="dm-chip" :href="l.url" target="_blank" rel="noopener" :aria-label="l.label">{{ dmChipLabel(l) }}</a>
                   </template>
-                  <button type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"></dm-icon>{{ tt('discover.modal.copyTitle') }}</button>
+                  <button v-if="!dmPeerRecs()" type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"></dm-icon>{{ tt('discover.modal.copyTitle') }}</button>
                 </div>
+              </section>
+              <!-- Peer Recommendations' Copy: "Artist - Title", whatever
+                   plug-ins are on -->
+              <section v-if="dmPeerRecs()" class="dmodal-section dm-copy-row">
+                <button type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"></dm-icon>{{ tt('peerRecs.copy') }}</button>
               </section>
             </div>
           </div>
@@ -1511,6 +1571,9 @@
   <!-- The Discover page's pure half (window.DISCOVERYPAGE) — m.js reads it
        when the page opens (no load-time dependency). -->
   <script src="alpha/discovery-page.js"></script>
+  <!-- Peer Recommendations' pure half (window.PEERRECS) — vp.js (the clip,
+       the window) and m.js (the page) read it. -->
+  <script src="alpha/peer-recs.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

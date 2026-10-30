@@ -1,13 +1,15 @@
 /**
  * webapp/alpha/discovery-page.js — the Discover page's pure half, on node:
- * the request bodies of both pages (play: library + the peers call;
- * explore: network — flags drop sources, pins lose their leading '/', the
- * visit's dropped seeds travel as exclude, caps hold), the stored window
+ * the request bodies of both pages (play: library + the peers call; Peer
+ * Recommendations: network, its re-ask pinned to the batch on screen —
+ * flags drop sources, pins lose their leading '/', the visit's dropped
+ * seeds travel as exclude, caps hold), the stored window
  * and the visit's drop list, the seed chips, the library's album cards and
  * song rows, the connected servers' song rows and album cards, the labels
  * and the "Show more" column slicing, the network rows (raw rows kept for
- * the recommendation window, jobs badged through an injected
- * DISCOVERJOBS), and every page and source state. The route is stateless
+ * the recommendation window, the peer and the generated tile as the server
+ * stamped them, jobs badged through an injected DISCOVERJOBS), and every
+ * page and source state (the network's by its `reason`). The route is stateless
  * (2026-10-14): nothing here keeps or reuses an answer, and no body carries
  * remember / filter / staleDays.
  *
@@ -29,6 +31,7 @@ import { albumCredit as serverAlbumCredit, normalizePeerPath as serverNormalizeP
 import { buildLinks as serverBuildLinks } from '../../src/discovery-plugins/plugins/links.js';
 import { albumListing as serverAlbumListing } from '../../src/discovery-plugins/plugins/federation-copy.js';
 import { nameKey as serverNameKey } from '../../src/db/name-key.js';
+import { peerLabels, leadTile } from '../../src/state/discovery-peer-view.js';
 
 const require = createRequire(import.meta.url);
 const D = require('../../webapp/alpha/discovery-page.js');
@@ -40,6 +43,9 @@ const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
 const ago = (days) => new Date(NOW - days * DAY).toISOString();
 const FLAGS = { discovery: true, discoveryTaste: 1, discoveryP2p: true, federationDiscovery: true };
+// Peer Recommendations' gate: taste generation 3 and the peers route.
+const PFLAGS = { ...FLAGS, discoveryTaste: 3, discoveryP2pPeers: 1 };
+const PEER_PAGE = { page: 'peerRecs' };
 
 // ── fixtures in the route's own shapes ──────────────────────────────────
 
@@ -119,7 +125,7 @@ const peersResponse = () => ({ ...historyResponse(), library: null, network: nul
 function labelsIn(value, out = [], seen = new Set()) {
   if (value === null || typeof value !== 'object' || seen.has(value)) { return out; }
   seen.add(value);
-  if (typeof value.key === 'string' && /^(dpage|discover)\./.test(value.key) && (value.params === undefined || typeof value.params === 'object')) {
+  if (typeof value.key === 'string' && /^(dpage|discover|peerRecs)\./.test(value.key) && (value.params === undefined || typeof value.params === 'object')) {
     out.push(value);
   }
   for (const [k, v] of Object.entries(value)) {
@@ -152,14 +158,22 @@ describe('the contract constants agree with the server', () => {
   });
 
   test('the pages and the page sizes', () => {
-    assert.deepEqual([...D.PAGES], ['play', 'explore']);
+    assert.deepEqual([...D.PAGES], ['play', 'peerRecs'], 'the hidden explore page is Peer Recommendations');
     assert.equal(D.PAGE_SIZE, 16);
     assert.equal(D.ALBUM_STRIP_MAX, 12);
     assert.ok(D.ALBUM_STRIP_MAX <= tasteQ.LIMIT_CAPS.albums, 'the strip can be filled in one ask');
   });
 
+  test('Peer Recommendations\' limits: a whole seed batch and 32 leads, inside the route\'s caps', () => {
+    assert.deepEqual({ ...D.PEER_LIMITS }, { seeds: 12, network: 32 });
+    assert.ok(Object.isFrozen(D.PEER_LIMITS));
+    assert.equal(D.PEER_LIMITS.seeds, tasteQ.SEED_CAP, 'a whole batch: its seeds pin a tab\'s re-ask');
+    assert.ok(D.PEER_LIMITS.network <= tasteQ.LIMIT_CAPS.network);
+    assert.equal(D.PEER_LIMITS.network, 2 * D.PAGE_SIZE, 'two blocks of 16, drawn in full');
+  });
+
   test('what the play-now page dropped is gone from the module', () => {
-    for (const gone of ['seedsLine', 'windowLabel', 'filterOptions', 'agoLabel', 'playedWhen', 'pickSource']) {
+    for (const gone of ['seedsLine', 'windowLabel', 'filterOptions', 'agoLabel', 'playedWhen', 'pickSource', 'pluginChips']) {
       assert.equal(D[gone], undefined, gone);
     }
   });
@@ -198,7 +212,14 @@ describe('buildRequests: the mood filter', () => {
     assert.equal(D.moodsAvailable({ ...MOODY, discoveryTaste: '2' }), true, 'a string generation still counts');
   });
 
-  test('never on the explore page, and nothing for an empty or unknown filter', () => {
+  test('never on the network pages (Peer Recommendations, the legacy explore), and nothing for an empty or unknown filter', () => {
+    // Peer Recommendations needs generation 3, a server that takes moods too
+    const flags = { ...PFLAGS, moodFilters: true };
+    assert.equal(D.moodsAvailable(flags), true);
+    const net = D.buildRequests({ flags, moods, ...PEER_PAGE });
+    assert.ok(net.main, 'the Peer Recommendations page asks');
+    assert.equal('moods' in net.main, false, 'never on the Peer Recommendations page');
+    assert.equal(net.peers, null);
     assert.equal('moods' in D.buildRequests({ flags: MOODY, moods, page: 'explore' }).main, false);
     for (const m of [null, {}, { tags: [] }, { energy: 'sleepy', tags: ['sad'] }, 'relaxed']) {
       assert.equal('moods' in D.buildRequests({ flags: MOODY, moods: m }).main, false, JSON.stringify(m));
@@ -212,7 +233,7 @@ describe('buildRequests', () => {
 
   test('the play page: library alone, then peers — same seeds-shaping keys', () => {
     const { main, peers } = D.buildRequests({ window: 30, pinPath: '/Music/ALM/Manor.mp3', flags: FLAGS, ignoreVPaths: ['Podcasts'] });
-    assert.deepEqual(main.sources, ['library'], 'the network leads are the explore page\'s');
+    assert.deepEqual(main.sources, ['library'], 'the network leads are Peer Recommendations\'');
     assert.deepEqual(peers.sources, ['peers']);
     assert.deepEqual(main.pin, ['Music/ALM/Manor.mp3']);
     assert.deepEqual(strip(main), strip(peers));
@@ -221,13 +242,61 @@ describe('buildRequests', () => {
     assert.deepEqual(D.buildRequests({ flags: FLAGS, page: 'nope' }), D.buildRequests({ flags: FLAGS }));
   });
 
-  test('the explore page: network alone, never a peers call — and the same seeds-shaping keys', () => {
-    const play = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'] });
-    const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore' });
-    assert.deepEqual(explore.main.sources, ['network']);
-    assert.equal(explore.peers, null);
-    assert.deepEqual(strip(explore.main), strip(play.main), 'one window, pins and drop list across both pages');
-    assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null }, 'nothing to explore without p2p');
+  test('Peer Recommendations: the R1 body — the network alone, never a peers call, the play page\'s seeds-shaping keys', () => {
+    const opts = { window: 90, pinPath: '/Music/now.flac', exclude: ['h1'], passed: ['r1'], ignoreVPaths: ['Podcasts'] };
+    const { main, peers } = D.buildRequests({ ...opts, flags: PFLAGS, ...PEER_PAGE, newArtistsOnly: true, limits: { tracks: 48, network: 12, peers: 25 } });
+    assert.deepEqual(main, {
+      sources: ['network'], window: 90, pin: ['Music/now.flac'], exclude: ['h1', 'r1'], newArtistsOnly: false, ignoreVPaths: ['Podcasts'],
+      limit: { seeds: 12, network: 32 }, networkOnRandomSeed: true,
+    }, 'its own limits (opts.limits is the play page\'s), leads off a random pick too, no networkPeers for All');
+    assert.equal(peers, null);
+    const play = D.buildRequests({ ...opts, flags: PFLAGS }).main;
+    for (const k of ['window', 'pin', 'exclude', 'newArtistsOnly', 'ignoreVPaths']) { assert.deepEqual(main[k], play[k], k); }
+    assert.deepEqual(D.buildRequests({ flags: PFLAGS, ...PEER_PAGE }).main,
+      { sources: ['network'], window: 30, newArtistsOnly: false, limit: { seeds: 12, network: 32 }, networkOnRandomSeed: true }, 'a bare open');
+    assert.notEqual(D.buildRequests({ flags: PFLAGS, ...PEER_PAGE }).main.limit, D.PEER_LIMITS, 'a copy, never the frozen constant');
+  });
+
+  test('networkPeers: lower-cased, 64 hex only, de-duplicated, the first 50 — none left, no key', () => {
+    const id = (n) => n.toString(16).padStart(64, '0');
+    const A = 'ab'.repeat(32);
+    const sent = (networkPeers) => D.buildRequests({ flags: PFLAGS, ...PEER_PAGE, networkPeers }).main;
+    assert.deepEqual(sent([A]).networkPeers, [A]);
+    assert.deepEqual(sent([A.toUpperCase()]).networkPeers, [A], 'any case, sent lower-case (the route\'s lowercase())');
+    assert.deepEqual(sent([A, A.toUpperCase(), id(1), A]).networkPeers, [A, id(1)], 'de-duplicated after the fold, in order');
+    assert.deepEqual(sent(['ab'.repeat(31), 'ab'.repeat(33), ` ${A}`, 'zz'.repeat(32), 42, null, { id: A }, A]).networkPeers, [A],
+      'short, long, padded, non-hex and non-string ids dropped');
+    const many = Array.from({ length: 51 }, (_, i) => id(i + 1));
+    assert.deepEqual(sent(many).networkPeers, many.slice(0, 50), '51 ids: the first 50 (the route\'s max)');
+    for (const none of [[], ['nope'], undefined, null, A, {}]) {
+      assert.equal('networkPeers' in sent(none), false, `${JSON.stringify(none)}: the key left out (the route answers 400 to [])`);
+    }
+    assert.equal('networkPeers' in D.buildRequests({ flags: PFLAGS, networkPeers: [A] }).main, false, 'never on the play page');
+  });
+
+  test('Peer Recommendations without any one of its four flags: no bodies at all', () => {
+    const offs = [
+      { ...PFLAGS, discovery: false }, { ...PFLAGS, discoveryP2p: false }, { ...PFLAGS, discoveryP2p: 'true' },
+      { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discoveryTaste: 2 }, { ...PFLAGS, discoveryTaste: undefined }, { ...PFLAGS, discoveryP2pPeers: 0 },
+      { ...PFLAGS, discoveryP2pPeers: undefined }, { ...PFLAGS, discoveryP2pPeers: true }, FLAGS, {}, null,
+    ];
+    for (const flags of offs) {
+      assert.deepEqual(D.buildRequests({ flags, ...PEER_PAGE }), { main: null, peers: null }, JSON.stringify(flags));
+      assert.equal(D.peerRecsAvailable(flags), false, JSON.stringify(flags));
+    }
+    for (const flags of [PFLAGS, { ...PFLAGS, discoveryTaste: '3', discoveryP2pPeers: '1' }, { ...PFLAGS, discoveryTaste: 4, discoveryP2pPeers: 2 }]) {
+      assert.equal(D.peerRecsAvailable(flags), true, JSON.stringify(flags));
+      assert.ok(D.buildRequests({ flags, ...PEER_PAGE }).main, 'a later generation, a numeric string: still the page');
+    }
+    assert.ok(D.buildRequests({ flags: FLAGS }).main, 'Discover keeps its own gate');
+  });
+
+  test('the hidden explore page m.js still draws (until its drawing goes): the network alone, the generation-1 gate, "new artists only"', () => {
+    const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore', newArtistsOnly: true, networkPeers: ['ab'.repeat(32)] });
+    assert.deepEqual(explore, { main: { sources: ['network'], window: 90, pin: ['a.mp3'], exclude: ['h1'], newArtistsOnly: true }, peers: null },
+      'no generation-3 key');
+    assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null });
+    assert.deepEqual(D.stateOf(historyResponse(), FLAGS, { page: 'explore' }).sources.network, { status: 'ready', reason: null, count: 3 });
   });
 
   test('flags drop sources: no federation discovery → no peers call; p2p never reaches the play page', () => {
@@ -280,11 +349,11 @@ describe('buildRequests', () => {
     assert.equal(D.buildRequests({ flags: FLAGS }).main.pin, undefined);
   });
 
-  test('"new artists only" is the Explore page\'s: the play page never sends it', () => {
-    const play = D.buildRequests({ newArtistsOnly: true, flags: FLAGS });
+  test('"new artists only": no page sends it — no control draws it any more', () => {
+    const play = D.buildRequests({ newArtistsOnly: true, flags: PFLAGS });
     assert.equal(play.main.newArtistsOnly, false);
     assert.equal(play.peers.newArtistsOnly, false, 'no hidden thinning of the connected servers\' rows');
-    assert.equal(D.buildRequests({ newArtistsOnly: true, flags: FLAGS, page: 'explore' }).main.newArtistsOnly, true);
+    assert.equal(D.buildRequests({ newArtistsOnly: true, flags: PFLAGS, ...PEER_PAGE }).main.newArtistsOnly, false);
     assert.equal(D.buildRequests({ newArtistsOnly: 'yes', flags: FLAGS, page: 'explore' }).main.newArtistsOnly, false);
   });
 
@@ -329,6 +398,94 @@ describe('buildRequests', () => {
   });
 });
 
+describe('W7: an admin can turn the network on (peerRecsCanTurnOn, peerRecsEntry)', () => {
+  // p2p off on a server with the page's routes
+  const OFF = { ...PFLAGS, discoveryP2p: false };
+  const ADMIN = { admin: true, adminApi: true };
+
+  test('an admin whose admin API answers, p2p off: the form — discovery itself not needed', () => {
+    for (const flags of [OFF, { ...OFF, discovery: false }, { ...OFF, discovery: undefined }, { ...OFF, discoveryP2p: undefined }, { ...OFF, discoveryP2p: 'true' }]) {
+      assert.equal(D.peerRecsCanTurnOn(flags, ADMIN), true, JSON.stringify(flags));
+      assert.equal(D.peerRecsEntry(flags, ADMIN), 'turnOn', JSON.stringify(flags));
+    }
+  });
+
+  test('anyone else, p2p off: no row — a member, a locked admin API, no identity yet', () => {
+    for (const who of [{ admin: false, adminApi: false }, { admin: true, adminApi: false }, { admin: false, adminApi: true }, { admin: true },
+      { adminApi: true }, { admin: 'true', adminApi: true }, { admin: true, adminApi: 1 }, {}, null, undefined, 'admin']) {
+      assert.equal(D.peerRecsCanTurnOn(OFF, who), false, JSON.stringify(who));
+      assert.equal(D.peerRecsEntry(OFF, who), null, JSON.stringify(who));
+    }
+  });
+
+  test('the page\'s routes: generation 3 and the peers route — numbers, numeric strings, later generations', () => {
+    for (const flags of [{ ...OFF, discoveryTaste: '3' }, { ...OFF, discoveryP2pPeers: '1' }, { ...OFF, discoveryTaste: ' 3 ', discoveryP2pPeers: '1' },
+      { ...OFF, discoveryTaste: 4, discoveryP2pPeers: 2 }, { ...OFF, discoveryTaste: '4', discoveryP2pPeers: '2' }]) {
+      assert.equal(D.peerRecsEntry(flags, ADMIN), 'turnOn', JSON.stringify(flags));
+    }
+    // 2 = the mood filters' generation, without the page's keys
+    for (const flags of [{ ...OFF, discoveryTaste: 1 }, { ...OFF, discoveryTaste: '1' }, { ...OFF, discoveryTaste: 2 }, { ...OFF, discoveryTaste: '2' },
+      { ...OFF, discoveryTaste: undefined }, { ...OFF, discoveryTaste: '3.5' },
+      { ...OFF, discoveryTaste: true }, { ...OFF, discoveryP2pPeers: 0 }, { ...OFF, discoveryP2pPeers: '0' },
+      { ...OFF, discoveryP2pPeers: undefined }, { ...OFF, discoveryP2pPeers: true }, { ...OFF, discoveryP2pPeers: '' }, {}, null, 'flags']) {
+      assert.equal(D.peerRecsCanTurnOn(flags, ADMIN), false, JSON.stringify(flags));
+      assert.equal(D.peerRecsEntry(flags, ADMIN), null, JSON.stringify(flags));
+    }
+  });
+
+  test('p2p on: the page for everyone the gate lets in; nothing to turn on where it does not', () => {
+    for (const who of [ADMIN, { admin: false, adminApi: false }, { admin: true, adminApi: false }, null]) {
+      assert.equal(D.peerRecsEntry(PFLAGS, who), 'page', JSON.stringify(who));
+      assert.equal(D.peerRecsEntry({ ...PFLAGS, discoveryTaste: '3', discoveryP2pPeers: '1' }, who), 'page');
+      assert.equal(D.peerRecsCanTurnOn(PFLAGS, who), false, 'already on');
+      // collection off under a running network: the page's gate fails, and
+      // the enable route has nothing to turn on
+      assert.equal(D.peerRecsEntry({ ...PFLAGS, discovery: false }, who), null);
+    }
+  });
+});
+
+describe('W7: the turn-on form\'s fields (turnOnValid — the server\'s Joi)', () => {
+  const ok = (name, description) => D.turnOnValid({ name, description });
+
+  test('the name: trimmed, 1–64 characters', () => {
+    assert.equal(ok('Kitchen Radio', ''), true);
+    assert.equal(ok('a'), true, 'no description at all');
+    assert.equal(ok(''), false, 'blank');
+    for (const blank of [' ', '   ', '\t \n']) { assert.equal(ok(blank), false, `whitespace only: ${JSON.stringify(blank)}`); }
+    assert.equal(ok('x'.repeat(64)), true, '64');
+    assert.equal(ok('x'.repeat(65)), false, '65');
+    assert.equal(ok(`  ${'x'.repeat(64)}  `), true, '64 once trimmed (it is sent trimmed)');
+    assert.equal(ok(`  ${'x'.repeat(65)}  `), false);
+  });
+
+  test('the description: trimmed, at most 180 — empty, whitespace or absent is fine', () => {
+    for (const d of ['', '   ', undefined, null, 'A shelf of late-night radio.']) { assert.equal(ok('n', d), true, JSON.stringify(d)); }
+    assert.equal(ok('n', 'd'.repeat(180)), true, '180');
+    assert.equal(ok('n', 'd'.repeat(181)), false, '181');
+    assert.equal(ok('n', ` ${'d'.repeat(180)} `), true, '180 once trimmed');
+  });
+
+  test('no "|" and no control character in either; unicode letters are text', () => {
+    for (const bad of ['a|b', '|', 'a\u0000b', 'a\u0007b', 'a\tb', 'a\nb', 'a\u001fb', 'a\u007fb', 'a\u0085b', 'a\u009fb']) {
+      assert.equal(ok(bad, ''), false, `name ${JSON.stringify(bad)}`);
+      assert.equal(ok('n', bad), false, `description ${JSON.stringify(bad)}`);
+    }
+    for (const good of ['Ünïcödé Radio', 'Радио на кухне', '台所のラジオ', '부엌 라디오', 'Café — “quoted” · ok', '🎵 Tapes', 'a/b\\c <b>&amp;</b>']) {
+      assert.equal(ok(good, good), true, good);
+    }
+    // the server's own pattern: the same verdict on every case above
+    const server = /^[^|\p{Cc}]*$/u;
+    for (const s of ['a|b', 'a\u0085b', 'a\tb', 'Ünïcödé', '🎵']) { assert.equal(server.test(s), ok(s, s), s); }
+  });
+
+  test('what is not a field', () => {
+    for (const fields of [null, undefined, 'Kitchen', {}, { name: 42 }, { name: null }, { name: ['a'] }, { name: 'a', description: 7 }, { name: 'a', description: {} }]) {
+      assert.equal(D.turnOnValid(fields), false, JSON.stringify(fields));
+    }
+  });
+});
+
 describe('peersRequest: the peers call seeds from the library answer\'s batch', () => {
   const seed = (i, extra = {}) => ({ hash: `h${i}`, filepath: `Music/S/${i}.flac`, metadata: {}, pinned: false, analyzed: true, ...extra });
   const peersBody = () => D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'Music/S/0.flac', exclude: ['hx'], limits: { tracks: 48, peers: 25 } }).peers;
@@ -367,6 +524,66 @@ describe('peersRequest: the peers call seeds from the library answer\'s batch', 
     }
     const noLimit = D.buildRequests({ flags: FLAGS }).peers;
     assert.deepEqual(D.peersRequest(noLimit, main).limit, { seeds: 1 });
+  });
+});
+
+describe('batchRequest: Peer Recommendations re-asks on the batch on screen', () => {
+  const seed = (i, extra = {}) => ({ hash: `h${i}`, filepath: `Music/S/${i}.flac`, metadata: {}, pinned: false, analyzed: true, ...extra });
+  const KITCHEN = 'b2'.repeat(32);
+  const body = (networkPeers) => D.buildRequests({ flags: PFLAGS, ...PEER_PAGE, window: 7, pinPath: 'Music/S/0.flac', exclude: ['hx'], networkPeers }).main;
+  const batch = { seedSource: 'history', seeds: [seed(0, { pinned: true }), seed(1), seed(2)] };
+
+  test('a peer\'s tab: every seed of the batch pinned, limit.seeds = their count, networkPeers = that peer', () => {
+    const b = body();
+    const out = D.batchRequest(b, batch, KITCHEN);
+    assert.deepEqual(out, {
+      sources: ['network'], window: 7, pin: ['Music/S/0.flac', 'Music/S/1.flac', 'Music/S/2.flac'], exclude: ['hx'], newArtistsOnly: false,
+      limit: { seeds: 3, network: 32 }, networkOnRandomSeed: true, networkPeers: [KITCHEN],
+    });
+    assert.deepEqual(b.pin, ['Music/S/0.flac'], 'the built body is not touched');
+    assert.equal(b.limit.seeds, 12);
+    assert.equal('networkPeers' in b, false);
+    assert.deepEqual(D.batchRequest(b, batch, KITCHEN.toUpperCase()).networkPeers, [KITCHEN], 'cleaned as buildRequests cleans it');
+  });
+
+  test('All: the key left out — and taken off a body that carried one; an id that is no endpoint id is All', () => {
+    const narrowed = body([KITCHEN]);
+    assert.deepEqual(narrowed.networkPeers, [KITCHEN]);
+    for (const all of [null, undefined, '', 'all', 'b2'.repeat(31), 7]) {
+      const out = D.batchRequest(narrowed, batch, all);
+      assert.equal('networkPeers' in out, false, String(all));
+      assert.equal(out.limit.seeds, 3);
+    }
+    assert.deepEqual(narrowed.networkPeers, [KITCHEN], 'the built body is not touched');
+    assert.deepEqual(D.batchRequest(narrowed, batch, 'a1'.repeat(32)).networkPeers, ['a1'.repeat(32)], 'another tab replaces it');
+  });
+
+  test('a random answer\'s pick is pinned too (the page walks the network on it)', () => {
+    const random = { seedSource: 'random', fallback: true, seeds: [seed(9, { outcome: null })] };
+    const out = D.batchRequest(body(), random, KITCHEN);
+    assert.deepEqual(out.pin, ['Music/S/9.flac']);
+    assert.equal(out.limit.seeds, 1);
+    assert.equal(D.peersRequest(D.buildRequests({ flags: PFLAGS }).peers, random), null, 'unlike the connected servers\' call');
+  });
+
+  test('a full batch; past PIN_CAP (a malformed answer) the first ones; bad paths skipped', () => {
+    const full = Array.from({ length: 12 }, (_, i) => seed(i, { pinned: i === 0 }));
+    const all = D.batchRequest(body(), { seedSource: 'history', seeds: full }, null);
+    assert.deepEqual(all.pin, full.map((s) => s.filepath));
+    assert.equal(all.limit.seeds, 12);
+    const seeds = [seed(0, { filepath: '/Music/S/0.flac' }), seed(9, { filepath: '' }), seed(1, { filepath: 'Music/S/0.flac' }),
+      seed(8, { filepath: 'x'.repeat(2049) }), ...Array.from({ length: 12 }, (_, i) => seed(i + 2))];
+    const out = D.batchRequest(body(), { seedSource: 'history', seeds }, null);
+    assert.equal(out.pin.length, D.PIN_CAP);
+    assert.deepEqual(out.pin.slice(0, 2), ['Music/S/0.flac', 'Music/S/2.flac'], 'the leading / stripped, a duplicate, an empty and an over-long path skipped');
+  });
+
+  test('null: no body, or a batch that failed, was refused or has no seed with a path (the caller asks a new batch)', () => {
+    assert.equal(D.batchRequest(null, batch, KITCHEN), null);
+    assert.equal(D.batchRequest(undefined, batch, null), null);
+    for (const bad of [undefined, null, { disabled: true }, { seedSource: 'history', seeds: [] }, { seedSource: 'history', seeds: [seed(1, { filepath: '' })] }, { seedSource: 'history' }]) {
+      assert.equal(D.batchRequest(body(), bad, KITCHEN), null, JSON.stringify(bad));
+    }
   });
 });
 
@@ -597,43 +814,90 @@ const STUB = {
   jobKind: (job) => ((job.params && job.params.scope) === 'album' ? 'discover.tray.kindAlbum' : null),
 };
 
+// Peer Recommendations' leads as the taste route stamps them: three shelf
+// peers labelled by the peers route's own peerLabels (an unnamed one reads
+// 'mStream · 3f9a'), every lead's tile by its own leadTile.
+const EP = { basement: 'a1'.repeat(32), kitchen: 'b2'.repeat(32), mstream: '3f9a'.padEnd(64, '0') };
+const SHELF_LABELS = peerLabels({
+  shelf: [{ endpointId: EP.basement, name: 'Basement Hi-Fi' }, { endpointId: EP.mstream, name: '' }],
+  catalog: [{ from: EP.kitchen, payload: { name: 'Kitchen Radio' } }],
+});
+const LEADS_RAW = [
+  { seedIndex: 1, artist: 'Paper Lantern', title: 'Signal Fires', album: 'Night Ferry', year: 2021, duration: 200, similarity: 0.81234, exportId: 'k1', peer: { endpointId: EP.kitchen, name: 'Kitchen Radio' }, recordingMbid: null, isrc: null },
+  { seedIndex: 2, artist: 'Paper Lantern', title: 'Harbor Lights', album: 'Night Ferry', year: 2021, duration: 3725, similarity: 0.7, exportId: 'b1', peer: { endpointId: EP.basement, name: 'Basement Hi-Fi' }, recordingMbid: null, isrc: null },
+  { seedIndex: null, artist: '', title: 'Untitled', album: null, year: null, duration: null, similarity: 0.6, exportId: 'm1', peer: { endpointId: EP.mstream, name: null }, recordingMbid: null, isrc: null },
+];
+const leadsResponse = (over) => historyResponse({
+  network: { results: stampNetworkRows(LEADS_RAW, LIB_SEEDS, 32, SHELF_LABELS), searched: { peers: 3, tracks: 7421 }, reason: null },
+  library: null,
+  ...over,
+});
+
 describe('networkRows', () => {
-  test('raw rows kept as the route stamped them, plus what a row draws', () => {
-    const r = historyResponse();
+  test('raw rows kept as the route stamped them, plus what a row draws: "Artist · Album", the peer, the tile', () => {
+    const r = leadsResponse();
     const net = collect(D.networkRows(r));
     assert.equal(net.count, 3);
-    assert.deepEqual(net.line, { key: 'dpage.network.searched', params: { count: 3 } });
+    assert.deepEqual(net.searched, { peers: 3, tracks: 7421 });
+    assert.equal('line' in net, false, 'no "3 servers searched"');
     const [n1, n2, n3] = net.rows;
     assert.equal(n1.raw, r.network.results[0], 'the very object — openDiscoverModal(raw, "p2p")');
     assert.equal(n1.raw.source, 'p2p');
     assert.equal('seedIndex' in n1.raw, false);
     assert.equal(n1.source, 'p2p');
-    assert.equal(n1.title, 'Lead One');
-    assert.equal(n1.subtitle, 'Artist M · Album N1 · 2022');
+    assert.equal(n1.title, 'Signal Fires');
+    assert.equal(n1.subtitle, 'Paper Lantern · Night Ferry', 'no year');
     assert.equal(n1.similarityPct, 81);
     assert.equal(n1.length, '3:20');
+    assert.equal(n2.length, '1:02:05');
     assert.equal(n1.seedHash, 'h1');
     assert.deepEqual(n1.because, { key: 'dpage.because', params: { title: 'One' } });
     assert.equal(n1.matchSeed, 'One', 'the window\'s match bar names the seed this lead was matched against');
-    assert.deepEqual(n1.onLabel, { key: 'dpage.network.onServer', params: { name: 'Peer One' } });
-    assert.equal(n1.newArtist, false);
-    assert.equal(n2.onLabel, null);
-    assert.equal(n2.subtitle, 'Artist N · Album N2');
-    assert.equal(n2.length, '');
-    assert.equal(n3.length, '1:02:05');
+    assert.equal(n3.subtitle, '', 'no artist, no album');
     assert.equal(n3.seedHash, null);
     assert.equal(n3.because, null);
     assert.equal(n3.matchSeed, null);
-    for (const row of net.rows) { assert.equal(plugins.recommendationSchema.validate(row.raw).error, undefined, 'still a sendable recommendation'); }
+    for (const row of net.rows) {
+      for (const gone of ['onLabel', 'newArtist', 'newArtistLabel']) { assert.equal(gone in row, false, gone); }
+      assert.equal(plugins.recommendationSchema.validate(row.raw).error, undefined, 'still a sendable recommendation');
+    }
   });
 
-  test('the new-artist hint when a row carries one; nothing for an absent section', () => {
-    const r = historyResponse({ network: { results: [{ ...historyResponse().network.results[0], newArtist: true }], searched: { peers: 1, tracks: 10 } } });
-    const row = collect(D.networkRows(r)).rows[0];
-    assert.equal(row.newArtist, true);
-    assert.deepEqual(row.newArtistLabel, { key: 'dpage.network.newArtist', params: {} });
-    assert.deepEqual(D.networkRows(historyResponse({ network: null })), { rows: [], count: 0, searched: null, line: null });
+  test('the peer: its endpointId (what every strip state keys on) and the server\'s label, verbatim', () => {
+    const [n1, n2, n3] = D.networkRows(leadsResponse()).rows;
+    assert.deepEqual([n1.peerId, n2.peerId, n3.peerId], [EP.kitchen, EP.basement, EP.mstream]);
+    assert.deepEqual([n1.peerLabel, n2.peerLabel, n3.peerLabel], ['Kitchen Radio', 'Basement Hi-Fi', 'mStream · 3f9a'], 'the peers route\'s labels');
+    assert.equal(n3.peerLabel, SHELF_LABELS.get(EP.mstream));
+    assert.equal(n3.peerName, '', 'the catalogue name is data; the label is what is drawn');
+    const unlabelled = historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', peer: { endpointId: EP.kitchen, name: 'Kitchen Radio' } }] } });
+    assert.equal(D.networkRows(unlabelled).rows[0].peerLabel, 'Kitchen Radio', 'a lead stamped without a label: its peer\'s name');
+    const peerless = historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', peer: null }] } });
+    assert.deepEqual([D.networkRows(peerless).rows[0].peerId, D.networkRows(peerless).rows[0].peerLabel], [null, '']);
+  });
+
+  test('the tile: the server\'s own leadTile, drawn as sent — never computed here', () => {
+    const rows = D.networkRows(leadsResponse()).rows;
+    for (const [i, row] of rows.entries()) {
+      assert.deepEqual(row.tile, leadTile(LEADS_RAW[i]), row.title);
+      assert.deepEqual(row.tile, row.raw.tile);
+      assert.notEqual(row.tile, row.raw.tile, 'a copy');
+    }
+    assert.deepEqual(rows[0].tile, { key: 'paper lantern|night ferry', hue: 39, letter: 'P' }, 'the plan\'s §5.1 vector');
+    assert.equal(rows[0].tile.key, rows[1].tile.key, 'one album, one key: earned art spreads by it');
+    assert.deepEqual(rows[2].tile, { key: 'untitled', hue: leadTile({ title: 'Untitled' }).hue, letter: 'U' }, 'no artist or album: the title');
+    // a tile the server did not stamp, or one that cannot be drawn
+    const tileOf = (tile) => D.networkRows(historyResponse({ network: { results: [{ ...LEADS_RAW[0], source: 'p2p', tile }] } })).rows[0].tile;
+    for (const bad of [undefined, null, 'tile', [1, 2], { key: 'k', letter: 'K' }, { key: 'k', hue: '39', letter: 'K' }, { key: 'k', hue: NaN, letter: 'K' }]) {
+      assert.equal(tileOf(bad), null, JSON.stringify(bad));
+    }
+    assert.deepEqual(tileOf({ key: 7, hue: 120, letter: null, extra: 'x' }), { key: '', hue: 120, letter: '' }, 'the three fields, strings as strings');
+    assert.ok(!/fnv|0x811c9dc5|0x01000193/i.test(SOURCE), 'no tile hash in the module');
+  });
+
+  test('nothing for an absent section', () => {
+    assert.deepEqual(D.networkRows(historyResponse({ network: null })), { rows: [], count: 0, searched: null });
     assert.equal(D.networkRows(undefined).rows.length, 0);
+    assert.equal(D.networkRows({ network: { results: [] } }).count, 0);
   });
 });
 
@@ -771,7 +1035,11 @@ const WINDOW_METHODS = ['tt', 'dmLive', 'dmDuration', 'dmText', 'openDiscoverMod
   'dmKeepLeftOut', 'dmLandShown', 'dmLandings', 'dmLandChoose', 'dmLandHold', 'dmFolderLandingSent', 'dmFolderInto', 'dmFolderPlaceOk', 'dmFolderCap',
   'dmFolderCapFailed', 'dmJobLanded', 'dmIntoLoad', 'dmIntoCrumbs', 'dmIntoLibraries', 'dmIntoLibrary', 'dmIntoInto', 'dmIntoUp', 'dmIntoNewFolder',
   'dmIntoNaming', 'dmIntoBraced', 'dmIntoMissing', 'dmMirrorFoot', 'dmIntoStraight', 'dmPickerLibraries', 'dmPickerLandsAt', 'dmDestFocus',
-  'dmKeepGateChanged'];
+  'dmKeepGateChanged',
+  // opened from Peer Recommendations (plan §2 item 15): its tile and peer
+  // line, the one Preview control bound to the page's clip, Get it… chips
+  'dmPeerRecs', 'dmArt', 'dmFederateVisible', 'dmTile', 'dmArtStyle', 'dmClipProvider', 'dmClipOf', 'dmClipOn', 'dmClipBusy', 'dmClipNone', 'dmClipPreview', 'dmClipClock',
+  'dmClipPct', 'dmClipToggle', 'clipProvider', 'dmGetItChips', 'dmGetIt', 'dmPeerJobsPoll', 'dmAnyJobLive'];
 // Find elsewhere's own load (stubbed in every other window: it asks the
 // links plug-in, and the harness's `realLinks` lets it)
 const LINKS_METHODS = ['dmLoadLinks', 'ensureDiscoverPlugins', 'discoverLinksPlugin'];
@@ -802,22 +1070,30 @@ const STAGE_READS = () => readsOf({
   localAlbums: { albums: ['Night Market', 'Ferry Lines', 'Cold Open'].map((n) => peerAlbumItem(n)) },
 });
 
+// The page's pure helpers, as the window reads them (tile colours, the
+// lead key, the preview plug-in).
+const PR = require('../../webapp/alpha/peer-recs.js');
 function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, destination = DEST, available = true, realLinks = false, doc: docOver = {} } = {}) {
   const body = `
     let discoverModalGen = 0;
     let discoverModalOpener = null;
     let discoverKeepPresses = 0;
+    let discoverPeerJobsTimer = null;
     const discoverGateWatchers = [];
     function onDiscoverModalKey() {}
     ${VP_SRC.match(/\n {2}const FOLDER_TAGS_MAX = \d+;/)[0]}
     ${vpModuleFn('dmAttrValue')}
     ${vpModuleFn('blankDiscoverModal')}
+    ${vpModuleFn('blankDiscoverClip')}
+    ${vpModuleFn('dmTileOf')}
+    ${vpModuleFn('dmPeerLineOf')}
     ${vpModuleFn('dmNameKey')}
     ${vpModuleFn('dmOpenerOf')}
     ${vpModuleFn('dmFocusBack')}
     ${vpModuleFn('dmLinksNameAlbum')}
     ${vpModuleFn('dmCapital')}
     return {
+      blankClip: blankDiscoverClip,
       methods: { ${WINDOW_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       links: { ${LINKS_METHODS.map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} },
       blank: blankDiscoverModal,
@@ -836,18 +1112,23 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); } };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
-  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', body)(
-    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); });
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'PEERRECS', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', body)(
+    J, D, PR, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); });
   const loads = [];
   const starts = [];
   const cancels = [];
   const copied = [];
+  // the toast key each copy asked for (undefined = the copy's own)
+  const copiedAs = [];
+  // the page's clip toggles the window's Preview made (vp.js clipToggle)
+  const toggles = [];
   // $nextTick's callbacks, run by the test (ticks.splice(0).forEach(f => f()))
   const ticks = [];
   const vm = {
-    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank() },
+    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank(), clip: mod.blankClip() },
     $refs: {}, $nextTick(cb) { if (cb) { ticks.push(cb); } }, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
-    stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); },
+    stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track, as) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); copiedAs.push(as); },
+    clipToggle(raw, opts) { toggles.push({ raw, opts }); },
     dmLoadLinks: async () => { loads.push('links'); },
     dmLoadJobs: async () => { loads.push('jobs'); },
     dmLoadFederate: async () => { loads.push('federate'); },
@@ -858,7 +1139,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     ...mod.methods,
     ...(realLinks ? mod.links : {}),
   };
-  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, queued, explored, cancels, gateWatchers: mod.gateWatchers };
+  return { vm, loads, starts, toasts, viewed, fedQueued, ticks, copied, copiedAs, toggles, queued, explored, cancels, gateWatchers: mod.gateWatchers };
 }
 const subText = (vm, row) => vm.dmText(row.sub);
 const copyJob = (over) => ({ id: 41, plugin: 'federation-copy', key: 'album:06676dc1', state: 'running', progress: 0.4, statusText: 'song 1 of 3 · Rooftop Cypher', params: { scope: 'album' }, recommendation: tapesRow(STAGE_B, '02 - Late Train Verse'), ...over });
@@ -2401,18 +2682,35 @@ describe('stateOf', () => {
     assert.equal(D.stateOf({ disabled: true }, FLAGS).state, 'off');
   });
 
+  test('off on Peer Recommendations: any one of its four flags missing, a 403, or a history answer with network: null (R7) — no line', () => {
+    for (const flags of [FLAGS, { ...PFLAGS, discoveryP2p: false }, { ...PFLAGS, discoveryP2pPeers: 0 }, { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discovery: false }]) {
+      const s = D.stateOf(leadsResponse(), flags, PEER_PAGE);
+      assert.equal(s.state, 'off', JSON.stringify(flags));
+      assert.equal(s.reason, null, 'no off card: the page is left');
+      assert.deepEqual(Object.values(s.sources).map((x) => x.status), ['absent', 'absent', 'absent']);
+    }
+    assert.equal(D.stateOf({ disabled: true }, PFLAGS, PEER_PAGE).state, 'off');
+    const switchedOff = D.stateOf(leadsResponse({ network: null }), PFLAGS, PEER_PAGE);
+    assert.deepEqual([switchedOff.state, switchedOff.reason, switchedOff.sources.network.status], ['off', null, 'absent'], 'p2p went off');
+    assert.equal(D.stateOf(historyResponse({ network: null }), FLAGS).state, 'ready', 'Discover never asks the network');
+    assert.equal(D.stateOf(leadsResponse(), PFLAGS, PEER_PAGE).state, 'ready');
+  });
+
   test('loading and failed', () => {
     const loading = D.stateOf(undefined, FLAGS);
     assert.equal(loading.state, 'loading');
     assert.deepEqual([loading.sources.library.status, loading.sources.network.status, loading.sources.peers.status], ['loading', 'absent', 'loading']);
-    const exploring = D.stateOf(undefined, FLAGS, { page: 'explore' });
-    assert.deepEqual([exploring.sources.library.status, exploring.sources.network.status, exploring.sources.peers.status], ['absent', 'loading', 'absent']);
-    assert.equal(D.stateOf(undefined, { ...FLAGS, discoveryP2p: false }, { page: 'explore' }).sources.network.status, 'absent');
+    const peerRecs = D.stateOf(undefined, PFLAGS, PEER_PAGE);
+    assert.equal(peerRecs.state, 'loading');
+    assert.deepEqual([peerRecs.sources.library.status, peerRecs.sources.network.status, peerRecs.sources.peers.status], ['absent', 'loading', 'absent']);
     const failed = collect(D.stateOf(null, FLAGS));
     assert.equal(failed.state, 'failed');
     assert.equal(failed.reason.key, 'dpage.state.failed');
     assert.equal(failed.sources.library.status, 'failed');
     assert.equal('tabs' in failed, false, 'no segmented tabs');
+    const peerFailed = D.stateOf(null, PFLAGS, PEER_PAGE);
+    assert.deepEqual([peerFailed.state, peerFailed.reason], ['failed', null], 'Peer Recommendations: "Try again" alone');
+    assert.deepEqual(peerFailed.sources.network, { status: 'failed', reason: null, count: 0 });
   });
 
   test('a random seed: the server asks no connected server, so no peers column while that call is out', () => {
@@ -2421,13 +2719,27 @@ describe('stateOf', () => {
     assert.equal(D.stateOf(D.mergeResponses(historyResponse(), undefined, true), FLAGS).sources.peers.status, 'loading', 'a history seed: still asking');
   });
 
-  test('ready: the play page draws library + peers, the explore page the network', () => {
-    const s = D.stateOf(merged(), FLAGS);
+  test('ready: the play page draws library + peers, Peer Recommendations the network', () => {
+    const s = D.stateOf(merged(), PFLAGS);
     assert.equal(s.state, 'ready');
     assert.equal(s.reason, null);
     assert.deepEqual(Object.entries(s.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'ready', 6], ['network', 'absent', 0], ['peers', 'ready', 3]]);
-    const explore = D.stateOf(merged(), FLAGS, { page: 'explore' });
-    assert.deepEqual(Object.entries(explore.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'absent', 0], ['network', 'ready', 3], ['peers', 'absent', 0]]);
+    const peerRecs = D.stateOf(merged(), PFLAGS, PEER_PAGE);
+    assert.deepEqual([peerRecs.state, peerRecs.reason], ['ready', null]);
+    assert.deepEqual(Object.entries(peerRecs.sources).map(([k, x]) => [k, x.status, x.count]), [['library', 'absent', 0], ['network', 'ready', 3], ['peers', 'absent', 0]]);
+  });
+
+  test('a random seed with a network section is ready on Peer Recommendations (leads off the pick, S6) — never "finish a few songs"', () => {
+    const random = { seedSource: 'random', fallback: true, seeds: [seed('r', 'R', 'A', { outcome: null })] };
+    const s = collect(D.stateOf(leadsResponse(random), PFLAGS, PEER_PAGE));
+    assert.deepEqual([s.state, s.reason, s.sources.network.status, s.sources.network.count], ['ready', null, 'ready', 3]);
+    const dropped = D.stateOf(leadsResponse({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }), PFLAGS, PEER_PAGE);
+    assert.equal(dropped.state, 'ready', 'every finished song dropped: still the leads');
+    const empty = collect(D.stateOf(leadsResponse({ ...random, network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'empty-shelf' } }), PFLAGS, PEER_PAGE));
+    assert.deepEqual([empty.state, empty.sources.network.why], ['ready', 'noPeers'], 'the network\'s own empty state');
+    const none = D.stateOf(leadsResponse({ ...random, network: null }), PFLAGS, PEER_PAGE);
+    assert.deepEqual([none.state, none.sources.network.status], ['nothingFinished', 'absent'], 'no section on a random answer (unreachable behind the gate): not off');
+    assert.equal(D.stateOf(merged(random, null), PFLAGS).state, 'nothingFinished', 'Discover unchanged');
   });
 
   test('scanPending: no seed analyzed — the sources wait, the seeds are listed', () => {
@@ -2443,7 +2755,13 @@ describe('stateOf', () => {
       assert.equal(s.sources[k].status, 'empty');
       assert.equal(s.sources[k].reason.key, 'dpage.source.waitingForScan');
     }
-    assert.equal(collect(D.stateOf(r, FLAGS, { page: 'explore' })).sources.network.reason.key, 'dpage.source.waitingForScan');
+    const peer = collect(D.stateOf(r, PFLAGS, PEER_PAGE));
+    assert.deepEqual([peer.state, peer.reason.key], ['scanPending', 'dpage.state.scanPending'], 'Discover\'s scan-pending card');
+    assert.deepEqual(peer.sources.network, { status: 'empty', why: 'scanPending', reason: { key: 'dpage.source.waitingForScan', params: {} }, count: 0 });
+    // the route's early answer: the section comes back empty with reason 'scan-pending'
+    const early = leadsResponse({ seeds: [seed('u1', 'U', 'A', { analyzed: false })], network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'scan-pending' } });
+    assert.equal(D.stateOf(early, PFLAGS, PEER_PAGE).state, 'scanPending', 'by the network\'s reason alone');
+    assert.equal(D.stateOf({ ...early, seedSource: 'random' }, PFLAGS, PEER_PAGE).state, 'scanPending', 'a random pick with no vector too');
   });
 
   test('nothingFinished: a random seed — or every finished song dropped', () => {
@@ -2453,7 +2771,6 @@ describe('stateOf', () => {
     assert.equal(s.reason.key, 'dpage.state.nothingFinished');
     assert.equal(s.sources.peers.status, 'absent', 'no fan-out for a random seed: not drawn');
     assert.equal(s.sources.library.status, 'ready');
-    assert.equal(D.stateOf(merged(random, null), FLAGS, { page: 'explore' }).sources.network.status, 'absent');
     const dropped = collect(D.stateOf(merged({ ...random, excluded: [{ hash: 'h1', filepath: 'x', metadata: {} }] }, null), FLAGS));
     assert.equal(dropped.reason.key, 'dpage.state.allDropped');
     assert.equal(dropped.sources.peers.status, 'failed');
@@ -2467,10 +2784,23 @@ describe('stateOf', () => {
     assert.deepEqual(lib, { status: 'empty', count: 0, reason: { key: 'dpage.library.nothing', params: {} } });
   });
 
-  test('the network explains its emptiness (explore page)', () => {
-    const net = (searchedPeers) => collect(D.stateOf(merged({ network: { results: [], searched: { peers: searchedPeers, tracks: 0 } } }), FLAGS, { page: 'explore' })).sources.network;
-    assert.deepEqual([net(0).status, net(0).reason.key], ['empty', 'dpage.network.warmingUp']);
-    assert.equal(net(3).reason.key, 'dpage.network.nothingNew');
+  test('the network names its emptiness by the server\'s reason (Peer Recommendations) — no guess from the counts', () => {
+    const net = (reason, searchedPeers = 3) => collect(D.stateOf(leadsResponse({ network: { results: [], searched: { peers: searchedPeers, tracks: 0 }, reason } }), PFLAGS, PEER_PAGE));
+    const empty = (why, key) => ({ status: 'empty', why, reason: { key, params: {} }, count: 0 });
+    for (const reason of ['empty-shelf', 'no-compatible']) {
+      assert.deepEqual(net(reason, 0).sources.network, empty('noPeers', 'peerRecs.noPeers'), reason);
+      assert.equal(net(reason, 0).state, 'ready', 'the page draws the source\'s state');
+    }
+    for (const reason of ['nothing-new', null, undefined, 'something-later']) {
+      assert.deepEqual(net(reason).sources.network, empty('nothingNew', 'peerRecs.nothingNew'), String(reason));
+    }
+    assert.deepEqual(net('nothing-new', 0).sources.network, empty('nothingNew', 'peerRecs.nothingNew'), 'no peer searched is not "warming up" any more');
+    assert.deepEqual(net('not-on-shelf', 0).sources.network, { status: 'notOnShelf', reason: null, count: 0 }, 'the tab\'s peer left the shelf: back to All (R5)');
+    assert.deepEqual(net('error').sources.network, { status: 'failed', reason: null, count: 0 }, 'the walk failed: "Try again" alone');
+    assert.deepEqual(net('scan-pending', 0).sources.network.why, 'scanPending');
+    assert.deepEqual(net('empty-shelf').sources.network.status, 'empty');
+    const ready = collect(D.stateOf(leadsResponse({ network: { ...leadsResponse().network, reason: 'empty-shelf' } }), PFLAGS, PEER_PAGE)).sources.network;
+    assert.deepEqual(ready, { status: 'ready', reason: null, count: 3 }, 'rows win over a reason');
   });
 
   test('connected servers: none paired → not drawn; paired but nothing playable → the quiet line', () => {
@@ -2489,25 +2819,19 @@ describe('stateOf', () => {
     const noFed = D.stateOf(D.mergeResponses(historyResponse(), undefined, false), { ...FLAGS, federationDiscovery: false });
     assert.equal(noFed.sources.peers.status, 'absent');
     assert.equal(noFed.sources.network.status, 'absent', 'never on the play page');
+    const peerRecs = D.stateOf(leadsResponse({ network: undefined }), PFLAGS, PEER_PAGE);
+    assert.equal(peerRecs.sources.network.status, 'loading');
+    assert.equal(D.stateOf(leadsResponse(), PFLAGS, { page: 'nope' }).sources.network.status, 'absent', 'an unknown page is Discover');
   });
 });
 
 // ── prefs and option lists ────────────────────────────────────────────
 
 describe('option lists', () => {
-  test('the window options, the plug-in chips', () => {
+  test('the window options', () => {
     const w = collect(D.windowOptions(90));
     assert.deepEqual(w.map((o) => [o.value, o.label.key, o.selected]), [[7, 'dpage.window.days', false], [30, 'dpage.window.days', false], [90, 'dpage.window.days', true], [0, 'dpage.window.all', false]]);
     assert.equal(D.windowOptions('0')[3].selected, true, 'a stored string selects');
-    const list = [
-      { name: 'deezer', title: 'Deezer', capabilities: ['preview'] },
-      { name: 'youtube', title: 'YouTube', capabilities: ['acquire', 'lookup'] },
-      { name: 'links', title: '', capabilities: ['links'] },
-      { name: 'federation-copy', title: 'Copy', capabilities: ['acquire'] },
-    ];
-    assert.deepEqual(collect(D.pluginChips(list, true)).map((c) => [c.key, c.title]),
-      [['dpage.plugins.preview', 'Deezer'], ['dpage.plugins.getIt', 'YouTube'], ['dpage.plugins.links', 'links']]);
-    assert.deepEqual(D.pluginChips(list, false).map((c) => c.key), ['dpage.plugins.preview', 'dpage.plugins.links'], 'Get it needs jobs.allowed');
   });
 });
 
@@ -2535,8 +2859,17 @@ describe('every key the page emits has an English value', () => {
 
   test('every literal dpage key in the module', () => {
     const literals = [...new Set([...SOURCE.matchAll(/'(dpage\.[A-Za-z.]+[A-Za-z])'/g)].map((m) => m[1]))];
-    assert.ok(literals.length > 30, `found ${literals.length}`);
+    assert.ok(literals.length > 20, `found ${literals.length}`);
     for (const key of literals) { assert.ok(EN[key] !== undefined, `${key} missing from en.json`); }
+    assert.deepEqual(literals.filter((k) => /^dpage\.(network|plugins)\./.test(k)), [], 'the explore page\'s copy is not the model\'s');
+  });
+
+  test('Peer Recommendations: the module names its two empty states with the page\'s own keys, and nothing more', () => {
+    const literals = [...new Set([...SOURCE.matchAll(/'(peerRecs\.[A-Za-z.]+[A-Za-z])'/g)].map((m) => m[1]))];
+    assert.deepEqual(literals.sort(), ['peerRecs.noPeers', 'peerRecs.nothingNew']);
+    assert.equal(EN['peerRecs.noPeers'], 'No peers yet');
+    assert.equal(EN['peerRecs.nothingNew'], 'Nothing new');
+    assert.ok(EMITTED.some((l) => l.key === 'peerRecs.noPeers') && EMITTED.some((l) => l.key === 'peerRecs.nothingNew'), 'both drawn by the tests above');
   });
 
   test('the play-now copy, exactly', () => {
@@ -5586,5 +5919,360 @@ describe('the window\'s counts and a folder\'s credits that disagree (the 2026-1
     const p = vm.dmDestPath('folder');
     assert.deepEqual([pathLine(p), p.files], ['copies › ‹album artist› › Borrowed Tapes', null]);
     assert.equal(p.slotNote, '‹album artist› comes from each song’s own tags, so these songs can land in more than one folder.');
+  });
+});
+
+// ── vp.js: the recommendation window opened from Peer Recommendations ───
+// (plan §2 item 15, §4.1 "PT (W3)"): leads as the taste route stamps them
+// (leadsResponse), the peer line as PEERRECS.peerLine reads it from a peers
+// answer, the window's Preview bound to discover.clip (vp.js's own clip,
+// stubbed here: the window only reads it; test/unit/webapp-peer-recs-clip
+// drives it).
+describe('the window opened from Peer Recommendations (vp.js, plan §2 item 15)', () => {
+  const DEEZER = { name: 'deezer', title: 'Deezer', capabilities: ['preview'] };
+  const YT = { name: 'youtube', title: 'YouTube', capabilities: ['acquire'], scopes: ['song'] };
+  const LINKS = { name: 'links', title: 'Open elsewhere', capabilities: ['links'] };
+  const PLUGINS = [DEEZER, YT, LINKS];
+  const PEERS = { canAdd: false, shelf: { held: 2, searchable: 2, running: true }, peers: [
+    { endpointId: EP.kitchen, name: 'Kitchen Radio', label: 'Kitchen Radio', monogram: 'KR', hue: 25, online: true, onShelf: true, pinned: false, rowCount: 10, add: null },
+    { endpointId: EP.mstream, name: '', label: 'mStream · 3f9a', monogram: 'mS', hue: 140, online: false, onShelf: true, pinned: false, rowCount: 10, add: null },
+  ] };
+  // Signal Fires (Kitchen Radio, online), Harbor Lights (the same album's
+  // tile), the untitled lead (mStream · 3f9a, offline)
+  const leads = () => leadsResponse().network.results;
+  const open = async (lead, over = {}, opts = {}) => {
+    const w = makeWindow({ plugins: PLUGINS, ...over });
+    await w.vm.openDiscoverModal(lead, 'p2p', { from: 'peerRecs', peer: PR.peerLine(lead, PEERS), ...opts });
+    return w;
+  };
+  const DEEZER_PREVIEW = { provider: 'deezer', url: 'https://cdn.example/1.mp3', seconds: 30, title: 'Signal Fires', artist: 'Paper Lantern', album: 'Night Ferry',
+    link: 'https://www.deezer.com/track/1', artwork: 'https://cdn.example/night-ferry.jpg', attribution: 'Preview from Deezer', match: 0.97 };
+  const HTML = readFileSync(new URL('../../webapp/index.html', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const win = HTML.slice(HTML.indexOf('class="dmodal-shadow"'), HTML.indexOf('id="pop"'));
+  const pageBlock = win.slice(win.indexOf('<template v-if="dmPeerRecs()">'), win.indexOf('<template v-else>', win.indexOf('<template v-if="dmPeerRecs()">')));
+  const CSS = readFileSync(new URL('../../webapp/alpha/spa.css', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+
+  test('the header: "Artist · Album" and the peer line alone — its dot only while the peer is online; no ISRC, no year, no length, no %', async () => {
+    const [signal, , untitled] = leads();
+    const isrc = { ...signal, isrc: 'USRC17607839' };
+    const { vm, toggles } = await open(isrc);
+    assert.equal(vm.discover.modal.from, 'peerRecs');
+    assert.deepEqual([vm.dmHeadTitle(), vm.dmSubtitle()], ['Signal Fires', 'Paper Lantern · Night Ferry'], 'no 2021, no 3:20');
+    assert.deepEqual(vm.dmMetaParts(), [{ kind: 'status', dot: 'ok', text: 'Kitchen Radio' }], 'no ISRC, no "81% match"');
+    assert.deepEqual(toggles, [], 'opening plays nothing');
+    const off = await open(untitled);
+    assert.deepEqual([off.vm.dmHeadTitle(), off.vm.dmSubtitle()], ['Untitled', '']);
+    assert.deepEqual(off.vm.dmMetaParts(), [{ kind: 'status', dot: 'none', text: 'mStream · 3f9a' }], 'the label verbatim; an offline peer has no dot');
+    // without the page's line: the label the lead carries, no dot
+    const w = makeWindow({ plugins: PLUGINS });
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs' });
+    assert.deepEqual(w.vm.dmMetaParts(), [{ kind: 'status', dot: 'none', text: 'Kitchen Radio' }]);
+    await w.vm.openDiscoverModal({ ...signal, peer: { endpointId: EP.kitchen, name: null } }, 'p2p', { from: 'peerRecs' });
+    assert.deepEqual(w.vm.dmMetaParts(), [], 'nothing to name: no line');
+    assert.match(CSS, /\.dmodal-status i\.dmodal-dot-none \{ display: none; \}/);
+  });
+
+  test('the tile until a preview earns the album\'s art: dmArt is clip.art for the lead\'s tile key, never a tile\'s artwork', async () => {
+    const [signal, harbor, untitled] = leads();
+    const { vm } = await open(signal);
+    const c = PR.tileColours(39);
+    assert.deepEqual(vm.discover.modal.tile, { key: 'paper lantern|night ferry', hue: 39, letter: 'P' }, 'the server\'s tile, as sent');
+    assert.equal(vm.dmArt(), null);
+    assert.deepEqual(vm.dmTile(), { letter: 'P', field: c.field, ink: c.ink });
+    assert.deepEqual(vm.dmArtStyle(), { background: 'hsl(39, 22%, 24%)', color: 'hsl(39, 30%, 72%)' });
+    vm.discover.modal.previews = { deezer: { status: 'ready', preview: DEEZER_PREVIEW } };
+    assert.equal(vm.dmArt(), null, 'a preview tile\'s artwork is Discover\'s, not the page\'s');
+    vm.discover.clip.art['someone else|other album'] = 'https://cdn.example/other.jpg';
+    assert.equal(vm.dmArt(), null, 'another album\'s art');
+    vm.discover.clip.art['paper lantern|night ferry'] = DEEZER_PREVIEW.artwork;
+    assert.deepEqual([vm.dmArt(), vm.dmTile(), vm.dmArtStyle()], [DEEZER_PREVIEW.artwork, null, null], 'an <img>, never a background');
+    const other = await open(harbor);
+    other.vm.discover.clip.art['paper lantern|night ferry'] = DEEZER_PREVIEW.artwork;
+    assert.equal(other.vm.dmArt(), DEEZER_PREVIEW.artwork, 'every lead of the album shares it');
+    // the page's tile when it hands one, else the lead's; one that cannot be drawn is none
+    const handed = await open(signal, {}, { tile: { key: 'k', hue: 200, letter: 'Z' } });
+    assert.deepEqual(handed.vm.discover.modal.tile, { key: 'k', hue: 200, letter: 'Z' });
+    const bad = await open(signal, {}, { tile: { key: 'k', hue: '200', letter: 'Z' } });
+    assert.equal(bad.vm.discover.modal.tile.hue, 39);
+    const bare = await open({ ...untitled, tile: undefined });
+    assert.deepEqual([bare.vm.dmTile(), bare.vm.dmArtStyle()], [null, null], 'no tile: the note glyph');
+    assert.match(win, /<img v-else-if="dmPeerRecs\(\) && dmArt\(\)" class="dmodal-art-img" :src="dmArt\(\)" alt="" referrerpolicy="no-referrer">/);
+    assert.match(win, /'dmodal-tile': dmTile\(\) \}" :style="dmArtStyle\(\)">/);
+    assert.match(CSS, /\.dmodal-art\.dmodal-tile \{ border: 0; font-size: 32px; line-height: 1; font-weight: 600; \}/);
+  });
+
+  test('Preview follows discover.clip only while the clip is this lead; else what the visit\'s resolves answered for it', async () => {
+    const [signal, harbor] = leads();
+    const { vm, toggles } = await open(signal);
+    const c = vm.discover.clip;
+    assert.equal(vm.dmClipProvider(), DEEZER, 'the first preview plug-in');
+    const idle = () => [vm.dmClipOn(), vm.dmClipBusy(), vm.dmClipNone(), vm.dmClipPreview(), vm.dmClipClock(), vm.dmClipPct()];
+    assert.deepEqual(idle(), [false, false, '', null, ['0:00', '0:30'], 0]);
+    // the page plays another lead: not this window's
+    Object.assign(c, { key: PR.leadKey(harbor), raw: harbor, status: 'playing', preview: DEEZER_PREVIEW, at: 12, seconds: 30 });
+    assert.deepEqual(idle(), [false, false, '', null, ['0:00', '0:30'], 0]);
+    // this lead: asked, waiting out a 429, playing, paused
+    Object.assign(c, { key: PR.leadKey(signal), raw: signal, status: 'resolving', preview: null, at: 0 });
+    assert.deepEqual([vm.dmClipBusy(), vm.dmClipPreview()], [true, null], 'no attribution before a resolve');
+    c.status = 'waiting';
+    assert.equal(vm.dmClipBusy(), true);
+    Object.assign(c, { status: 'playing', preview: DEEZER_PREVIEW, at: 12.25, seconds: 30 });
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipBusy(), vm.dmClipClock(), vm.dmClipPct()], [true, false, ['0:12', '0:30'], 41]);
+    assert.deepEqual(vm.dmClipPreview(), { text: 'Preview from Deezer', link: 'https://www.deezer.com/track/1' }, 'the server\'s words, verbatim');
+    c.status = 'paused';
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipClock()[0]], [false, '0:12']);
+    for (const link of ['http://www.deezer.com/track/1', 'javascript:alert(1)', '', null]) {
+      c.preview = { ...DEEZER_PREVIEW, link };
+      assert.deepEqual(vm.dmClipPreview(), { text: 'Preview from Deezer', link: null }, `${link}: plain words, no link`);
+    }
+    c.preview = { ...DEEZER_PREVIEW, attribution: 'Provided courtesy of iTunes', link: 'https://music.apple.com/x' };
+    assert.equal(vm.dmClipPreview().text, 'Provided courtesy of iTunes');
+    Object.assign(c, { status: 'none', preview: null });
+    assert.equal(vm.dmClipNone(), 'none');
+    c.status = 'failed';
+    assert.equal(vm.dmClipNone(), 'failed', 'this press only: the control stays live');
+    // the clip moved on: the visit's answers for this lead
+    Object.assign(c, { key: PR.leadKey(harbor), status: 'playing' });
+    c.results[PR.leadKey(signal)] = { status: 'ready', preview: DEEZER_PREVIEW };
+    assert.deepEqual([vm.dmClipOn(), vm.dmClipNone(), vm.dmClipPreview().text], [false, '', 'Preview from Deezer'], 'resolved earlier: its attribution');
+    c.results[PR.leadKey(signal)] = { status: 'none', preview: null };
+    assert.equal(vm.dmClipNone(), 'none');
+    vm.dmClipToggle();
+    assert.deepEqual(toggles, [], 'no preview for the visit: the control is inert');
+    delete c.results[PR.leadKey(signal)];
+    vm.dmClipToggle();
+    assert.equal(toggles.length, 1);
+    assert.equal(toggles[0].raw, vm.discover.modal.track, 'the page\'s own play icon, on this lead');
+    assert.deepEqual(toggles[0].opts, { tile: vm.discover.modal.tile });
+    // no preview plug-in: no section
+    const bare = await open(signal, { plugins: [YT, LINKS] });
+    assert.equal(bare.vm.dmClipProvider(), null);
+    assert.match(pageBlock, /<section v-if="dmClipProvider\(\)" class="dmodal-section">/);
+  });
+
+  test('Get it…: one chip per acquire plug-in, titled by it; a press starts the best match at once; the job shows on the chip', async () => {
+    const [signal] = leads();
+    const { vm, starts, loads } = await open(signal);
+    assert.ok(loads.includes('jobs'), 'the one lookup when it opens');
+    const m = vm.discover.modal;
+    const chip = () => vm.dmGetItChips()[0];
+    assert.deepEqual(vm.dmGetItChips(), [{ plugin: YT, state: 'idle', icon: 'download', aria: 'YouTube', press: true }]);
+    await vm.dmGetIt(chip());
+    assert.deepEqual(starts, [{ plugin: 'youtube', choice: null, scope: undefined }], 'the server\'s best match: no lookup card, no choice');
+    m.jobBusy.youtube = true;
+    assert.deepEqual([chip().state, chip().press], ['busy', false]);
+    m.jobBusy.youtube = false;
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'running', progress: 0.5 };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['live', 'download', 'YouTube: downloading', false]);
+    await vm.dmGetIt(chip());
+    assert.equal(starts.length, 1, 'a live job is not started again');
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'queued' };
+    assert.deepEqual([chip().state, chip().icon], ['live', 'clock']);
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'done', result: { downloaded: { filepath: 'collection/Paper Lantern/Signal Fires.mp3' } } };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['done', 'check', 'YouTube: done', false]);
+    m.jobs.youtube = { id: 9, plugin: 'youtube', key: 'song:k', state: 'failed', error: 'no match' };
+    assert.deepEqual([chip().state, chip().icon, chip().aria, chip().press], ['failed', 'warn', 'YouTube: failed', true], 'a failed job is pressed again');
+    delete m.jobs.youtube;
+    // a start the server refused: failed; one refused for a moved destination is idle again
+    m.jobErrors.youtube = 'The server did not take that — try again';
+    m.jobRefusals.youtube = { status: 500, error: '' };
+    assert.equal(chip().state, 'failed');
+    m.jobRefusals.youtube = { status: 409, error: 'destination_changed' };
+    assert.deepEqual([chip().state, chip().press], ['idle', true]);
+    // offered only where a file can land, to an account that may start jobs, never the peer copy
+    assert.deepEqual((await open(signal, { destination: null })).vm.dmGetItChips(), []);
+    assert.deepEqual((await open(signal, { jobsAllowed: false })).vm.dmGetItChips(), []);
+    assert.deepEqual((await open(signal, { plugins: [DEEZER, COPY] })).vm.dmGetItChips(), []);
+    assert.match(pageBlock, /<h3 class="dmodal-label">\{\{ tt\('peerRecs\.getIt'\) \}\}<\/h3><\/div>/, 'its heading, no hint');
+    assert.match(pageBlock, /<button v-for="c in dmGetItChips\(\)" :key="c\.plugin\.name" type="button" class="dm-getit"[^>]*:aria-label="c\.aria" v-on:click="dmGetIt\(c\)"><dm-icon :name="c\.icon" :size="14"><\/dm-icon>\{\{ c\.plugin\.title \}\}<\/button>/);
+  });
+
+  test('Get it…: a start refused for a moved destination reads it again and leaves the chip idle; the window follows its live job by id every 1.5 s', async () => {
+    const [signal] = leads();
+    const MOVED = { vpath: 'copies', base: '', layout: '{{ARTIST}}/{{ALBUM}}', source: 'user' };
+    const calls = { destination: 0, starts: [], jobs: [], batch: [] };
+    const api = {
+      // the saved place until a start is refused for it, then the new one
+      discoveryDestination: async () => { calls.destination += 1; return { destination: calls.starts.length ? MOVED : DEST }; },
+      discoveryJobLookupBatch: async (recs) => { calls.batch.push(recs); return { results: [{ key: 'song:k', keys: { song: 'song:k' }, jobs: [] }] }; },
+      discoveryJobStart: async (name, rec, choice, scope, destination) => {
+        calls.starts.push({ name, destination });
+        if (calls.starts.length === 1) { throw httpError(409, { error: 'destination_changed', destination: MOVED }); }
+        return { job: { id: 5, plugin: name, key: 'song:k', state: 'running', progress: 0.1 } };
+      },
+      discoveryJob: async (id) => { calls.jobs.push(id); return { job: { id, plugin: 'youtube', key: 'song:k', state: calls.jobs.length > 1 ? 'done' : 'running', result: { downloaded: { filepath: 'copies/a.mp3' } } } }; },
+    };
+    const w = makeWindow({ reads: api, plugins: PLUGINS });
+    const timers = [];
+    const methods = new Function('DISCOVERJOBS', 'MSTREAMAPI', 'document', 'setTimeout', 'clearTimeout',
+      `let discoverPeerJobsTimer = null;\nreturn { ${['dmLoadJobs', 'dmJobStart', 'dmDestRefused', 'dmLoadDestination', 'dmDestShown', 'dmErrorText', 'dmPeerJobsPoll'].map((n) => `${n}: ${vpMethodSrc(n)}`).join(',\n')} };`)(
+      J, { ...api, currentServer: { host: '' } }, { hidden: false }, (fn, ms) => { timers.push({ fn, ms }); return timers.length; }, () => {});
+    Object.assign(w.vm, methods, { ensureDiscoverPlugins: async () => w.vm.discover.plugins.list, noteDiscoverJob() {}, dmKeepGateChanged() {}, dmHoldFocus() {} });
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS) });
+    await flush();
+    assert.equal(calls.batch.length, 1, 'one batch lookup when it opens');
+    assert.deepEqual(calls.batch[0].map((r) => [r.title, r.source]), [['Signal Fires', 'p2p']], 'one row: the lead');
+    await w.vm.dmGetIt(w.vm.dmGetItChips()[0]);
+    assert.deepEqual(calls.starts, [{ name: 'youtube', destination: { vpath: DEST.vpath, base: DEST.base, layout: DEST.layout } }], 'the destination it knew');
+    await flush();
+    assert.equal(calls.destination, 2, 'read again');
+    assert.deepEqual([w.vm.dmGetItChips()[0].state, w.vm.discover.dest.view.destination], ['idle', MOVED], 'idle again, on the new place');
+    assert.equal(timers.length, 0, 'nothing live: no poll');
+    await w.vm.dmGetIt(w.vm.dmGetItChips()[0]);
+    assert.deepEqual(calls.starts[1].destination, { vpath: 'copies', base: '', layout: '{{ARTIST}}/{{ALBUM}}' });
+    assert.equal(w.vm.dmGetItChips()[0].state, 'live');
+    assert.deepEqual(timers.map((t) => t.ms), [1500]);
+    await timers.shift().fn();
+    assert.deepEqual([calls.jobs, w.vm.dmGetItChips()[0].state, timers.length], [[5], 'live', 1], 'by id, and again while it runs');
+    await timers.shift().fn();
+    assert.deepEqual([calls.jobs, w.vm.dmGetItChips()[0].state, timers.length], [[5, 5], 'done', 0], 'done: the poll stops');
+    assert.match(vpMethodSrc('scheduleDiscoverJobsPoll'), /const fast = this\.dmAnyJobLive\(\) && this\.discover\.modal\.from !== 'peerRecs';/, 'the strip keeps its slower beat meanwhile');
+    assert.match(vpMethodSrc('closeDiscoverModal'), /if \(discoverPeerJobsTimer\) \{ clearTimeout\(discoverPeerJobsTimer\); discoverPeerJobsTimer = null; \}/);
+  });
+
+  test('its own Copy row: "Artist - Title" (the title alone without an artist), and the toast says "Copied"', async () => {
+    const [signal, , untitled] = leads();
+    const { vm, copied, copiedAs } = await open(signal);
+    vm.dmCopyTitle();
+    assert.deepEqual([copied, copiedAs], [['Paper Lantern - Signal Fires'], ['peerRecs.copied']]);
+    const lead = makeWindow({ plugins: PLUGINS });
+    await lead.vm.openDiscoverModal({ title: 'Lead', artist: 'Mo', peer: { endpointId: 'e1' } }, 'p2p');
+    lead.vm.dmCopyTitle();
+    assert.deepEqual(lead.copiedAs, [undefined], 'Discover\'s copy keeps its own toast');
+    // the copy itself (vp.js copyDiscoverP2p), the page's rule (PEERRECS.copyText)
+    const toasts = [];
+    const writes = [];
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+    const copyWith = (clipboard) => new Function('navigator', 'iziToast', 't', 'escapeHtml', `return (${vpMethodSrc('copyDiscoverP2p')});`)(
+      { clipboard }, { success: (o) => toasts.push(o), info: (o) => toasts.push(o) }, tEn, esc);
+    const copy = copyWith({ writeText: async (s) => { writes.push(s); } });
+    for (const t of [signal, untitled, { artist: 'Mo', title: '' }, { artist: '  Mo ', title: ' Lead ' }, { artist: null, title: null }]) {
+      await copy(t);
+      assert.equal(writes[writes.length - 1], PR.copyText(t), JSON.stringify(t));
+    }
+    assert.deepEqual(writes.slice(0, 3), ['Paper Lantern - Signal Fires', 'Untitled', 'Mo'], 'never "- Untitled"');
+    assert.deepEqual([toasts[0].title, toasts[0].message], [EN['discover.network.copied'], 'Paper Lantern - Signal Fires']);
+    toasts.length = 0;
+    await copy(signal, 'peerRecs.copied');
+    assert.deepEqual(toasts, [{ title: 'Copied', position: 'topCenter', timeout: 2500 }], 'one word');
+    // the toast takes markup: a peer's song text reaches it escaped — the
+    // copied line, and the text itself where there is no clipboard (plain http)
+    const evil = { artist: '<b>Mo</b>', title: '<img src=x onerror="alert(1)">' };
+    toasts.length = 0;
+    await copy(evil);
+    assert.equal(writes[writes.length - 1], '<b>Mo</b> - <img src=x onerror="alert(1)">', 'the clipboard gets the text as it is');
+    assert.equal(toasts[0].message, '&lt;b&gt;Mo&lt;/b&gt; - &lt;img src=x onerror=&quot;alert(1)&quot;&gt;');
+    toasts.length = 0;
+    await copyWith(undefined)(evil, 'peerRecs.copied');
+    assert.deepEqual(toasts, [{ title: '&lt;b&gt;Mo&lt;/b&gt; - &lt;img src=x onerror=&quot;alert(1)&quot;&gt;', position: 'topCenter', timeout: 3500 }]);
+    assert.match(win, /<section v-if="dmPeerRecs\(\)" class="dmodal-section dm-copy-row">\s*<button type="button" class="dm-chip" v-on:click="dmCopyTitle"><dm-icon name="copy" :size="12"><\/dm-icon>\{\{ tt\('peerRecs\.copy'\) \}\}<\/button>/);
+    assert.ok(win.indexOf('dm-copy-row') > win.indexOf('<section v-if="dmFindVisible()"'), 'after Find elsewhere');
+  });
+
+  test('the trim list: no invite row, no hints, no "Search", no destination bar, no lookup card, no preview tiles', async () => {
+    const [signal] = leads();
+    const { vm, loads } = await open(signal, {}, {});
+    vm.discover.admin = true;
+    await vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS) });
+    assert.ok(!loads.includes('federate'), 'an admin\'s window asks nothing about federating');
+    assert.equal(vm.dmFederateVisible(), false);
+    // Find elsewhere: the links alone, once they answered
+    const m = vm.discover.modal;
+    m.loading = true;
+    assert.equal(vm.dmFindVisible(), false, 'no "Looking up…"');
+    Object.assign(m, { loading: false, error: true });
+    assert.equal(vm.dmFindVisible(), false, 'no "Couldn\'t look up links"');
+    Object.assign(m, { error: false, links: [] });
+    assert.equal(vm.dmFindVisible(), false, 'no links: no section (Copy has its own row)');
+    m.links = [{ id: 'search-musicbrainz', kind: 'search', label: 'Search MusicBrainz', url: 'https://musicbrainz.org/' }];
+    assert.equal(vm.dmFindVisible(), true);
+    for (const key of ['discover.modal.getItLiveHint', 'discover.modal.getItSub', 'discover.modal.inviteTitle', 'discover.modal.findHint', 'discover.modal.search', 'discover.modal.copyTitle']) {
+      assert.ok(!pageBlock.includes(key), key);
+    }
+    for (const part of ['<dm-dest', 'dm-lookup-row', 'dm-job-row', 'dmFederateVisible', 'discoverPreviewPlugins', 'dmodal-hint']) { assert.ok(!pageBlock.includes(part), part); }
+    assert.match(win, /<span v-if="!dmPeerRecs\(\) && !discover\.modal\.loading && discover\.modal\.links\.length" class="dmodal-hint">\{\{ tt\('discover\.modal\.findHint'\) \}\}/);
+    assert.match(win, /<span v-if="!dmPeerRecs\(\) && dmLinks\('search'\)\.length" class="dm-chips-lead" aria-hidden="true">/);
+    assert.match(win, /<button v-if="!dmPeerRecs\(\)" type="button" class="dm-chip" v-on:click="dmCopyTitle">/);
+    assert.match(win, /<template v-else>\s*<!-- 30-second previews[\s\S]*?<section v-if="dmGetItRows\(\)\.length \|\| dmFederateVisible\(\)" class="dmodal-section">[\s\S]*?<\/section>\s*<\/template>/, 'Discover\'s tiles and Get it, for every other window');
+    // the attribution links out without a referrer; every key it draws is in en.json
+    assert.match(pageBlock, /<a v-if="dmClipPreview\(\) && dmClipPreview\(\)\.link" class="dm-clip-attrib" :href="dmClipPreview\(\)\.link" target="_blank" rel="noopener noreferrer">\{\{ dmClipPreview\(\)\.text \}\}<\/a>/);
+    const keys = [...pageBlock.matchAll(/'((?:peerRecs|discover|dpage)\.[\w.]+)'/g)].map((x) => x[1]);
+    assert.deepEqual([...new Set(keys)].sort(), ['peerRecs.a11y.pauseSong', 'peerRecs.a11y.position', 'peerRecs.a11y.previewSong', 'peerRecs.getIt', 'peerRecs.noPreview', 'peerRecs.preview']);
+    for (const k of [...keys, 'peerRecs.copy', 'peerRecs.copied']) { assert.equal(typeof EN[k], 'string', k); }
+  });
+
+  test('plug-ins off and a member: a lead\'s window still opens, and nothing is copied; Discover\'s lead copies as before', async () => {
+    const [signal] = leads();
+    const { vm, copied, loads } = await open(signal, { available: false, plugins: [] });
+    assert.deepEqual([vm.discover.modal.open, vm.discover.modal.from, copied], [true, 'peerRecs', []]);
+    assert.deepEqual(loads, [], 'no links, no jobs, no invite');
+    assert.deepEqual([vm.dmClipProvider(), vm.dmGetItChips(), vm.dmFindVisible(), vm.dmMetaParts()[0].text], [null, [], false, 'Kitchen Radio'], 'the header and Copy alone');
+    const disc = makeWindow({ available: false, plugins: [] });
+    await disc.vm.openDiscoverModal(signal, 'p2p', { seedTitle: 'One' });
+    assert.deepEqual([disc.vm.discover.modal.open, disc.copied], [false, ['Paper Lantern - Signal Fires']]);
+  });
+
+  test('focus starts on Close and goes back to the row\'s open button', async () => {
+    const [signal] = leads();
+    const w = makeWindow({ plugins: PLUGINS });
+    const row = { tagName: 'BUTTON', isConnected: true, focused: 0, getAttribute: (n) => ({ 'data-dp': 'precOpen', 'data-i': '3' })[n] ?? null, hasAttribute: () => false, closest: () => null, focus() { row.focused += 1; } };
+    let close = 0;
+    w.vm.$refs.dmodalClose = { focus() { close += 1; } };
+    await w.vm.openDiscoverModal(signal, 'p2p', { from: 'peerRecs', peer: PR.peerLine(signal, PEERS), opener: row });
+    w.ticks.splice(0).forEach((f) => f());
+    assert.equal(close, 1);
+    w.vm.closeDiscoverModal();
+    w.ticks.splice(0).forEach((f) => f());
+    assert.equal(row.focused, 1);
+    assert.equal(w.vm.discover.modal.from, null, 'closed: the blank window');
+  });
+
+  test('the keyboard back from a window the band\'s Get it… opened: the band\'s button redrawn, else Preview all, else the bar — never <body>', () => {
+    const opener = new Function(`${vpModuleFn('dmOpenerOf')}\nreturn dmOpenerOf;`)();
+    const back = new Function(`${vpModuleFn('dmAttrValue')}\n${vpModuleFn('dmFocusBack')}\nreturn dmFocusBack;`)();
+    const node = (tagName, attrs = {}) => {
+      const el = { tagName, isConnected: true, focused: 0, attrs, getAttribute: (n) => (n in attrs ? String(attrs[n]) : null), hasAttribute: (n) => n in attrs,
+        setAttribute: (n, v) => { attrs[n] = String(v); }, closest: () => null, focus() { el.focused += 1; } };
+      return el;
+    };
+    const queries = [];
+    const docOf = (found) => ({ querySelector: (sel) => { queries.push(sel); return found[sel] || null; } });
+    const getIt = node('BUTTON', { 'data-dp': 'bandGetIt' });
+    const gone = { ...opener(getIt), el: { ...getIt, isConnected: false } };
+    assert.equal(gone.sel, '[data-dp="bandGetIt"]');
+    const redrawn = node('BUTTON', { 'data-dp': 'bandGetIt' });
+    assert.equal(back(gone, docOf({ '#dpage-band button[data-dp="bandGetIt"]': redrawn })), redrawn, 'the band redrew: its Get it…');
+    assert.equal(redrawn.focused, 1);
+    const all = node('BUTTON', { 'data-dp': 'precAll' });
+    const bar = node('BUTTON', { 'data-dp': 'options' });
+    queries.length = 0;
+    assert.equal(back(gone, docOf({ '#filelist .dpage [data-dp="precAll"]': all, '#dpage-head .dpage [data-dp="options"]': bar })), all, 'the band went: Preview all');
+    assert.deepEqual(queries.slice(-3), ['#dpage-band [data-dp="bandGetIt"]', '#filelist .dpage h3', '#filelist .dpage [data-dp="precAll"]']);
+    assert.equal(back(gone, docOf({ '#dpage-head .dpage [data-dp="options"]': bar })), bar, 'no preview plug-in: the bar\'s More options');
+    // a row whose index went with a redraw of fewer leads
+    const row = { el: null, sel: '[data-dp="precOpen"][data-i="9"]', key: null };
+    assert.equal(back(row, docOf({ '#filelist .dpage [data-dp="precAll"]': all })), all);
+  });
+
+  test('Discover\'s and the now-playing panel\'s windows are unchanged', async () => {
+    const lead = { title: 'Lead', artist: 'Mo', album: 'Lead Album', year: 2020, duration: 200, isrc: 'USRC17607839', similarity: 0.5, peer: { endpointId: 'e1', name: 'Kitchen Radio', label: 'Kitchen Radio' }, tile: { key: 'mo|lead album', hue: 10, letter: 'M' } };
+    for (const opts of [{ seedPlain: 'your recent listening' }, undefined]) {
+      const w = makeWindow({ plugins: PLUGINS });
+      w.vm.discover.admin = true;
+      await w.vm.openDiscoverModal(lead, 'p2p', opts);
+      const m = w.vm.discover.modal;
+      assert.deepEqual([m.from, m.tile, m.peerLine], [null, null, null]);
+      assert.equal(w.vm.dmSubtitle(), 'Mo · Lead Album · 2020 · 3:20');
+      assert.deepEqual(w.vm.dmMetaParts()[0], { kind: 'isrc', text: 'USRC17607839' });
+      assert.match(w.vm.dmMetaParts()[1].text, /^50% match to /);
+      assert.ok(w.loads.includes('federate'), 'the admin\'s invite row');
+      assert.deepEqual([w.vm.dmTile(), w.vm.dmArt(), w.vm.dmArtStyle()], [null, null, null]);
+      m.previews = { deezer: { status: 'ready', preview: DEEZER_PREVIEW } };
+      assert.deepEqual([w.vm.dmArt(), w.vm.dmArtStyle()], [DEEZER_PREVIEW.artwork, { backgroundImage: `url(${DEEZER_PREVIEW.artwork})` }], 'a preview\'s artwork as before');
+      assert.equal(w.vm.dmFindVisible(), true, 'Find elsewhere with Copy title, links or none');
+      assert.deepEqual(w.vm.dmGetItRows().map((r) => r.plugin.name), ['youtube'], 'Get it\'s rows');
+      w.vm.dmCopyTitle();
+      assert.deepEqual(w.copiedAs, [undefined]);
+    }
   });
 });

@@ -1199,6 +1199,12 @@ svg {
   height: 40px;
   background-color: #111;
   margin-top: 5px;
+  /* one line: a title longer than the half-width tab ("Peer
+     Recommendations", a connected server's "Name · Panel") wrapped and its
+     second line was cut off, leaving "Peer" */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .selected-tab {
@@ -2481,6 +2487,56 @@ select {
 .dmodal-status i { width: 7px; height: 7px; border-radius: 50%; background: var(--t4); flex-shrink: 0; }
 .dmodal-status i.dmodal-dot-ok { background: var(--ok); }
 .dmodal-status i.dmodal-dot-off { background: var(--err); }
+/* Peer Recommendations: an offline peer's line has no dot */
+.dmodal-status i.dmodal-dot-none { display: none; }
+/* Peer Recommendations' header: the server's tile — its letter on its
+   hue's colours (inline, PEERRECS.tileColours) — until a preview earns the
+   album's art, an <img> drawn without a referrer */
+.dmodal-art.dmodal-tile { border: 0; font-size: 32px; line-height: 1; font-weight: 600; }
+.dmodal-art-img { display: block; width: 100%; height: 100%; object-fit: cover; border-radius: inherit; }
+/* Its Preview: one control (the page's play icon), the clip's position,
+   then the provider's attribution or "No preview" */
+.dm-clip { display: flex; align-items: center; gap: 12px; }
+.dm-clip-btn {
+  position: relative; width: 40px; height: 40px; flex: none; padding: 0; border: 0; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center; background: var(--src); color: var(--ink); cursor: pointer;
+}
+.dm-clip-btn:focus { background: var(--src); color: var(--ink); }
+.dm-clip-btn:hover { background: var(--src-2); color: var(--ink); }
+/* being asked for (or a 429's wait): a ring turns around it */
+.dm-clip-btn.is-busy::after {
+  content: ''; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--src-2);
+  animation: dm-clip-spin .9s linear infinite;
+}
+@keyframes dm-clip-spin { to { transform: rotate(360deg); } }
+/* no preview for this lead this visit: quiet, and inert */
+.dm-clip-btn.is-none, .dm-clip-btn.is-none:focus, .dm-clip-btn.is-none:hover { background: var(--btn); color: var(--t4); cursor: default; }
+.dm-clip-body { flex: 1 1 auto; min-width: 0; }
+.dm-clip-time { display: flex; align-items: center; gap: 10px; font-size: 11.5px; line-height: 16px; color: var(--t4); font-variant-numeric: tabular-nums; }
+.dm-clip-bar { flex: 1 1 auto; height: 4px; border-radius: 2px; background: var(--well); overflow: hidden; }
+.dm-clip-bar i { display: block; height: 100%; background: var(--src); }
+.dm-clip-attrib { display: inline-block; margin-top: 4px; font-size: 12px; line-height: 16px; color: var(--src-2); text-decoration: none; }
+a.dm-clip-attrib:hover { text-decoration: underline; }
+.dm-clip-attrib.dm-clip-none { color: var(--t4); }
+/* Its Get it…: one outlined chip per plug-in, a job's state on its icon */
+.dm-getit, .dm-getit:focus {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; margin: 0; box-sizing: border-box;
+  border: 1px solid rgba(79, 184, 168, .6); border-radius: 4px; background: transparent; color: var(--src-2);
+  font-size: 12.5px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.dm-getit:hover { background: rgba(79, 184, 168, .1); color: var(--src-2); }
+.dm-getit svg { flex-shrink: 0; }
+.dm-getit[aria-disabled="true"], .dm-getit[aria-disabled="true"]:hover { background: transparent; cursor: default; }
+.dm-getit-busy, .dm-getit-busy:hover { cursor: progress; opacity: .6; }
+.dm-getit-live > svg { animation: dm-getit-pulse 1.4s ease-in-out infinite; }
+@keyframes dm-getit-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+.dm-getit-done, .dm-getit-done:focus, .dm-getit-done:hover { border-color: var(--bord); color: var(--t2); }
+.dm-getit-done > svg { color: var(--ok); }
+.dm-getit-failed > svg { color: var(--errt); }
+@media (prefers-reduced-motion: reduce) {
+  .dm-clip-btn.is-busy::after { animation: none; border-color: var(--src-2); opacity: .5; }
+  .dm-getit-live > svg { animation: none; }
+}
 /* Sections */
 .dmodal-section { border-top: 1px solid var(--div); padding: 12px 20px 14px; }
 .dmodal-section-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
@@ -2757,6 +2813,8 @@ select {
   .dmodal-hint { text-align: left; }
   .dm-btn, .dm-link, .dm-link:focus, .dm-chip, .dm-chip:focus { height: 44px; }
   .dm-btn.dm-btn-icon { width: 44px; }
+  .dm-getit, .dm-getit:focus { height: 44px; }
+  .dm-clip-btn { width: 44px; height: 44px; }
 }
 @media (max-width: 480px) {
   .dm-tiles { grid-template-columns: minmax(0, 1fr); }
@@ -3253,16 +3311,17 @@ body.on-federated-server .side-nav-note {
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────
    The history-seeded page in #browser: a gray configuration bar (the
-   window, "More options" → the seed chips; on Explore its one checkbox).
+   window, "More options" → the seed chips).
    Discover (play now): small labels with their source's dot — library
    #657ee4, connected servers #d9a441 — over album strips, then the songs
    in two columns where the page's content box is ≥ 560 px (a 1440 window with the Now Playing panel open) (the @container
    rule below, so the sidenav and the queue panel count), stacked under
    it. With no connected server the library's songs flow column-major over
-   both columns. Explore (the network, #4fb8a8) keeps its section look. */
+   both columns. Peer Recommendations (the network, #4fb8a8) draws its
+   peer strip over its leads, which flow the same way (.prec-*, below). */
 .dpage { padding: 0 0 16px 0; color: #dfe3ea; font-size: 13px; line-height: 1.4; container-type: inline-size; container-name: dpage; }
 .dpage .grow { flex-grow: 1; }
-.dpage-busy .dpage-sec, .dpage-busy .dpage-seeds, .dpage-busy .dpage-strip, .dpage-busy .dpage-songs { opacity: .6; transition: opacity .15s; }
+.dpage-busy .dpage-seeds, .dpage-busy .dpage-strip, .dpage-busy .dpage-songs, .dpage-busy .prec-acts { opacity: .6; transition: opacity .15s; }
 /* The bar's host: #dpage-head, in the #browser column's chrome above the
    #filelist scroller (as #directory_bar is for the other panels), so the bar
    never scrolls. Its own .dpage (.dpage-chrome) carries the page's type and
@@ -3280,10 +3339,9 @@ body.on-federated-server .side-nav-note {
 .dpage-bar-opt:hover { color: #dfe3ea; }
 .dpage-bar-opt[aria-expanded="true"] { color: #dfe3ea; }
 .dpage-bar-caret { font-size: 10px; }
-/* the drawer under the bar: (Explore) its one checkbox, then the seed picker */
+/* the drawer under the bar: the seed picker */
 .dpage-options { background: #23282f; border-bottom: 1px solid #2c313a; }
 .dpage-options > .dpage-hint { padding-left: 14px; }
-.dpage-opt-row { padding: 10px 14px 0 14px; }
 .dpage-window { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: #8a919e; }
 /* Its fill is the global select rule's (#2d333b, !important): a step up from the bar. */
 .dpage-window select.browser-default { height: 28px; padding: 0 8px; border: 1px solid #444c56; border-radius: 4px; color: #F5F7FA; font-size: 13px; width: auto; }
@@ -3300,7 +3358,6 @@ body.on-federated-server .side-nav-note {
 .dpage-seeds { padding: 10px 14px; }
 .dpage-seeds-h { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; margin-bottom: 8px; }
 .dpage-cap { font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #8a919e; }
-.dpage-sub { font-size: 11.5px; font-style: italic; color: #6f7683; min-width: 0; }
 .dpage-chips { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .dpage-dropped { margin-top: 8px; }
 .dpage-chip { height: 36px; max-width: 100%; display: inline-flex; align-items: center; gap: 8px; padding: 0 10px 0 4px; border: 1px solid #444c56; border-radius: 18px; background: #262b33; color: #dfe3ea; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
@@ -3328,18 +3385,10 @@ body.on-federated-server .side-nav-note {
 .dpage-btn.pri { background: #657ee4; border-color: #657ee4; color: #0f1216; font-weight: 600; }
 .dpage-btn.pri:hover { background: #8ea0f0; border-color: #8ea0f0; }
 
-/* the Explore page's one checkbox ("new artists only"): a button with
-   role=checkbox, its box drawn here */
-.dpage-tog { height: 28px; padding: 0 2px; border: 0; border-radius: 4px; background: transparent; color: #dfe3ea; font-size: 12.5px; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
-.dpage-check i { width: 14px; height: 14px; border: 1px solid #444c56; border-radius: 3px; background: #1a1e25; flex-shrink: 0; position: relative; }
-.dpage-check.on i { background: #4fb8a8; border-color: #4fb8a8; }
-.dpage-check.on i::after { content: ''; position: absolute; left: 4px; top: 1px; width: 4px; height: 8px; border: solid #0f1216; border-width: 0 2px 2px 0; transform: rotate(45deg); }
-
 /* the play page's labels: small letter-spaced caps after the source dot */
 .dpage-label { display: flex; align-items: center; gap: 10px; margin: 0; padding: 16px 16px 10px 16px; font-size: 12px; font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; color: #8a919e; line-height: 1.4; }
 .dpage-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: #657ee4; }
 .dpage-src-peers .dpage-dot { background: #d9a441; }
-.dpage-sec-network .dpage-dot { background: #4fb8a8; }
 
 /* album strips: the grid's cards, one row that scrolls sideways */
 .album-grid.dpage-albums { display: grid; grid-auto-flow: column; grid-auto-columns: 150px; grid-template-columns: none; overflow-x: auto; gap: 16px; padding: 0 16px 6px 16px; scroll-snap-type: x mandatory; scroll-padding-inline: 16px; }
@@ -3414,8 +3463,6 @@ body.on-federated-server .side-nav-note {
 }
 
 /* rows' hover verbs */
-.dpage-tag { font-size: 11px; color: #6f7683; white-space: nowrap; flex-shrink: 0; }
-.dpage-new { color: #4fb8a8; }
 /* a row's badge and bar slots (patched in place on a job poll): no box */
 .dpage-slot { display: contents; }
 .dpage-verbs { display: flex; align-items: center; gap: 6px; flex-shrink: 0; opacity: 0; transition: opacity .12s; }
@@ -3429,16 +3476,16 @@ body.on-federated-server .side-nav-note {
 .dpage-vb { height: 26px; min-width: 26px; padding: 0 8px; border-radius: 4px; border: 1px solid #444c56; background: #1a1e25; color: #dfe3ea; font-size: 11.5px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; cursor: pointer; white-space: nowrap; }
 .dpage-vb:hover { border-color: #8ea0f0; color: #f0f2f5; }
 /* keyboard focus: the house outline (a mouse click draws none) */
-.dpage-tog:focus, .dpage-chip:focus, .dpage-btn:focus, .dpage-vb:focus, .dpage-icon-btn:focus,
+.dpage-chip:focus, .dpage-btn:focus, .dpage-vb:focus, .dpage-icon-btn:focus,
 .dpage-bar-opt:focus, .dpage a:focus { outline: none; }
 /* materialize paints every focused button teal (button:focus); a control
    that was re-focused after a re-render, or tabbed to, keeps its own face. */
-.dpage-tog:focus, .dpage-icon-btn:focus, .dpage-bar-opt:focus { background-color: transparent; }
+.dpage-icon-btn:focus, .dpage-bar-opt:focus { background-color: transparent; }
 .dpage-icon-btn:focus:hover { background-color: rgba(255, 255, 255, .08); }
 .dpage-chip:focus { background-color: #262b33; }
 .dpage-btn:not(.pri):focus { background-color: #1a1e25; }
 .dpage-vb:focus { background-color: #1a1e25; }
-.dpage-tog:focus-visible, .dpage-chip:focus-visible, .dpage-btn:focus-visible, .dpage-vb:focus-visible,
+.dpage-chip:focus-visible, .dpage-btn:focus-visible, .dpage-vb:focus-visible,
 .dpage-icon-btn:focus-visible, .dpage-bar-opt:focus-visible, .dpage-more:focus-visible, .dpage a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
 .dpage-badge { font-size: 11px; white-space: nowrap; flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
 .dpage-badge-src { color: #4fb8a8; }
@@ -3465,8 +3512,6 @@ body.on-federated-server .side-nav-note {
 .dpage-strip .dpage-cstate .dpage-badge { display: block; max-width: 100%; margin: 0; line-height: 16px; }
 .dpage-src-peers .album-grid-art .dpage-prog { position: absolute; left: 0; right: 0; bottom: 0; margin: 0; border-radius: 0; background: rgba(15, 18, 22, .6); }
 .dpage-src-peers .album-grid-art .dpage-prog i { border-radius: 0; }
-/* the columns' footers: dim links */
-.dpage-foot { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 6px 16px 4px 16px; font-size: 12px; }
 /* the whole-list verbs, under a column's header and ahead of its rows */
 .dpage-acts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 16px 8px 16px; font-size: 12px; }
 .dpage-acts a { color: #8a919e; }
@@ -3474,21 +3519,137 @@ body.on-federated-server .side-nav-note {
 .dpage-acts a.dpage-acts-pri { color: #657ee4; }
 .dpage-acts a.dpage-acts-pri:hover { color: #8ea0f0; }
 .dpage-src-peers .dpage-acts a.dpage-acts-pri { color: #d9a441; }
-.dpage-foot a { color: #8a919e; }
-.dpage-foot a:hover { color: #dfe3ea; }
-.dpage-foot a.dpage-foot-pri { color: #657ee4; }
-.dpage-foot a.dpage-foot-pri:hover { color: #8ea0f0; }
-.dpage-src-peers .dpage-foot a.dpage-foot-pri { color: #d9a441; }
 .dpage-sep { color: #6f7683; }
-.dpage-foot-note { margin-left: auto; font-weight: 400; font-style: italic; color: #6f7683; }
 
-/* Explore: the network section */
-.dpage-sec { border-top: 1px solid #2c313a; }
-.dpage > .dpage-sec:first-child { border-top: 0; }
-.dpage-sec-h { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; padding: 14px 14px 8px 14px; }
-.dpage-sec-h h3 { margin: 0; font-size: 11px; font-weight: 700; letter-spacing: 1.6px; text-transform: uppercase; color: #dfe3ea; line-height: 1.4; }
-.dpage-plugins { display: flex; flex-wrap: wrap; gap: 4px 12px; padding: 0 16px 6px 16px; font-size: 11px; color: #6f7683; }
-.dpage-plugin b { color: #b8bcc6; font-weight: 600; }
+/* ── Peer Recommendations (m.js peerRecs*) ─────────────────────────────
+   The peer strip over the leads (the songs' column-major flow above),
+   a lead's open button and its always-shown play icon, the band at the
+   column's foot. Sizes and colours are the web board's (PeerWeb). */
+.prec-strip-row { display: flex; align-items: flex-start; gap: 4px; padding: 14px 16px 10px 16px; overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: thin; }
+.prec-peer { flex: none; width: 86px; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 0; margin: 0; border: 0; border-radius: 8px; background: transparent; color: #8a919e; font: inherit; cursor: pointer; scroll-snap-align: start; }
+.prec-peer[aria-disabled="true"] { cursor: default; }
+/* the first "+" sits a little apart from the shelf */
+.prec-peer:not(.prec-add) + .prec-add { margin-left: 8px; }
+/* a 64 px circle: a shelf peer's monogram on its hue (--h), dimmed offline */
+.prec-circle { position: relative; width: 64px; height: 64px; flex: none; box-sizing: border-box; border-radius: 50%; display: flex; align-items: center; justify-content: center; line-height: 1; font-size: 22px; font-weight: 700; background: hsl(var(--h, 0), 55%, 74%); color: #0f1216; }
+.prec-off .prec-circle { background: hsl(var(--h, 0), 18%, 30%); color: hsl(var(--h, 0), 25%, 82%); }
+.prec-all .prec-circle { background: #262a33; border: 1px solid #444c56; color: #4fb8a8; }
+/* the selected tab: a 2 px teal ring */
+.prec-peer.is-on .prec-circle { box-shadow: 0 0 0 2px #1e2228, 0 0 0 4px #4fb8a8; }
+.prec-name { display: block; max-width: 86px; max-height: 32px; overflow: hidden; font-size: 12px; line-height: 16px; text-align: center; overflow-wrap: break-word; }
+.prec-peer.is-on .prec-name { font-weight: 600; color: #F5F7FA; }
+.prec-online { position: absolute; right: 3px; bottom: 3px; width: 12px; height: 12px; border-radius: 50%; background: #4fc27a; box-shadow: 0 0 0 2px #1e2228; }
+/* an admin's addable peer: a dashed "+", then its Add's state */
+.prec-add .prec-circle { background: transparent; border: 1.5px dashed rgba(79, 184, 168, .6); color: #5ec9b9; }
+.prec-adding .prec-circle { background: hsla(var(--h, 0), 55%, 74%, .35); border: 0; color: #F5F7FA; }
+.prec-adding .prec-circle::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(79, 184, 168, .25); border-top-color: #4fb8a8; animation: prec-spin 1.2s linear infinite; }
+.prec-failed .prec-circle { border: 2px solid #e0616a; color: #ec8a90; }
+.prec-noroom .prec-circle { border: 1.5px solid #444c56; color: #8a919e; }
+.prec-state { display: block; margin-top: -6px; font-size: 12px; line-height: 16px; font-weight: 600; white-space: nowrap; color: #5ec9b9; }
+.prec-failed .prec-state { color: #ec8a90; }
+.prec-noroom .prec-state { color: #8a919e; }
+/* the acts line: Preview all (the network's teal) · Copy list */
+.prec-acts { padding-top: 4px; line-height: 18px; }
+.prec-act { display: inline-flex; align-items: center; gap: 5px; height: auto; padding: 0; margin: 0; border: 0; background: transparent; font: inherit; font-size: 12px; line-height: 18px; color: #8a919e; cursor: pointer; }
+.prec-act:hover { color: #dfe3ea; }
+.prec-act-all { color: #4fb8a8; }
+.prec-act-all:hover, .prec-act-all[aria-pressed="true"] { color: #5ec9b9; }
+.prec-act svg { width: 11px; height: 11px; flex: none; }
+.prec-retry { padding: 6px 16px 10px 16px; }
+/* a lead: the open button (tile, title, "Artist · Album"), then the play icon */
+.prec-open { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 12px; height: auto; padding: 0; margin: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.prec-open .discover-row-title, .prec-open .discover-row-sub { display: block; }
+.prec-open .discover-row-title { line-height: 18px; }
+.prec-open .discover-row-sub { margin-top: 1px; line-height: 16px; }
+/* the server's tile: its letter on its hue */
+.prec-tile { background: hsl(var(--h, 0), 22%, 24%); color: hsl(var(--h, 0), 30%, 72%); font-size: 18px; font-weight: 600; line-height: 1; }
+.prec-play { position: relative; width: 28px; height: 28px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0; margin: 0; border: 0; border-radius: 50%; background: #4fb8a8; color: #0f1216; cursor: pointer; }
+.prec-play:hover { background: #5ec9b9; }
+/* being asked for (or a 429's wait): a ring turns around it */
+.prec-play.is-busy::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid transparent; border-top-color: #4fb8a8; animation: prec-spin 1s linear infinite; }
+/* no preview for this lead this visit: quiet, and inert */
+.prec-play.is-none, .prec-play.is-none:hover { background: #363d47; color: #8a919e; cursor: default; }
+/* the live lead's title in teal (browsers without :has() keep it white) */
+.prec-row:has(.prec-play.is-live) .discover-row-title { color: #5ec9b9; }
+@keyframes prec-spin { to { transform: rotate(360deg); } }
+
+/* the band (#dpage-band): the clip, at the column's foot, out of the scroller */
+#dpage-band { flex-shrink: 0; container-type: inline-size; }
+.prec-band { position: relative; height: 56px; box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 0 8px 0 12px; background: #15171c; border-top: 1px solid #2c313a; color: #dfe3ea; font-size: 13px; line-height: 1.4; }
+.prec-band-prog { position: absolute; left: 0; right: 0; top: -1px; height: 2px; background: #262b33; overflow: hidden; }
+.prec-band-prog i { display: block; width: 100%; height: 100%; background: #4fb8a8; transform-origin: left center; }
+.prec-band .prec-band-art { width: 44px; height: 44px; }
+.prec-band-text { flex: 1 1 auto; min-width: 0; }
+.prec-band-title { font-size: 13px; line-height: 18px; color: #F5F7FA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prec-band-sub { display: flex; align-items: baseline; gap: 5px; min-width: 0; font-size: 12px; line-height: 16px; color: #8a919e; white-space: nowrap; }
+.prec-band-artist { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.prec-band-credit { flex: none; font-size: 11px; color: #a0a7b3; }
+a.prec-band-credit { text-decoration: underline; text-underline-offset: 2px; }
+a.prec-band-credit:hover { color: #dfe3ea; }
+.prec-band-acts { display: flex; align-items: center; gap: 4px; flex: none; }
+.prec-band-toggle, .prec-band-icon { position: relative; width: 32px; height: 32px; flex: none; display: flex; align-items: center; justify-content: center; padding: 0; margin: 0; border: 0; cursor: pointer; }
+.prec-band-toggle { border-radius: 50%; background: #4fb8a8; color: #0f1216; }
+.prec-band-toggle svg { width: 14px; height: 14px; }
+.prec-band-toggle.is-busy::after { content: ''; position: absolute; inset: -4px; border-radius: 50%; border: 2px solid transparent; border-top-color: #4fb8a8; animation: prec-spin 1s linear infinite; }
+.prec-band-icon { border-radius: 4px; background: transparent; color: #dfe3ea; }
+.prec-band-icon:hover { background: rgba(255, 255, 255, .08); }
+.prec-band-getit { position: relative; height: 28px; padding: 0 10px; margin: 0 2px; box-sizing: border-box; border: 1px solid rgba(79, 184, 168, .6); border-radius: 4px; background: transparent; color: #5ec9b9; font: inherit; font-size: 12.5px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; }
+.prec-band-getit:hover { border-color: #5ec9b9; }
+/* materialize paints a focused button teal; the keyboard's ring is the house one */
+.prec-peer:focus, .prec-act:focus, .prec-open:focus, .prec-band-icon:focus, .prec-band-getit:focus { outline: none; background-color: transparent; }
+.prec-play:focus, .prec-band-toggle:focus { outline: none; background-color: #4fb8a8; }
+.prec-play.is-none:focus { background-color: #363d47; }
+.prec-band-icon:focus:hover { background-color: rgba(255, 255, 255, .08); }
+.prec-peer:focus-visible, .prec-act:focus-visible, .prec-open:focus-visible, .prec-play:focus-visible, .prec-band button:focus-visible, .prec-band a:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  .prec-adding .prec-circle::after, .prec-play.is-busy::after, .prec-band-toggle.is-busy::after { animation: none; }
+}
+/* touch: every play icon and band button takes a 44 px tap (the icons
+   keep their drawn size) */
+@media (pointer: coarse) {
+  .prec-play::before, .prec-band-toggle::before { content: ''; position: absolute; inset: -8px; }
+  .prec-band-toggle::before { inset: -6px; }
+  .prec-band-icon { width: 44px; height: 44px; }
+  .prec-band-getit::before { content: ''; position: absolute; left: 0; right: 0; top: -8px; bottom: -8px; }
+  .prec-band-acts { gap: 6px; }
+}
+@media (max-width: 600px) {
+  .prec-band { padding: 0 12px 0 16px; }
+}
+/* a band under 560 px (the phone, a narrow column) has no room for
+   "Artist · attribution" beside its buttons: once resolved, the
+   attribution takes the second line whole, in the artist's place, and
+   wraps rather than run under them — only the title truncates; a third
+   line grows the band */
+@container (max-width: 559px) {
+  .prec-band { height: auto; min-height: 56px; padding-top: 4px; padding-bottom: 4px; }
+  .prec-band-sub { white-space: normal; line-height: 14px; }
+  .prec-band-sub:has(.prec-band-credit) > :not(.prec-band-credit) { display: none; }
+  .prec-band-credit { flex: 0 1 auto; min-width: 0; }
+}
+/* The turnOn mode (m.js peerRecsTurnOn*): an admin's form to turn the
+   network on. One centred block in the states' card look; its fields in
+   the window's input look (browser-default: no materialize underline), its
+   button the page's. */
+.prec-on { box-sizing: border-box; width: calc(100% - 32px); max-width: 440px; margin: 32px auto 0 auto; padding: 16px; border: 1px solid #444c56; border-radius: 6px; background: #23282f; }
+.prec-on-text { margin: 0 0 8px 0; font-size: 13px; line-height: 1.5; color: #b8bcc6; }
+.prec-on > .prec-on-text:last-child { margin-bottom: 0; }
+.prec-on-field { display: block; margin-top: 14px; }
+.prec-on-label { display: block; margin-bottom: 6px; font-size: 12px; line-height: 16px; color: #8a919e; }
+.prec-on-input, .prec-on-input[type="text"] { display: block; width: 100%; height: 32px; margin: 0; padding: 0 10px; box-sizing: border-box; border: 1px solid #444c56; border-radius: 4px; background: #1a1e25; color: #F5F7FA; font-size: 13px; box-shadow: none; }
+.prec-on-input[type="text"]:focus { outline: none; border-color: #4fb8a8; box-shadow: none; }
+.prec-on-input:disabled { opacity: .6; }
+.prec-on-acts { margin-top: 16px; }
+.prec-on-btn { min-width: 96px; }
+.prec-on .dpage-btn.pri:focus { background-color: #657ee4; }
+.prec-on-btn:disabled, .prec-on-btn:disabled:hover, .prec-on-btn[aria-disabled="true"], .prec-on-btn[aria-disabled="true"]:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }
+.prec-on-err { margin: 8px 0 0 0; font-size: 12px; line-height: 1.5; color: #ec8a90; overflow-wrap: anywhere; }
+/* touch: 44 px targets; 16 px field text, or iOS Safari zooms the page
+   into the focused field and the form pans sideways */
+@media (pointer: coarse) {
+  .prec-on-input, .prec-on-input[type="text"], .prec-on .dpage-btn { height: 44px; }
+  .prec-on-input, .prec-on-input[type="text"] { font-size: 16px; }
+}
 
 /* the now-playing panel's "Discover page →": where the ping has the page */
 .discover-page-footer { display: none; }
@@ -3509,13 +3670,12 @@ body.on-federated-server .discover-page-footer { display: none; }
   .dpage-bar { padding: 6px 16px; }
   .dpage-bar .grow { display: none; }
   .dpage-bar-r { flex: 1 0 100%; justify-content: flex-end; }
-  .dpage-seeds, .dpage-opt-row { padding-left: 16px; padding-right: 16px; }
+  .dpage-seeds { padding-left: 16px; padding-right: 16px; }
   .dpage-options > .dpage-hint { padding-left: 16px; }
   .dpage-chip { height: 30px; font-size: 12px; }
   .dpage-chip-art { width: 22px; height: 22px; }
   /* no hover on a phone: the verbs stay; the row's own tap queues */
   .dpage-verbs { opacity: 1; }
-  .dpage-foot-note { margin-left: 0; width: 100%; }
 }
 /* a narrow content box (a phone, or the sidenav and queue open on a tablet):
    smaller cards and art */

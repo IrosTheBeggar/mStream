@@ -168,6 +168,10 @@ const VUEPLAYERCORE = (() => {
       searchedPeers: null,    // null = never fetched; 0 = network still warming up
       newArtistsOnly: (() => { try { return localStorage.getItem('discoverNewArtistsOnly') === 'true'; } catch (_) { return false; } })(),
     },
+    // Peer Recommendations' clip (m.js, the page): the one lead's 30-second
+    // preview the page's rows and band and the window's Preview section all
+    // read (clipStart and the rest of the clip* methods, blankDiscoverClip).
+    clip: blankDiscoverClip(),
     // "From your peers" (discovery over federation): live similarity answers
     // from the servers this one is PAIRED with. Same reveal contract — the
     // ping response's federationDiscovery flag, never a probe. Leads for now
@@ -252,9 +256,16 @@ const VUEPLAYERCORE = (() => {
       focus: null,
       // Where the window was opened from: 'browse' = a connected server's
       // own pages (m.js), whose songs may come without tags or an album
-      // credit (dmLoadPeerFacts reads them); null = Discover, the
-      // now-playing panel, the strip.
+      // credit (dmLoadPeerFacts reads them); 'peerRecs' = a lead of the
+      // Peer Recommendations page (its tile, its peer line, one Preview
+      // control, Get it… chips, its own Copy row: dmPeerRecs); null =
+      // Discover, the now-playing panel, the strip.
       from: null,
+      // From Peer Recommendations: the lead's tile as the server stamped it
+      // ({ key, hue, letter }: dmTileOf) — the header until a preview earns
+      // the album's art — and its peer line ({ label, online }: the dot).
+      tile: null,
+      peerLine: null,
       // The fact links the page behind the window already is ('viewAlbum',
       // 'viewArtist'): hidden (dmHidden).
       hide: [],
@@ -344,10 +355,184 @@ const VUEPLAYERCORE = (() => {
   let discoverDebounce = null;
   let discoverReqId = 0;
   let discoverDirty = false;   // song changed while collapsed → refetch on expand
-  // The one 30-second preview clip playing from a row menu, and whether we
-  // paused the main player to make room for it.
-  let discoverPreviewAudio = null;
-  let discoverPreviewPausedMain = false;
+
+  // ── The aside player (docs/peer-recommendations-plan.md §2 items 13–14) ──
+  // The one 30-second clip that plays beside the main player: the window's
+  // preview tiles (owner 'window') and Peer Recommendations' clip (owner
+  // 'clip', discoverState.clip) share ONE reused <audio> element — Safari
+  // lets an element that played after a press play again without one, so
+  // Preview all can chain — so only one clip ever plays. Every claim takes
+  // a new token: the element's events reach only the owner whose claim
+  // loaded it, through its handlers ({ time, ended, error, stopped }). The
+  // main player is paused when a session's first clip starts (only if it
+  // was playing), stays paused across hand-offs (the next clip, another
+  // owner), and plays again once, when the session ends; the user starting
+  // it ends the clip, and nothing resumes it for that clip later.
+  //   el              the element (asideEl), made on the first clip
+  //   owner / on      who holds the aside, and its handlers
+  //   token / loaded  the current claim, and the claim whose clip the
+  //                   element holds (null = none)
+  //   pausedMain      this session paused the main player: it resumes it
+  //   mainWasPlaying  the main player played when the session was claimed
+  //                   (a session asked while it was paused ends if the user
+  //                   starts it before the clip does); false again once a
+  //                   clip starts with it stopped
+  const aside = { el: null, owner: null, on: null, token: 0, loaded: null, pausedMain: false, mainWasPlaying: false };
+  // The main player's stats; null where there is none.
+  function asideMainStats() {
+    return (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats) ? MSTREAMPLAYER.playerStats : null;
+  }
+  // The element, made once. Its events go to the owner whose clip it holds.
+  function asideEl() {
+    if (aside.el) { return aside.el; }
+    const el = new Audio();
+    el.preload = 'auto';
+    const holder = () => (aside.loaded !== null && aside.loaded === aside.token ? aside.on : null);
+    el.addEventListener('timeupdate', () => { const on = holder(); if (on && on.time) { on.time(el.currentTime || 0); } });
+    el.addEventListener('ended', () => { const on = holder(); if (on && on.ended) { on.ended(); } });
+    el.addEventListener('error', () => { const on = holder(); if (on && on.error) { on.error(); } });
+    aside.el = el;
+    return el;
+  }
+  // `owner` takes the aside — a clip still being asked for holds it too,
+  // so the user starting the main player meanwhile ends it. Whatever
+  // played stops; a different owner hears stopped('preempted'); the main
+  // player stays as it is. → the claim's token.
+  function asideClaim(owner, on) {
+    const before = aside.owner;
+    const told = aside.on;
+    if (!before && !aside.pausedMain) {
+      const s = asideMainStats();
+      aside.mainWasPlaying = !!(s && s.playing === true);
+    }
+    aside.token += 1;
+    aside.owner = owner;
+    aside.on = on || null;
+    if (aside.loaded !== null && aside.el) { try { aside.el.pause(); } catch (_) { /* already gone */ } }
+    aside.loaded = null;
+    if (before && before !== owner && told && told.stopped) { told.stopped('preempted'); }
+    return aside.token;
+  }
+  // play() on the element for a claim; a refusal reaches the owner's
+  // error handler (an AbortError is this aside's own pause or swap).
+  function asideStart(el, token) {
+    let p = null;
+    try { p = el.play(); } catch (err) { p = Promise.reject(err); }
+    if (p && typeof p.catch === 'function') {
+      p.catch((err) => {
+        if (aside.token !== token || aside.loaded !== token || (err && err.name === 'AbortError')) { return; }
+        if (aside.on && aside.on.error) { aside.on.error(); }
+      });
+    }
+  }
+  // Play `url` for `owner`: a new claim, then the main player paused if it
+  // plays (this session resumes it), then the one element. → the token.
+  // A session that finds it stopped (it played at the claim, then the user
+  // paused it or its queue ended) no longer counts it as playing: the
+  // user starting it ends this clip.
+  function asidePlay(owner, url, on) {
+    const token = asideClaim(owner, on);
+    const s = asideMainStats();
+    if (s && s.playing === true) {
+      aside.pausedMain = true;
+      MSTREAMPLAYER.playPause();
+    } else if (!aside.pausedMain) {
+      aside.mainWasPlaying = false;
+    }
+    const el = asideEl();
+    aside.loaded = token;
+    el.src = url;
+    asideStart(el, token);
+    return token;
+  }
+  // Pause and resume `owner`'s clip in place; the main player stays
+  // paused. → whether it holds a clip to pause or resume.
+  function asidePause(owner) {
+    if (aside.owner !== owner || aside.loaded === null || aside.loaded !== aside.token || !aside.el) { return false; }
+    try { aside.el.pause(); } catch (_) { /* already gone */ }
+    return true;
+  }
+  function asideResume(owner) {
+    if (aside.owner !== owner || aside.loaded === null || aside.loaded !== aside.token || !aside.el) { return false; }
+    asideStart(aside.el, aside.token);
+    return true;
+  }
+  // `owner` lets go: its clip stops and the session ends — the main player
+  // plays again if the session paused it and it is still paused, unless
+  // `resume` is false (a server switch, the user's own play). → whether it
+  // held the aside.
+  function asideStop(owner, resume) {
+    if (!owner || aside.owner !== owner) { return false; }
+    aside.token += 1;
+    aside.owner = null;
+    aside.on = null;
+    if (aside.loaded !== null && aside.el) { try { aside.el.pause(); } catch (_) { /* already gone */ } }
+    aside.loaded = null;
+    const paused = aside.pausedMain;
+    aside.pausedMain = false;
+    const s = asideMainStats();
+    if (paused && resume !== false && s && s.playing !== true) { MSTREAMPLAYER.playPause(); }
+    return true;
+  }
+  // The main player's playing flag changed (playerVue's watcher, its first
+  // line). The user starting it while a clip holds the aside — a session
+  // that paused it, or one asked while it was paused — ends the clip, and
+  // it is never resumed for that clip. The aside's own pause and resume
+  // land here too and change nothing: the session they belong to has
+  // already let go (or never paused it).
+  function asideMainPlaying(on) {
+    if (on !== true || !aside.owner || (!aside.pausedMain && aside.mainWasPlaying)) { return; }
+    const told = aside.on;
+    asideStop(aside.owner, false);
+    if (told && told.stopped) { told.stopped('main'); }
+  }
+
+  // Peer Recommendations' clip (discoverState.clip; the clip* methods). A
+  // fresh one: nothing asked yet this visit.
+  //   key      PEERRECS.leadKey of the lead it is about
+  //   raw      that lead, as the taste route sent it; tile its tile
+  //   status   idle | resolving | waiting (a 429's wait) | playing | paused
+  //            | none (no preview, for the visit) | failed (this press only)
+  //   preview  the resolve's preview while it is the clip's
+  //   at / seconds  where it is, and how long it is
+  //   gen      fences every answer, retry and audio event
+  //   art      tile key → the artwork a preview earned (§2 item 10)
+  //   results  lead key → { status: 'ready' | 'none', preview }: what the
+  //            visit's resolves answered (at most CLIP_RESULTS_MAX)
+  function blankDiscoverClip() {
+    return { key: null, raw: null, tile: null, status: 'idle', preview: null, at: 0, seconds: 30, gen: 0, art: {}, results: {} };
+  }
+  // The clip's statuses that hold the aside.
+  const CLIP_LIVE = ['resolving', 'waiting', 'playing', 'paused'];
+  // A press made while a resolve is out waits for it, then this long more;
+  // a newer press takes its place meanwhile (plan §5.5).
+  const CLIP_QUEUE_MS = 300;
+  const CLIP_RESULTS_MAX = 200;
+  // The one resolve in flight (a press's or Preview all's look ahead), the
+  // press queued behind it ({ gen, attempt }) and its wait.
+  const clipNet = { flight: false, queued: null, timer: null };
+  // A 429's wait before its one retry.
+  let clipRetryTimer = null;
+  // Who hears the clip's events (mstreamModule.watchClip).
+  const clipWatchers = [];
+  // A preview a clip can play: one with a URL.
+  function clipPreviewOf(p) {
+    return p && typeof p === 'object' && typeof p.url === 'string' && p.url !== '' ? p : null;
+  }
+  // A lead's tile as the server stamped it — { key, hue, letter } with a
+  // number for the hue — else null. Never computed here.
+  function dmTileOf(v) {
+    if (!v || typeof v !== 'object' || typeof v.hue !== 'number' || !Number.isFinite(v.hue)) { return null; }
+    return { key: typeof v.key === 'string' ? v.key : '', hue: v.hue, letter: typeof v.letter === 'string' ? v.letter : '' };
+  }
+  // The window's peer line from the page's (PEERRECS.peerLine: { label,
+  // online }), else the label the lead carries, with no dot.
+  function dmPeerLineOf(line, track) {
+    if (line && typeof line.label === 'string' && line.label.trim() !== '') { return { label: line.label, online: line.online === true }; }
+    const p = track && track.peer;
+    const label = p && typeof p.label === 'string' && p.label.trim() !== '' ? p.label : (p && typeof p.name === 'string' ? p.name.trim() : '');
+    return label ? { label, online: false } : null;
+  }
   // Recommendation modal bookkeeping: a generation counter that fences
   // async answers, the control the keyboard goes back to on close
   // (dmOpenerOf), and the key handler installed only while a window is open.
@@ -435,22 +620,24 @@ const VUEPLAYERCORE = (() => {
     return { el, sel, key: el.getAttribute('data-keep-key') || null };
   }
   // Focus back on the opener; on the control in its place when the page
-  // redrew it (a button first: a lead's row and its ⋯ carry the same
-  // data-dp, the row first in the page); when it is gone, on the Discover
-  // page's first heading. A browse or queue control is found again by its
-  // key — the filter and a poll redraw rows, and a queue row the list
-  // reuses for another song carries another key — in the page's header,
-  // its list or the queue; gone, a queue row's ⋮ hands over to the queue,
-  // a page's control to the header's Keep a copy… button, else the panel's
-  // title (the phone's tab where the title is hidden): never <body>. A row
-  // or a heading is no control: it takes focus as tabindex -1, out of the
-  // tab order. → the element focused, or null.
+  // or Peer Recommendations' band redrew it (a button first: a lead's row
+  // and its ⋯ carry the same data-dp, the row first in the page); when it
+  // is gone, on the Discover page's first heading (Peer Recommendations
+  // has none: its Preview all, else the bar's More options). A browse or
+  // queue control is found again by its key — the filter and a poll
+  // redraw rows, and a queue row the list reuses for another song carries
+  // another key — in the page's header, its list or the queue; gone, a
+  // queue row's ⋮ hands over to the queue, a page's control to the
+  // header's Keep a copy… button, else the panel's title (the phone's tab
+  // where the title is hidden): never <body>. A row or a heading is no
+  // control: it takes focus as tabindex -1, out of the tab order. → the
+  // element focused, or null.
   function dmFocusBack(opener, doc) {
     const key = (opener && opener.key) || null;
     let el = opener && opener.el && opener.el.isConnected !== false ? opener.el : null;
     if (el && key && typeof el.getAttribute === 'function' && el.getAttribute('data-keep-key') !== key) { el = null; }
     if (!el && opener && opener.sel) {
-      for (const at of ['#dpage-head .dpage', '#filelist .dpage']) {
+      for (const at of ['#dpage-head .dpage', '#filelist .dpage', '#dpage-band']) {
         el = doc.querySelector(`${at} button${opener.sel}`) || doc.querySelector(`${at} ${opener.sel}`);
         if (el) { break; }
       }
@@ -468,7 +655,11 @@ const VUEPLAYERCORE = (() => {
         if (shown(found)) { el = found; break; }
       }
     }
-    if (!el) { el = doc.querySelector('#filelist .dpage h3'); }
+    // the heading; on Peer Recommendations, Preview all, else the bar
+    for (const at of el ? [] : ['#filelist .dpage h3', '#filelist .dpage [data-dp="precAll"]', '#dpage-head .dpage [data-dp="options"]']) {
+      el = doc.querySelector(at);
+      if (el) { break; }
+    }
     if (!el || typeof el.focus !== 'function') { return null; }
     if (!/^(a|button|input|select|textarea)$/i.test(el.tagName || '') && !el.hasAttribute('tabindex')) { el.setAttribute('tabindex', '-1'); }
     el.focus({ preventScroll: true });
@@ -495,6 +686,9 @@ const VUEPLAYERCORE = (() => {
   let discoverJobsTimer = null;
   let discoverJobsVisibilityHooked = false;
   let discoverJobsFailures = 0;   // consecutive failed polls — the beat slows while the server is away
+  // Peer Recommendations' window follows its own live jobs by id
+  // (dmPeerJobsPoll); the strip's list keeps its slower beat meanwhile.
+  let discoverPeerJobsTimer = null;
 
   // Icons the job rows and the downloads strip share (24-unit box).
   const DM_ICONS = {
@@ -505,6 +699,7 @@ const VUEPLAYERCORE = (() => {
     warn: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',
     close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     play: 'M8 5v14l11-7z',
+    pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
     plus: 'M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z',
     copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
     info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
@@ -1168,10 +1363,12 @@ const VUEPLAYERCORE = (() => {
       // on a compilation, whose Album copies it whole), else the artist;
       // for an artist, how many albums the peer lists them on ("Artist · 4
       // albums on Stage Peer B"); for a folder, where it is on the peer
-      // ("Folder · music › Boukmanflow › Borrowed Tapes").
+      // ("Folder · music › Boukmanflow › Borrowed Tapes"). From Peer
+      // Recommendations: "Artist · Album" alone.
       dmSubtitle: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
+        if (this.dmPeerRecs()) { return [tr.artist, tr.album].filter(Boolean).join(' · '); }
         if (this.dmAlbumFocus()) {
           const a = m.album;
           return [DISCOVERYPAGE.albumCreditOf(tr), tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
@@ -1206,10 +1403,13 @@ const VUEPLAYERCORE = (() => {
       // Header artwork: the peer's own art file for a peer row (its
       // metadata read's, else the row's own albumArt — drawn before that
       // read answers), else the first preview provider that answered
-      // with artwork.
+      // with artwork. From Peer Recommendations: only the art a preview
+      // earned for the lead's tile key this visit (clip.art, plan §2
+      // item 10) — drawn as an <img> without a referrer — else its tile.
       dmArt: function () {
         const m = this.discover.modal;
         if (!m.open) { return null; }
+        if (this.dmPeerRecs()) { return (m.tile && m.tile.key && this.discover.clip.art[m.tile.key]) || null; }
         const peerArt = m.source === 'federation' && m.track && m.track.peer
           ? ((m.file && m.file.art) || DISCOVERYPAGE.fedQueueMeta(m.track)['album-art'] || null)
           : null;
@@ -1222,16 +1422,43 @@ const VUEPLAYERCORE = (() => {
         }
         return null;
       },
+      // Opened from the Peer Recommendations page.
+      dmPeerRecs: function () {
+        return this.discover.modal.from === 'peerRecs';
+      },
+      // The page's header without earned art: the server's tile, its
+      // letter on its hue's colours (PEERRECS.tileColours). → { letter,
+      // field, ink } or null.
+      dmTile: function () {
+        const m = this.discover.modal;
+        if (!m.open || !this.dmPeerRecs() || !m.tile || this.dmArt()) { return null; }
+        const c = PEERRECS.tileColours(m.tile.hue);
+        return { letter: m.tile.letter, field: c.field, ink: c.ink };
+      },
+      // The header's inline style: a cover as its background, or a tile's
+      // colours (the page's earned art is an <img>, never a background).
+      dmArtStyle: function () {
+        const art = this.dmArt();
+        if (art && !this.dmPeerRecs()) { return { backgroundImage: 'url(' + art + ')' }; }
+        const tile = this.dmTile();
+        return tile ? { background: tile.field, color: tile.ink } : null;
+      },
       // The header's one meta line, its parts joined by "·": a connected
       // server's status, the song's format (an album has many: none), and
       // how close the match is — "93% match to your recent listening".
       // A network row has no server of its own to ask: its ISRC, the match.
       // { kind: 'status', dot, text } | { kind: 'isrc' | 'text', text }. A
       // server not answering has its last seen as a part of its own, so the
-      // template's hidden "·" goes between them.
+      // template's hidden "·" goes between them. From Peer Recommendations:
+      // the peer line alone — its label as the server stamped it, the dot
+      // only while the strip's last answer has the peer online.
       dmMetaParts: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
+        if (this.dmPeerRecs()) {
+          const p = m.peerLine;
+          return p && p.label ? [{ kind: 'status', dot: p.online ? 'ok' : 'none', text: p.label }] : [];
+        }
         const parts = [];
         if (m.source === 'federation') {
           const status = this.dmPeerStatus();
@@ -1366,11 +1593,18 @@ const VUEPLAYERCORE = (() => {
       //     goes back on close (else whatever had focus); a browse or queue
       //     control's data-keep-key finds it again after a redraw
       //     (dmFocusBack)
+      //   { from: 'peerRecs' } a network lead of the Peer Recommendations
+      //     page (plan §2 item 15) — it opens with the plug-ins off too
+      //     (Copy has its own row); with { peer } its peer line
+      //     (PEERRECS.peerLine: { label, online }) and { tile } its tile
+      //     (else the lead's own). No invite row; nothing plays until its
+      //     Preview is pressed, and a clip the page plays goes on.
       openDiscoverModal: async function (track, source, opts) {
-        if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
+        const o = opts || {};
+        const page = source === 'p2p' && o.from === 'peerRecs';
+        if (source === 'p2p' && !page && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
         const gen = ++discoverModalGen;
-        const o = opts || {};
         const peerRow = source === 'federation';
         const t = track || {};
         const needs = { album: !!t.album, artist: !!t.artist, folder: typeof t.filepath === 'string' && t.filepath !== '' };
@@ -1392,7 +1626,9 @@ const VUEPLAYERCORE = (() => {
         // a window that replaces an open one goes back where that came from
         if (!this.discover.modal.open || !discoverModalOpener) { discoverModalOpener = dmOpenerOf(o.opener || document.activeElement); }
         this.discover.modal = blankDiscoverModal({
-          open: true, gen, source, track: shown, focus, from: browse ? 'browse' : null, folder, creditsDisagree: browse && !focus && o.creditsDisagree === true,
+          open: true, gen, source, track: shown, focus, from: browse ? 'browse' : (page ? 'peerRecs' : null), folder, creditsDisagree: browse && !focus && o.creditsDisagree === true,
+          tile: page ? dmTileOf(o.tile) || dmTileOf(t.tile) : null,
+          peerLine: page ? dmPeerLineOf(o.peer, t) : null,
           hide: Array.isArray(o.hide) ? o.hide.filter((h) => h === 'viewAlbum' || h === 'viewArtist') : [],
           matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
           matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
@@ -1409,11 +1645,12 @@ const VUEPLAYERCORE = (() => {
         if (this.discover.plugins.available) { if (links) { jobs.push(this.dmLoadLinks(gen)); } jobs.push(this.dmLoadJobs(gen)); }
         if (source === 'federation') { jobs.push(this.dmLoadPeerFacts(gen)); }
         if (focus === 'folder') { jobs.push(this.dmLoadFolderScan(gen)); }
-        if (source === 'p2p' && this.discover.admin) { jobs.push(this.dmLoadFederate(gen)); }
+        if (source === 'p2p' && this.discover.admin && !page) { jobs.push(this.dmLoadFederate(gen)); }
         await Promise.all(jobs);
       },
       closeDiscoverModal: function () {
         this.stopDiscoverPreview();
+        if (discoverPeerJobsTimer) { clearTimeout(discoverPeerJobsTimer); discoverPeerJobsTimer = null; }
         document.removeEventListener('keydown', onDiscoverModalKey);
         discoverModalGen++;
         this.discover.modal = blankDiscoverModal({ gen: discoverModalGen });
@@ -1483,9 +1720,12 @@ const VUEPLAYERCORE = (() => {
       // it failed (Copy title still works), or with links that name it —
       // absent where the server has no links plug-in, or one that only
       // searches songs (dmLoadLinks). An artist's and a folder's windows
-      // have none: the plug-in has no phrase for either.
+      // have none: the plug-in has no phrase for either. From Peer
+      // Recommendations it is the links alone, once they are there (Copy
+      // is a row of its own; no note while they are asked, or failed).
       dmFindVisible: function () {
         const m = this.discover.modal;
+        if (this.dmPeerRecs()) { return !m.loading && !m.error && m.links.length > 0; }
         if (this.dmArtistFocus() || this.dmFolderFocus()) { return false; }
         return !this.dmAlbumFocus() || m.loading || m.error || m.links.length > 0;
       },
@@ -1501,10 +1741,11 @@ const VUEPLAYERCORE = (() => {
         return /^search\s+/i.test(label) ? label.replace(/^search\s+/i, '') : label;
       },
       // Copy title: "Artist - Title" — or, in album focus, "Credit - Album".
+      // Peer Recommendations' Copy says "Copied" (plan §5.7).
       dmCopyTitle: function () {
         const tr = this.discover.modal.track || {};
         if (this.dmAlbumFocus()) { return this.copyDiscoverP2p({ artist: DISCOVERYPAGE.albumCreditOf(tr) || '', title: tr.album || '' }); }
-        return this.copyDiscoverP2p(tr);
+        return this.copyDiscoverP2p(tr, this.dmPeerRecs() ? 'peerRecs.copied' : undefined);
       },
       // A peer row's window: the peer's status from the peers
       // listing, the file's own facts (format, size, art) from its metadata
@@ -1944,7 +2185,7 @@ const VUEPLAYERCORE = (() => {
       // Ask one provider for its 30-second clip and play it. Nothing is sent
       // to a catalogue until the user presses this. A second press stops it.
       // The main player is paused for the clip and resumed afterwards if it
-      // was playing.
+      // was playing (the aside player, owner 'window').
       toggleDiscoverPreview: async function (plugin) {
         const name = plugin.name;
         if (this.discover.modal.playing === name) { this.stopDiscoverPreview(); return; }
@@ -1963,32 +2204,337 @@ const VUEPLAYERCORE = (() => {
         this.$set(this.discover.modal.previews, name, { status: preview ? 'ready' : 'none', preview });
         if (preview) { this.playDiscoverPreview(name, preview); }
       },
+      // One tile's clip in place of whatever the aside played (a tile's,
+      // the page's clip): the main player stays paused across the swap.
       playDiscoverPreview: function (name, preview) {
-        this.stopDiscoverPreview();
-        if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing === true) {
-          discoverPreviewPausedMain = true;
-          MSTREAMPLAYER.playPause();
-        }
-        const audio = new Audio(preview.url);
-        discoverPreviewAudio = audio;
         this.discover.modal.playing = name;
-        const done = () => { if (discoverPreviewAudio === audio) { this.stopDiscoverPreview(); } };
-        audio.addEventListener('ended', done);
-        audio.addEventListener('error', done);
-        audio.play().catch(done);
+        const done = () => { this.stopDiscoverPreview(); };
+        asidePlay('window', preview.url, {
+          ended: done,
+          error: done,
+          // the page's clip took the aside, or the user started the main player
+          stopped: () => { if (this.discover.modal) { this.discover.modal.playing = null; } },
+        });
       },
+      // Stops the window's own tile clip only: a clip the Peer
+      // Recommendations page plays goes on under the window.
       stopDiscoverPreview: function () {
-        if (discoverPreviewAudio) {
-          try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
-          discoverPreviewAudio = null;
-        }
+        asideStop('window');
         if (this.discover.modal) { this.discover.modal.playing = null; }
-        if (discoverPreviewPausedMain) {
-          discoverPreviewPausedMain = false;
-          if (typeof MSTREAMPLAYER !== 'undefined' && MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.playing !== true) {
-            MSTREAMPLAYER.playPause();
+      },
+
+      // ── The window's Preview, from Peer Recommendations ────────────────
+      // One control bound to the page's clip (discover.clip): it shows the
+      // clip only while the clip is this window's lead (by its lead key),
+      // else what the visit's resolves answered for the lead.
+      // The preview plug-in (PEERRECS.previewProvider): none = no section.
+      dmClipProvider: function () {
+        return this.clipProvider();
+      },
+      // The lead's clip as the window draws it: { status, preview, at,
+      // seconds } — the live clip's when it is this lead, else idle with
+      // the visit's answer for it (a preview resolved earlier, or none).
+      dmClipOf: function () {
+        const c = this.discover.clip;
+        const key = PEERRECS.leadKey(this.discover.modal.track);
+        if (key && c.key === key) { return { status: c.status, preview: c.preview, at: c.at, seconds: c.seconds }; }
+        const r = key ? c.results[key] : null;
+        if (r && r.status === 'none') { return { status: 'none', preview: null, at: 0, seconds: 30 }; }
+        return { status: 'idle', preview: r && r.preview ? r.preview : null, at: 0, seconds: 30 };
+      },
+      dmClipOn: function () {
+        return this.dmClipOf().status === 'playing';
+      },
+      // Being asked for, or waiting out a 429.
+      dmClipBusy: function () {
+        const s = this.dmClipOf().status;
+        return s === 'resolving' || s === 'waiting';
+      },
+      // "No preview": 'none' for the visit (the control goes quiet), or
+      // 'failed' for that press only (the next press asks again); '' else.
+      dmClipNone: function () {
+        const s = this.dmClipOf().status;
+        return s === 'none' || s === 'failed' ? s : '';
+      },
+      // The attribution, once a resolve answered: the server's words
+      // verbatim ("Preview from Deezer"), linked only to an https page.
+      // → { text, link } or null.
+      dmClipPreview: function () {
+        const p = this.dmClipOf().preview;
+        if (!p || typeof p.attribution !== 'string' || !p.attribution) { return null; }
+        let link = null;
+        try { link = typeof p.link === 'string' && new URL(p.link).protocol === 'https:' ? p.link : null; } catch (_) { link = null; }
+        return { text: p.attribution, link };
+      },
+      // ['0:12', '0:30']: where the clip is, and its length.
+      dmClipClock: function () {
+        const c = this.dmClipOf();
+        return [this.dmDuration(c.at) || '0:00', this.dmDuration(c.seconds) || '0:30'];
+      },
+      dmClipPct: function () {
+        const c = this.dmClipOf();
+        return c.seconds > 0 ? Math.max(0, Math.min(100, Math.round((c.at / c.seconds) * 100))) : 0;
+      },
+      // The control: the page's own play icon (clipToggle) on this lead.
+      dmClipToggle: function () {
+        const m = this.discover.modal;
+        if (!m.track || this.dmClipNone() === 'none') { return; }
+        this.clipToggle(m.track, { tile: m.tile });
+      },
+
+      // ── Peer Recommendations' clip (discover.clip) ─────────────────────
+      // One lead's 30-second preview at a time, on the aside player (owner
+      // 'clip'). The page's rows and band (m.js) and the window's Preview
+      // section draw this one state; mstreamModule.watchClip hears its
+      // events. Pacing (plan §5.5): a resolve only on a press (Preview all
+      // is one), one in flight, a newer press takes a queued one's place; a
+      // 429 waits PEERRECS.retryDelayMs and is asked once more, then it is
+      // "No preview" for that press only (failed); preview: null is "No
+      // preview" for the visit (none). A 403 is the feature switched off.
+      // Everything async is fenced by clip.gen.
+      clipProvider: function () {
+        if (!this.discover.plugins.available) { return null; }
+        return PEERRECS.previewProvider(this.discover.plugins.list);
+      },
+      // The play icon: this lead's clip — paused or resumed when it already
+      // is the clip, dropped when it is still being asked for, else asked.
+      clipToggle: function (raw, opts) {
+        const c = this.discover.clip;
+        const key = PEERRECS.leadKey(raw);
+        if (key && c.key === key) {
+          if (c.status === 'playing') { return Promise.resolve(this.clipPause()); }
+          if (c.status === 'paused') { return Promise.resolve(this.clipResume()); }
+          if (c.status === 'resolving' || c.status === 'waiting') { return Promise.resolve(this.clipStop('user')); }
+        }
+        return this.clipStart(raw, opts);
+      },
+      // A new clip for `raw` (opts.tile: its tile, else the lead's): the
+      // one before it stops at once — the main player stays paused across
+      // the hand-off — and this one plays from the visit's answers, or once
+      // its resolve answers. Preview all's next lead is a clipStart made
+      // inside the 'ended' / 'none' event: a session that no listener
+      // carries on ends there (clipEnd).
+      clipStart: async function (raw, opts) {
+        const c = this.discover.clip;
+        const key = PEERRECS.leadKey(raw);
+        if (!key) { return; }
+        c.gen += 1;
+        const gen = c.gen;
+        this.clipHalt();
+        Object.assign(c, { key, raw, tile: dmTileOf((opts || {}).tile) || dmTileOf(raw.tile), status: 'resolving', preview: null, at: 0, seconds: 30 });
+        asideClaim('clip', this.clipHandlers(gen));
+        this.clipEmit('resolving');
+        if (this.discover.plugins.available) { await this.ensureDiscoverPlugins(); }
+        if (c.gen !== gen) { return; }
+        const hit = c.results[key];
+        if (hit && hit.status === 'ready') { return this.clipPlay(gen, hit.preview); }
+        if (hit || !this.clipProvider()) { return this.clipSettle(gen, 'none'); }
+        this.clipAsk(gen, 0);
+      },
+      // The aside's handlers for one clip: each acts only while it is
+      // still the clip (gen).
+      clipHandlers: function (gen) {
+        const c = this.discover.clip;
+        const mine = () => c.gen === gen;
+        return {
+          time: (seconds) => {
+            if (!mine() || c.status !== 'playing') { return; }
+            const at = Math.round((Number(seconds) || 0) * 4) / 4;
+            if (at !== c.at) { c.at = at; this.clipEmit('time'); }
+          },
+          ended: () => {
+            if (!mine() || c.status !== 'playing') { return; }
+            c.status = 'idle';
+            c.at = 0;
+            this.clipEmit('ended');
+            this.clipEnd(gen);
+          },
+          error: () => { if (mine() && CLIP_LIVE.indexOf(c.status) !== -1) { this.clipSettle(gen, 'failed'); } },
+          // the aside let go: the window's tile took it ('preempted'), or
+          // the user started the main player ('main')
+          stopped: (why) => {
+            if (!mine()) { return; }
+            c.gen += 1;
+            this.clipHalt();
+            c.status = 'idle';
+            c.at = 0;
+            this.clipEmit('stopped', { why });
+          },
+        };
+      },
+      // One resolve in flight: a press made meanwhile waits for it (and
+      // CLIP_QUEUE_MS more), a newer one taking its place.
+      clipAsk: function (gen, attempt) {
+        if (clipNet.flight || clipNet.timer) {
+          clipNet.queued = { gen, attempt };
+          this.clipPump();
+          return;
+        }
+        this.clipSend(gen, attempt);
+      },
+      clipPump: function () {
+        if (clipNet.flight || clipNet.timer || !clipNet.queued) { return; }
+        clipNet.timer = setTimeout(() => {
+          clipNet.timer = null;
+          const q = clipNet.queued;
+          clipNet.queued = null;
+          if (q && q.gen === this.discover.clip.gen) { this.clipSend(q.gen, q.attempt); } else { this.clipPump(); }
+        }, CLIP_QUEUE_MS);
+      },
+      // Ask the preview plug-in about the clip's lead. What answers 200 is
+      // kept for the visit (a stale answer too); the rest is the clip's
+      // only while it is still the clip.
+      clipSend: async function (gen, attempt) {
+        const c = this.discover.clip;
+        const provider = this.clipProvider();
+        if (c.gen !== gen) { this.clipPump(); return; }
+        const hit = c.results[c.key];
+        if (hit || !provider) {
+          if (hit && hit.status === 'ready') { this.clipPlay(gen, hit.preview); } else { this.clipSettle(gen, 'none'); }
+          this.clipPump();
+          return;
+        }
+        const key = c.key;
+        const results = c.results;
+        clipNet.flight = true;
+        let res = null;
+        try { res = await MSTREAMAPI.discoveryPreview(provider.name, c.raw); } catch (_) { res = null; }
+        clipNet.flight = false;
+        const status = res ? res.status : 0;
+        const body = res ? res.body : null;
+        const answered = status === 200 && !!body && !!body.result && typeof body.result === 'object';
+        const preview = answered ? clipPreviewOf(body.result.preview) : null;
+        if (answered) { this.clipRemember(results, key, preview ? { status: 'ready', preview } : { status: 'none', preview: null }); }
+        if (c.gen === gen) {
+          if (answered) {
+            if (preview) { this.clipPlay(gen, preview); } else { this.clipSettle(gen, 'none'); }
+          } else if (status === 403) {
+            this.clipReset();
+            this.clipEmit('off');
+          } else if (status === 429 && attempt === 0) {
+            const ms = PEERRECS.retryDelayMs(provider.name);
+            c.status = 'waiting';
+            this.clipEmit('waiting', { ms });
+            clipRetryTimer = setTimeout(() => { clipRetryTimer = null; if (c.gen === gen) { this.clipAsk(gen, 1); } }, ms);
+          } else {
+            // a second 429, no answer, any other: this press only
+            this.clipSettle(gen, 'failed');
           }
         }
+        this.clipPump();
+      },
+      // The clip plays `preview`; a preview of the lead's own album and
+      // artist earns the art of every row with its tile key.
+      clipPlay: function (gen, preview) {
+        const c = this.discover.clip;
+        c.preview = preview;
+        c.seconds = Number(preview.seconds) > 0 ? Number(preview.seconds) : 30;
+        c.at = 0;
+        c.status = 'playing';
+        const tileKey = c.tile && c.tile.key;
+        if (tileKey && PEERRECS.artMatches(c.raw, preview) && c.art[tileKey] !== preview.artwork) {
+          this.$set(c.art, tileKey, preview.artwork);
+          this.clipEmit('art', { tileKey, url: preview.artwork });
+        }
+        asidePlay('clip', preview.url, this.clipHandlers(gen));
+        this.clipEmit('playing');
+      },
+      // No clip for this press: 'none' (the lead has no preview) or
+      // 'failed' (this press only).
+      clipSettle: function (gen, status) {
+        const c = this.discover.clip;
+        c.status = status;
+        c.preview = null;
+        c.at = 0;
+        this.clipEmit(status);
+        this.clipEnd(gen);
+      },
+      // After an event that ends a clip: a listener that started the next
+      // one carried the session on; else it ends here, and the main player
+      // plays again if the session paused it.
+      clipEnd: function (gen) {
+        if (this.discover.clip.gen === gen) { asideStop('clip'); }
+      },
+      // The 429 wait and the queued press, dropped.
+      clipHalt: function () {
+        if (clipRetryTimer) { clearTimeout(clipRetryTimer); clipRetryTimer = null; }
+        clipNet.queued = null;
+      },
+      // Preview all's one look ahead (m.js: the next lead, once the live
+      // clip is past 20 s): its answer goes into the visit's, nothing
+      // plays. Never while a resolve is out or queued, never for a lead
+      // already answered, never retried. → whether it asked.
+      clipPrefetch: async function (raw) {
+        const c = this.discover.clip;
+        const key = PEERRECS.leadKey(raw);
+        const provider = this.clipProvider();
+        if (!key || !provider || c.results[key] || clipNet.flight || clipNet.timer || clipNet.queued) { return false; }
+        const results = c.results;
+        clipNet.flight = true;
+        let res = null;
+        try { res = await MSTREAMAPI.discoveryPreview(provider.name, raw); } catch (_) { res = null; }
+        clipNet.flight = false;
+        if (res && res.status === 200 && res.body && res.body.result && typeof res.body.result === 'object') {
+          const preview = clipPreviewOf(res.body.result.preview);
+          this.clipRemember(results, key, preview ? { status: 'ready', preview } : { status: 'none', preview: null });
+        }
+        this.clipPump();
+        return true;
+      },
+      clipPause: function () {
+        const c = this.discover.clip;
+        if (c.status !== 'playing' || !asidePause('clip')) { return false; }
+        c.status = 'paused';
+        this.clipEmit('paused');
+        return true;
+      },
+      clipResume: function () {
+        const c = this.discover.clip;
+        if (c.status !== 'paused' || !asideResume('clip')) { return false; }
+        c.status = 'playing';
+        this.clipEmit('playing');
+        return true;
+      },
+      // The band's ✕, the page left, a press on a clip still asked for: the
+      // session ends, and the main player plays again if it paused it.
+      // → whether a clip was live.
+      clipStop: function (why) {
+        const c = this.discover.clip;
+        c.gen += 1;
+        this.clipHalt();
+        asideStop('clip');
+        if (CLIP_LIVE.indexOf(c.status) === -1) { return false; }
+        c.status = 'idle';
+        c.at = 0;
+        this.clipEmit('stopped', { why: why || 'user' });
+        return true;
+      },
+      // A fresh visit (the page opened anew, plug-ins switched, a 403): the
+      // clip stops and the visit's answers and earned art are forgotten.
+      clipReset: function () {
+        const c = this.discover.clip;
+        this.clipStop('reset');
+        Object.assign(c, { key: null, raw: null, tile: null, status: 'idle', preview: null, at: 0, seconds: 30, art: {}, results: {} });
+        this.clipEmit('reset');
+      },
+      // An answer kept for the visit, the oldest dropped past
+      // CLIP_RESULTS_MAX. `results` is the map the ask began with: a visit
+      // reset since leaves the new one alone.
+      clipRemember: function (results, key, entry) {
+        const keys = Object.keys(results);
+        if (!(key in results) && keys.length >= CLIP_RESULTS_MAX) { this.$delete(results, keys[0]); }
+        this.$set(results, key, entry);
+      },
+      // A plain snapshot for the page: { key, raw, tile, status, preview,
+      // at, seconds, live }.
+      clipState: function () {
+        const c = this.discover.clip;
+        return { key: c.key, raw: c.raw, tile: c.tile, status: c.status, preview: c.preview, at: c.at, seconds: c.seconds, live: CLIP_LIVE.indexOf(c.status) !== -1 };
+      },
+      // { type, key, state: clipState(), …extra } to every watcher.
+      clipEmit: function (type, extra) {
+        const ev = Object.assign({ type, key: this.discover.clip.key, state: this.clipState() }, extra || {});
+        clipWatchers.slice().forEach((fn) => { try { fn(ev); } catch (_) { /* a watcher's own trouble */ } });
       },
 
       // ── Plug-in jobs: Get it · Keep a copy · the strip ─────────────────
@@ -3120,7 +3666,9 @@ const VUEPLAYERCORE = (() => {
       // asks for its folder too: a folder copy is keyed by the folder (the
       // song's own lookup names a folder key of the song's file, G27 — never
       // a folder). An answer for the song as it read before its tags came
-      // (dmLoadBrowsedFacts asks again) is not this window's.
+      // (dmLoadBrowsedFacts asks again) is not this window's. Peer
+      // Recommendations' window asks with the one-row batch lookup (plan
+      // §3.6), then follows its live jobs by id (dmPeerJobsPoll).
       dmLoadJobs: async function (gen) {
         await this.ensureDiscoverPlugins();
         if (!this.dmLive(gen) || this.discoverAcquirePlugins().length === 0) { return; }
@@ -3128,8 +3676,10 @@ const VUEPLAYERCORE = (() => {
         const track = m.track;
         const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
         const folderRec = !m.focus && m.folder ? this.dmFolderRecommendation() : null;
+        const page = m.from === 'peerRecs';
         const [found, foundFolder] = await Promise.all([
-          settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
+          page ? settle(Promise.resolve(MSTREAMAPI.discoveryJobLookupBatch([this.dmRecommendation()])).then((r) => (r && Array.isArray(r.results) && r.results[0]) || null))
+            : settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
           folderRec ? settle(MSTREAMAPI.discoveryJobLookup(folderRec)) : Promise.resolve(null),
           this.dmLoadDestination(gen),
         ]);
@@ -3150,6 +3700,59 @@ const VUEPLAYERCORE = (() => {
           m.jobs = jobs;
         }
         this.scheduleDiscoverJobsPoll();
+        if (page) { this.dmPeerJobsPoll(gen); }
+      },
+      // Peer Recommendations' Get it…: one chip per plug-in dmGetItRows
+      // offers (an acquire plug-in other than the peer copy, an account
+      // that may start jobs, a destination), titled by the plug-in alone.
+      // A press starts the server's best match at once (no lookup card, no
+      // bar); its job shows on the chip. → [{ plugin, state: idle | busy |
+      // live | done | failed, icon, aria, press }]. A start refused because
+      // the destination moved (409 destination_changed) is idle again: the
+      // destination was read anew (dmDestRefused).
+      dmGetItChips: function () {
+        const m = this.discover.modal;
+        return this.dmGetItRows().map(({ plugin, row }) => {
+          const slot = DISCOVERJOBS.jobSlot(plugin.name);
+          const refused = m.jobRefusals[slot];
+          const moved = !!(refused && refused.status === 409 && refused.error === 'destination_changed');
+          let state = 'idle';
+          if (m.jobBusy[slot]) { state = 'busy'; }
+          else if (row.live) { state = 'live'; }
+          else if (m.jobErrors[slot] && !moved) { state = 'failed'; }
+          else if (['downloaded', 'copied', 'copiedMany', 'owned', 'done'].indexOf(row.state) !== -1) { state = 'done'; }
+          else if (['failed', 'stopped', 'exists'].indexOf(row.state) !== -1) { state = 'failed'; }
+          const icon = state === 'live' ? row.icon : (state === 'done' ? 'check' : (state === 'failed' ? 'warn' : 'download'));
+          const word = state === 'live' || state === 'done' ? this.tt(row.tag) : (state === 'failed' ? this.tt('discover.job.failed') : '');
+          return { plugin, state, icon, aria: word ? `${plugin.title}: ${word}` : plugin.title, press: state === 'idle' || state === 'failed' };
+        });
+      },
+      dmGetIt: async function (chip) {
+        if (!chip || !chip.press) { return; }
+        const gen = this.discover.modal.gen;
+        await this.dmJobStart(chip.plugin, null);
+        this.dmPeerJobsPoll(gen);
+      },
+      // Peer Recommendations' window follows its own live jobs by id, every
+      // 1.5 s while it is open (plan §3.6); paused while the tab is hidden.
+      dmPeerJobsPoll: function (gen) {
+        if (discoverPeerJobsTimer) { clearTimeout(discoverPeerJobsTimer); discoverPeerJobsTimer = null; }
+        const m = this.discover.modal;
+        if (!this.dmLive(gen) || !this.dmPeerRecs() || !this.dmAnyJobLive()) { return; }
+        discoverPeerJobsTimer = setTimeout(async () => {
+          discoverPeerJobsTimer = null;
+          if (!document.hidden) {
+            for (const slot of Object.keys(m.jobs)) {
+              const held = m.jobs[slot];
+              if (!DISCOVERJOBS.isLive(held)) { continue; }
+              let one = null;
+              try { one = await MSTREAMAPI.discoveryJob(held.id); } catch (_) { one = null; }
+              if (!this.dmLive(gen)) { return; }
+              if (one && one.job && m.jobs[slot] === held) { this.$set(m.jobs, slot, one.job); }
+            }
+          }
+          this.dmPeerJobsPoll(gen);
+        }, 1500);
       },
       // `choice` = { url } picked from the plug-in's lookup; null = the plain
       // download (the plug-in searches); undefined (a Retry) = whatever the
@@ -4140,7 +4743,9 @@ const VUEPLAYERCORE = (() => {
           });
         }
         if (document.hidden) { return; }   // the listener picks it up when the tab is back
-        const beat = this.dmAnyJobLive() ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
+        // (Peer Recommendations' window follows its own jobs: dmPeerJobsPoll)
+        const fast = this.dmAnyJobLive() && this.discover.modal.from !== 'peerRecs';
+        const beat = fast ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
         const delay = Math.min(60000, beat * Math.pow(2, Math.min(discoverJobsFailures, 6)));
         discoverJobsTimer = setTimeout(() => { discoverJobsTimer = null; this.refreshDiscoverJobs(); }, delay);
       },
@@ -4232,14 +4837,26 @@ const VUEPLAYERCORE = (() => {
 
       // ── "From the network" rows ────────────────────────────────────
       // Not playable (the track lives on someone else's server) — clicking
-      // copies "Artist - Title" so the user can go find it.
-      copyDiscoverP2p: async function (track) {
-        const text = `${track.artist || ''} - ${track.title || ''}`.trim();
+      // copies "Artist - Title" so the user can go find it: the title alone
+      // when there is no artist (PEERRECS.copyText's rule, plan §2 item
+      // 19). `copied` = the toast's own key, its one word (Peer
+      // Recommendations' window: 'peerRecs.copied'). The text is the
+      // peer's: escaped for the toast, which takes markup (m.js's
+      // escapeHtml).
+      copyDiscoverP2p: async function (track, copied) {
+        const artist = String(track.artist || '').trim();
+        const title = String(track.title || '').trim();
+        const text = artist && title ? `${artist} - ${title}` : (title || artist);
         try {
           await navigator.clipboard.writeText(text);
-          iziToast.success({ title: t('discover.network.copied'), message: text, position: 'topCenter', timeout: 2500 });
+          if (copied) {
+            iziToast.success({ title: t(copied), position: 'topCenter', timeout: 2500 });
+          } else {
+            iziToast.success({ title: t('discover.network.copied'), message: escapeHtml(text), position: 'topCenter', timeout: 2500 });
+          }
         } catch (_) {
-          iziToast.info({ title: text, position: 'topCenter', timeout: 3500 });
+          // no clipboard here (plain http): the text itself, to copy by hand
+          iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
         }
       },
       discoverP2pMbUrl: function (track) {
@@ -4554,6 +5171,8 @@ const VUEPLAYERCORE = (() => {
         }
       },
       'playerStats.playing': function(isPlaying) {
+        // the user starting the main player ends a preview clip (the aside player)
+        asideMainPlaying(isPlaying);
         if (!this.altLayout.waveformBar) return;
         if (isPlaying) {
           // If waveform not loaded yet (e.g. first play after page load), fetch it
@@ -5364,11 +5983,12 @@ const VUEPLAYERCORE = (() => {
     // The strip's one up-front request: this account's jobs (one may still
     // be running, or have failed, since an earlier visit).
     if (discoverState.plugins.available) { playlistVue.refreshDiscoverJobs(); }
-    if (discoverPreviewAudio) {
-      try { discoverPreviewAudio.pause(); } catch (_) { /* already gone */ }
-      discoverPreviewAudio = null;
-      discoverPreviewPausedMain = false;
-    }
+    // A window's tile and Peer Recommendations' clip stop where they are
+    // (the main player is not resumed for them), and the visit's previews
+    // and earned art are forgotten.
+    asideStop('window', false);
+    asideStop('clip', false);
+    playlistVue.clipReset();
     discoverState.menu = { key: null, loading: false, links: [], error: false, previews: {}, playing: null };
   };
 
@@ -5471,6 +6091,49 @@ const VUEPLAYERCORE = (() => {
     if (typeof fn !== 'function') { return () => {}; }
     discoverGateWatchers.push(fn);
     return () => { const at = discoverGateWatchers.indexOf(fn); if (at !== -1) { discoverGateWatchers.splice(at, 1); } };
+  };
+
+  // ── Peer Recommendations' clip (m.js, the page) ──────────────────────────
+  // The page's play icons, its band and Preview all drive the one clip the
+  // window's Preview section shows too (playlistVue.clipStart and the rest:
+  // every rule is said there). A lead is the raw taste lead, as the page's
+  // rows hold it (DISCOVERYPAGE.networkRows' raw); opts.tile = its tile.
+  mstreamModule.clipToggle = (raw, opts) => {
+    if (!raw || typeof raw !== 'object') { return Promise.resolve(); }
+    return Promise.resolve(playlistVue.clipToggle(raw, opts));
+  };
+  mstreamModule.clipStart = (raw, opts) => {
+    if (!raw || typeof raw !== 'object') { return Promise.resolve(); }
+    return playlistVue.clipStart(raw, opts);
+  };
+  // → whether it asked (false: a resolve out or queued, the lead answered
+  // already, no preview plug-in).
+  mstreamModule.clipPrefetch = (raw) => {
+    if (!raw || typeof raw !== 'object') { return Promise.resolve(false); }
+    return playlistVue.clipPrefetch(raw);
+  };
+  mstreamModule.clipPause = () => playlistVue.clipPause();
+  mstreamModule.clipResume = () => playlistVue.clipResume();
+  mstreamModule.clipStop = (why) => playlistVue.clipStop(why);
+  mstreamModule.clipReset = () => playlistVue.clipReset();
+  // { key, raw, tile, status, preview, at, seconds, live }
+  mstreamModule.clipState = () => playlistVue.clipState();
+  // The artwork a preview earned for a tile key this visit, else null.
+  mstreamModule.clipArt = (tileKey) => (typeof tileKey === 'string' && discoverState.clip.art[tileKey]) || null;
+  // What the visit's resolves answered for a lead: { status: 'ready' |
+  // 'none', preview }, else null (never asked, or only failed).
+  mstreamModule.clipResult = (raw) => {
+    const r = raw && typeof raw === 'object' ? discoverState.clip.results[PEERRECS.leadKey(raw)] : null;
+    return r ? { status: r.status, preview: r.preview } : null;
+  };
+  // Call fn(event) on every clip event: { type, key, state, …extra } —
+  // resolving · waiting { ms } · playing · paused · time · art { tileKey,
+  // url } · ended · none · failed · stopped { why: user | preempted | main
+  // | reset | … } · reset · off. → the unwatch function.
+  mstreamModule.watchClip = (fn) => {
+    if (typeof fn !== 'function') { return () => {}; }
+    clipWatchers.push(fn);
+    return () => { const at = clipWatchers.indexOf(fn); if (at !== -1) { clipWatchers.splice(at, 1); } };
   };
 
   return mstreamModule;
