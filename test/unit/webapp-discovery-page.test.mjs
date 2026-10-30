@@ -212,7 +212,14 @@ describe('buildRequests: the mood filter', () => {
     assert.equal(D.moodsAvailable({ ...MOODY, discoveryTaste: '2' }), true, 'a string generation still counts');
   });
 
-  test('never on the explore page, and nothing for an empty or unknown filter', () => {
+  test('never on the network pages (Peer Recommendations, the legacy explore), and nothing for an empty or unknown filter', () => {
+    // Peer Recommendations needs generation 3, a server that takes moods too
+    const flags = { ...PFLAGS, moodFilters: true };
+    assert.equal(D.moodsAvailable(flags), true);
+    const net = D.buildRequests({ flags, moods, ...PEER_PAGE });
+    assert.ok(net.main, 'the Peer Recommendations page asks');
+    assert.equal('moods' in net.main, false, 'never on the Peer Recommendations page');
+    assert.equal(net.peers, null);
     assert.equal('moods' in D.buildRequests({ flags: MOODY, moods, page: 'explore' }).main, false);
     for (const m of [null, {}, { tags: [] }, { energy: 'sleepy', tags: ['sad'] }, 'relaxed']) {
       assert.equal('moods' in D.buildRequests({ flags: MOODY, moods: m }).main, false, JSON.stringify(m));
@@ -287,7 +294,7 @@ describe('buildRequests', () => {
   test('the hidden explore page m.js still draws (until its drawing goes): the network alone, the generation-1 gate, "new artists only"', () => {
     const explore = D.buildRequests({ flags: FLAGS, window: 90, pinPath: 'a.mp3', exclude: ['h1'], page: 'explore', newArtistsOnly: true, networkPeers: ['ab'.repeat(32)] });
     assert.deepEqual(explore, { main: { sources: ['network'], window: 90, pin: ['a.mp3'], exclude: ['h1'], newArtistsOnly: true }, peers: null },
-      'no generation-2 key');
+      'no generation-3 key');
     assert.deepEqual(D.buildRequests({ flags: { ...FLAGS, discoveryP2p: false }, page: 'explore' }), { main: null, peers: null });
     assert.deepEqual(D.stateOf(historyResponse(), FLAGS, { page: 'explore' }).sources.network, { status: 'ready', reason: null, count: 3 });
   });

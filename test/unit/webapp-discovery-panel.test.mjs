@@ -2800,6 +2800,19 @@ describe('Peer Recommendations: the gate and its nav row', () => {
     assert.ok(!els.get('nav-peer-recs').classList.contains('super-hide'), 'numeric strings count');
   });
 
+  test('the mood filters stay on Discover: no Filters button or panel in the Peer Recommendations bar', async () => {
+    const flags = { ...PR_FLAGS, moodFilters: true };
+    const disc = makeSandbox({ taste: answer, flags });
+    await disc.S.discoveryPanel();
+    assert.ok(findDrawn(disc.S.head(), { 'data-dp': 'moods' }), 'Discover draws its Filters button');
+    const box = prBox({ flags });
+    await openPage(box);
+    assert.ok(box.S.head().includes('dpage-page-peerRecs'));
+    assert.equal(findDrawn(box.S.head(), { 'data-dp': 'moods' }), null, 'no Filters button');
+    assert.ok(!box.S.head().includes('dpage-moods'), 'no mood panel');
+    assert.ok(box.calls.filter((c) => c.name === 'taste').every((c) => !('moods' in c.body)), 'no taste call sends moods');
+  });
+
   test('a server without the page asks nothing: no taste call, no peers poll', async () => {
     for (const flags of [FLAGS_ALL, { ...PR_FLAGS, discoveryP2pPeers: 0 }, { ...PR_FLAGS, discoveryP2p: false }]) {
       const box = prBox({ flags });

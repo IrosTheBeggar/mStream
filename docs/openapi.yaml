@@ -3763,7 +3763,7 @@ paths:
           (`seedHash`). At most 6 history seeds plus the pins are ranked.
         * **network** — discovery-network leads (`source: p2p`), as
           `POST /api/v1/discovery/p2p/similar` finds them. Since
-          `discoveryTaste` 2 the walk can be narrowed to some shelf peers
+          `discoveryTaste` 3 the walk can be narrowed to some shelf peers
           (`networkPeers`) and run on a random seed (`networkOnRandomSeed`),
           an empty section says why (`reason`), and every lead carries its
           peer's `label` and a generated `tile`.
