@@ -2276,6 +2276,7 @@ const dbView = Vue.component('db-view', {
                               <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.coverage.done, p.coverage.done + p.coverage.remaining) + '%' }"></div>
                             </div>
                             {{ p.coverage.done.toLocaleString() }} / {{ (p.coverage.done + p.coverage.remaining).toLocaleString() }} {{ p.coverage.unit }}<span class="enrich-muted">{{ outcomesSummary(p.coverage.outcomes) }}</span>
+                            <div v-if="p.coverage.moods && p.coverage.moods.remaining > 0" class="enrich-muted">moods {{ p.coverage.moods.done.toLocaleString() }} / {{ (p.coverage.moods.done + p.coverage.moods.remaining).toLocaleString() }}</div>
                           </template>
                           <span v-else class="enrich-muted">—</span>
                         </td>

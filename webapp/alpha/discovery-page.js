@@ -209,6 +209,36 @@
     return Number.isFinite(gen) && gen >= 1;
   }
 
+  // The Discover page's mood filters (src/api/mood-filter.js): a server
+  // whose taste route takes `moods` (generation 2 — the route's schema is
+  // strict, so an older one would refuse the key) and that has mood scores
+  // to filter by right now (`moodFilters`).
+  const MOOD_SCALES = Object.freeze({
+    valence: ['happy', 'neutral', 'sad'],
+    energy: ['relaxed', 'neutral', 'aggressive'],
+    voice: ['instrumental', 'vocals'],
+  });
+  const MOOD_TAGS = Object.freeze(['acoustic', 'party', 'danceable']);
+
+  function moodsAvailable(flags) {
+    if (!pageAvailable(flags) || flags.moodFilters !== true) { return false; }
+    const gen = typeof flags.discoveryTaste === 'number' ? flags.discoveryTaste : toInt(flags.discoveryTaste);
+    return gen >= 2;
+  }
+
+  // A mood filter in the server's form — known values only, tags in its
+  // order — or null when nothing filters.
+  function cleanMoods(m) {
+    if (!isObj(m)) { return null; }
+    const out = {};
+    for (const group of Object.keys(MOOD_SCALES)) {
+      if (MOOD_SCALES[group].indexOf(m[group]) !== -1) { out[group] = m[group]; }
+    }
+    const tags = MOOD_TAGS.filter((tag) => arr(m.tags).indexOf(tag) !== -1);
+    if (tags.length) { out.tags = tags; }
+    return Object.keys(out).length ? out : null;
+  }
+
   function cleanLimits(limits) {
     if (!isObj(limits)) { return null; }
     const out = {};
@@ -284,6 +314,11 @@
     }
     const limit = cleanLimits(o.limits);
     if (limit) { body.limit = limit; }
+
+    // The mood filters belong to the Discover page (the network leaves a
+    // filtered call anyway), and only reach a server that takes them.
+    const moods = page === 'play' && moodsAvailable(flags) ? cleanMoods(o.moods) : null;
+    if (moods) { body.moods = moods; }
 
     const main = Object.assign({ sources: page === 'explore' ? ['network'] : ['library'] }, body);
     const peers = page === 'play' && flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
@@ -1302,7 +1337,7 @@
     WINDOWS, DEFAULT_WINDOW, SOURCES, PAGES, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
     LIMIT_DEFAULTS, LIMIT_CAPS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     storedWindow, dropSeed, restoreSeed, passPick, randomPick, noPickLeft,
-    pageAvailable, buildRequests, peersRequest, mergeResponses,
+    pageAvailable, moodsAvailable, cleanMoods, buildRequests, peersRequest, mergeResponses,
     fmtLength,
     seedChips, windowOptions, pluginChips,
     librarySections, networkRows,

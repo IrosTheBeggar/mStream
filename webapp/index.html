@@ -834,6 +834,20 @@
         <div id="directory_bar" class="level-2 flex">
           <svg onclick="onBackButton();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.goBack">Go Back</title><path d="M0 0h24v24H0z" fill="none"/><path class="icon-path" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
           <svg xmlns="http://www.w3.org/2000/svg" id="local_search_btn" class="pointer" onclick="onSearchButtonClick();" height="24" width="24"><title data-i18n="tooltip.search">Search</title><path d="M0 0h24v24H0z" fill="none"/><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+          <!-- The mood filters' button (m.js showMoodFilters): Albums and
+               Artists show it when the server can filter; it opens
+               #mood_filters under the bar, and turns orange while a filter
+               is set. -->
+          <button type="button" id="mood_filter_btn" class="mood-filter-btn super-hide" aria-expanded="false" aria-controls="mood_filters" aria-label="Filters" data-i18n="moods.filters" data-i18n-attr="aria-label" onclick="toggleMoodPanel();">
+            <svg xmlns="http://www.w3.org/2000/svg" height="22" width="22" viewBox="0 0 24 24"><title data-i18n="moods.filters">Filters</title><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg>
+          </button>
+          <!-- The Genres panel's tags / generated / both switch (m.js
+               getAllGenres); every other panel hides it. -->
+          <div id="genre_source" class="genre-source super-hide" role="radiogroup" aria-label="Genre source" data-i18n="genres.sourceLabel" data-i18n-attr="aria-label">
+            <button type="button" class="genre-source-btn" data-source="tag" aria-pressed="false" onclick="chooseGenreSource('tag')" data-i18n="genres.sourceTags">Tags</button>
+            <button type="button" class="genre-source-btn" data-source="model" aria-pressed="false" onclick="chooseGenreSource('model')" data-i18n="genres.sourceGenerated">Generated</button>
+            <button type="button" class="genre-source-btn" data-source="both" aria-pressed="false" onclick="chooseGenreSource('both')" data-i18n="genres.sourceBoth">Both</button>
+          </div>
           <div id="directoryName" class=""></div>
           <div id="search_folders" class="super-hide">
             <input id="localSearchBar" onkeyup="runLocalSearch(this)" type="text" placeholder="Search List" autocomplete="off" data-i18n="fileExplorer.searchPlaceholder" data-i18n-attr="placeholder">
@@ -842,6 +856,9 @@
           <svg id="upload_btn" onclick="openUploadModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.upload">Upload</title><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
           <svg onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.addAllToQueue">Add All To Queue</title><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
         </div>
+        <!-- The mood filters (m.js moodPanelHtml), hidden until the bar's
+             Filters button opens them; every other panel hides them. -->
+        <div id="mood_filters" class="mood-filters super-hide" role="region" aria-label="Filters" data-i18n="moods.filters" data-i18n-attr="aria-label"></div>
         <div class="upload-progress-bar">
           <div style="width:0%" id="upload-progress-inner" class="upload-progress-inner"></div>
         </div>

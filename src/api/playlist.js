@@ -40,6 +40,9 @@ export function setup(mstream) {
       // The Peer Recommendations peer strip + async Add — same generation
       // /api/ carries under features.
       discoveryP2pPeers: features.discoveryP2pPeers,
+      // Mood scores to filter by, right now (api/mood-filter.js) — the
+      // Discover page's filters gate on it; same flag on /api/.
+      moodFilters: features.moodFilters,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.

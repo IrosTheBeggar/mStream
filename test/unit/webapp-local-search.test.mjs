@@ -70,7 +70,7 @@ const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath', 'printdir',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'getFileExplorerPath', 'printdir',
   'getAllGenres', 'getGenreSongs', 'getAllAlbums', 'getArtistsAlbums',
   'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch'];
@@ -80,7 +80,11 @@ const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'getFileExplorerPath
 // routed browse call (browseApi) and the peer-aware art URL (artImgAttr).
 // albumCredit / albumSongsBody: the album-API series' card credit and
 // album-songs request helpers the album panels call.
-const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody'];
+// preferredGenreSource: the Genres panel's tags / generated / both choice
+// (no localStorage here, so tags; these canned servers send no `sources`,
+// so the panel draws as for a server that predates the filter).
+const HELPERS = ['peerAttr', 'browseApi', 'localIgnoreVPaths', 'artUrl', 'artImgAttr', 'albumCredit', 'albumSongsBody',
+  'preferredGenreSource'];
 
 // Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
 // browseHead* …): the renderers and panels call it; with its gate never
@@ -134,7 +138,10 @@ function makeSandbox(api) {
     let fileExplorerArray = [];
     let peerContext = null;
     let browseGeneration = 0;
+    let genreSourceChoice = null;
+    const GENRE_SOURCES = ['tag', 'model', 'both'];
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
     ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
     ${RENDERERS.map(sliceFn).join('\n\n')}

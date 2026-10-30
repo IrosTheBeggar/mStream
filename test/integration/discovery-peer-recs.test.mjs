@@ -4,10 +4,10 @@
  *   GET  /api/v1/discovery/p2p/peers                 the peer strip (members read it)
  *   POST /api/v1/admin/discovery/p2p/peer-dbs/add    the async Add (admins)
  *   POST /api/v1/admin/discovery/p2p/peer-dbs/fetch  the admin panel's sync fetch, as an Add
- *   POST /api/v1/discovery/taste                     generation 2: networkPeers,
+ *   POST /api/v1/discovery/taste                     generation 3: networkPeers,
  *                                                    networkOnRandomSeed, network.reason,
  *                                                    peer.label and tile on leads
- *   features.discoveryTaste 2 / discoveryP2pPeers 1   on /api/ and ping
+ *   features.discoveryTaste 3 / discoveryP2pPeers 1   on /api/ and ping
  *
  * Contract: docs/peer-recommendations-plan.md §3. The numbered tests are its
  * §3.8 list, cases 1–23, in order.
@@ -747,9 +747,9 @@ describe('peer recs: an Add across a kill and a stop', () => {
   });
 });
 
-// ── taste, generation 2 ──────────────────────────────────────────────────
+// ── taste, generation 3 ──────────────────────────────────────────────────
 
-describe('peer recs: taste generation 2', () => {
+describe('peer recs: taste generation 3', () => {
   const LEAD_KEYS = ['album', 'artist', 'duration', 'exportId', 'isrc', 'peer', 'recordingMbid',
     'releaseGroupMbid', 'seedHash', 'similarity', 'source', 'tile', 'title', 'year'];
 
@@ -900,15 +900,15 @@ describe('peer recs: taste generation 2', () => {
 // ── the flags ────────────────────────────────────────────────────────────
 
 describe('peer recs: the flags', () => {
-  test('23. discoveryTaste 2 and discoveryP2pPeers 1 on /api/ and on ping, version facts', async () => {
+  test('23. discoveryTaste 3 and discoveryP2pPeers 1 on /api/ and on ping, version facts', async () => {
     const api = await call(A, 'GET', '/api/', undefined, tok.mia);
-    assert.equal(api.body.features.discoveryTaste, 2);
+    assert.equal(api.body.features.discoveryTaste, 3);
     assert.equal(api.body.features.discoveryP2pPeers, 1);
     const ping = await call(A, 'GET', '/api/v1/ping', undefined, tok.mia);
-    assert.equal(ping.body.discoveryTaste, 2);
+    assert.equal(ping.body.discoveryTaste, 3);
     assert.equal(ping.body.discoveryP2pPeers, 1);
     // The same with p2p off: the gate is discoveryP2p, not the generation.
     const off = await call(C, 'GET', '/api/v1/ping');
-    assert.deepEqual([off.body.discoveryP2p, off.body.discoveryTaste, off.body.discoveryP2pPeers], [false, 2, 1]);
+    assert.deepEqual([off.body.discoveryP2p, off.body.discoveryTaste, off.body.discoveryP2pPeers], [false, 3, 1]);
   });
 });

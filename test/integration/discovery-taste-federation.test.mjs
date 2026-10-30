@@ -422,6 +422,50 @@ describe('discovery taste over federation: the peers section from a real paired 
     assert.deepEqual(titles(onlyGroup(one.body)), expectedOrder(['x', 'y', 'z', 'w'], 1).map((w) => w.title));
   });
 
+  test('a mood filter reaches B: only its matching rows come back — and a B with no scores answers unfiltered, so its rows are dropped', async () => {
+    // Scores straight into track_moods, the way the mood sync writes them:
+    // on B the x and y songs are relaxed, the z and w songs aggressive. A
+    // needs scores of its own too — a server without any takes no filter.
+    const relaxed = new Set(['X One', 'X Two', 'Y One', 'Y Two']);
+    const writeMoods = (srv, rows) => {
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
+      try {
+        const ins = db.prepare(`INSERT OR REPLACE INTO track_moods (track_id, relaxed, aggressive)
+          SELECT id, ?, ? FROM tracks WHERE title = ?`);
+        for (const [title, isRelaxed] of rows) { ins.run(isRelaxed ? 0.9 : 0.1, isRelaxed ? 0.1 : 0.9, title); }
+      } finally {
+        db.close();
+      }
+    };
+    const clearMoods = (srv) => {
+      const db = new DatabaseSync(path.join(srv.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
+      try { db.exec('DELETE FROM track_moods'); } finally { db.close(); }
+    };
+    try {
+      writeMoods(srvA, [['Be Somebody', true]]);
+      writeMoods(srvB, B_SONGS.filter((s) => s[4] !== null).map((s) => [s[1], relaxed.has(s[1])]));
+      const r = await taste('lena', { sources: ['peers'], limit: { peers: 8 }, moods: { energy: 'relaxed' } });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      assert.deepEqual(r.body.moods, { energy: 'relaxed' });
+      const group = onlyGroup(r.body);
+      assert.deepEqual(new Set(titles(group)), relaxed, 'every relaxed song, and only those');
+      assert.equal('moodsUnsupported' in group, false);
+      assert.deepEqual(r.body.peers.searched, { peers: 1, unreachable: 0, mismatched: 0, moodsUnsupported: 0 });
+
+      clearMoods(srvB);
+      const off = await taste('lena', { sources: ['peers'], limit: { peers: 8 }, moods: { energy: 'relaxed' } });
+      assert.equal(off.status, 200, JSON.stringify(off.body));
+      const dropped = onlyGroup(off.body);
+      assert.equal(dropped.reachable, true);
+      assert.equal(dropped.moodsUnsupported, true);
+      assert.deepEqual(dropped.results, [], 'an unfiltered answer is never shown as a filtered one');
+      assert.equal(off.body.peers.searched.moodsUnsupported, 1);
+    } finally {
+      clearMoods(srvA);
+      clearMoods(srvB);
+    }
+  });
+
   test('a peers-only call pinned to the main answer\'s batch returns that batch\'s rows', async () => {
     for (let i = 0; i < 3; i++) {
       // The page's main call: a random pair of lena's four songs.

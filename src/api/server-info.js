@@ -51,6 +51,7 @@ import * as fedRequestsDb from '../db/federation-requests.js';
 import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
+import { moodFiltersReady } from './mood-filter.js';
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -99,16 +100,23 @@ export function buildFeatures() {
     // and clients gate on `>= n` with no version floors. A version fact —
     // clients show the page on `discovery === true && discoveryTaste >= 1`;
     // whether there is anything to seed from is the route's answer.
-    // 2 = the Peer Recommendations page's half: the networkPeers and
+    // 2: the body takes `moods`, a mood filter (api/mood-filter.js) — the
+    // route's Joi is strict, so a client sends it only from 2 on.
+    // 3 = the Peer Recommendations page's half: the networkPeers and
     // networkOnRandomSeed body keys, network.reason, and peer.label + tile
     // on network leads.
-    discoveryTaste: 2,
+    discoveryTaste: 3,
     // The Peer Recommendations page's peer strip: GET
     // /api/v1/discovery/p2p/peers (member-readable) and the async admin Add,
     // POST /api/v1/admin/discovery/p2p/peer-dbs/add. A generation, like
     // discoveryTaste; the page shows on `discovery && discoveryP2p &&
-    // discoveryTaste >= 2 && discoveryP2pPeers >= 1`.
+    // discoveryTaste >= 3 && discoveryP2pPeers >= 1`.
     discoveryP2pPeers: 1,
+    // A mood filter would find something RIGHT NOW: the mood heads are on
+    // and some songs have scores (api/mood-filter.js). The local Discover
+    // page shows its filters on this; the browse lists read the `moods`
+    // key their own answers carry (a connected server's included).
+    moodFilters: moodFiltersReady(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.
