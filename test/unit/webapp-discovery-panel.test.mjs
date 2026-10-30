@@ -108,6 +108,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
+  'hideMoodFilters', 'moodFilterBody', 'moodPanelHtml', 'discoveryPickMood',
   'localIgnoreVPaths', 'applyDiscoveryPing', 'applyDiscoverySurfaces', 'applyServerInfo', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryOnScreen', 'discoveryNowPlayingPath',
@@ -559,6 +560,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     let browseGeneration = 0;
     let fileExplorerArray = [];
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
     ${sliceConst('DPAGE_LIMITS')}
     ${sliceConst('discoveryView')}
     ${sliceConst('DPAGE_ICONS')}
@@ -2566,8 +2568,8 @@ describe('Discover page: wiring', () => {
 
   test('applyDiscoveryPing: the flags, the nav entry and the panel\'s link follow the ping', () => {
     const { S, els, bodyClasses } = makeSandbox({ taste: answer });
-    S.applyDiscoveryPing({ discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true });
-    assert.deepEqual(S.view.flags, { discovery: true, discoveryTaste: 2, discoveryP2p: true, discoveryP2pPeers: 0, federationDiscovery: false, discoveryPlugins: true });
+    S.applyDiscoveryPing({ discovery: true, discoveryTaste: 2, discoveryP2p: true, federationDiscovery: false, discoveryPlugins: true, moodFilters: true });
+    assert.deepEqual(S.view.flags, { discovery: true, discoveryTaste: 2, discoveryP2p: true, discoveryP2pPeers: 0, federationDiscovery: false, discoveryPlugins: true, moodFilters: true });
     assert.ok(!els.get('nav-discover').classList.contains('super-hide'));
     assert.ok(bodyClasses.contains('has-discover-page'));
     for (const off of [{ discovery: true, discoveryTaste: 0 }, { discovery: false, discoveryTaste: 1 }, { discovery: true }, {}]) {
@@ -2729,7 +2731,7 @@ describe('Discover page: one batch per ask, one visit per open', () => {
 // answers come from the route's own buildPeerView, the leads from the taste
 // route's own stampNetworkRows (label and tile stamped as the server does).
 
-const PR_FLAGS = { ...FLAGS_ALL, discoveryTaste: 2, discoveryP2pPeers: 1 };
+const PR_FLAGS = { ...FLAGS_ALL, discoveryTaste: 3, discoveryP2pPeers: 1 };
 const PR_NOW = Date.parse('2026-10-27T10:00:00.000Z');
 const ep = (head) => head.padEnd(64, '0');
 const BASEMENT = ep('aa01');
@@ -2784,17 +2786,17 @@ const lastWrite = (writes, sel) => writes.filter((w) => w.path[w.path.length - 1
 describe('Peer Recommendations: the gate and its nav row', () => {
   test('the nav row shows with all four flags; any one missing keeps it hidden (Discover\'s row follows its own)', () => {
     const { S, els } = makeSandbox({ taste: answer });
-    const full = { discovery: true, discoveryTaste: 2, discoveryP2p: true, discoveryP2pPeers: 1 };
+    const full = { discovery: true, discoveryTaste: 3, discoveryP2p: true, discoveryP2pPeers: 1 };
     S.applyDiscoveryPing(full);
     assert.equal(S.view.flags.discoveryP2pPeers, 1);
     assert.ok(!els.get('nav-peer-recs').classList.contains('super-hide'));
-    for (const off of [{ discovery: false }, { discoveryTaste: 1 }, { discoveryP2p: false }, { discoveryP2pPeers: 0 }, { discoveryP2pPeers: undefined }]) {
+    for (const off of [{ discovery: false }, { discoveryTaste: 1 }, { discoveryTaste: 2 }, { discoveryP2p: false }, { discoveryP2pPeers: 0 }, { discoveryP2pPeers: undefined }]) {
       S.applyDiscoveryPing({ ...full, ...off });
       assert.ok(els.get('nav-peer-recs').classList.contains('super-hide'), JSON.stringify(off));
     }
     S.applyDiscoveryPing({ ...full, discoveryP2p: false });
     assert.ok(!els.get('nav-discover').classList.contains('super-hide'), 'Discover keeps its row');
-    S.applyDiscoveryPing({ ...full, discoveryTaste: '2', discoveryP2pPeers: '1' });
+    S.applyDiscoveryPing({ ...full, discoveryTaste: '3', discoveryP2pPeers: '1' });
     assert.ok(!els.get('nav-peer-recs').classList.contains('super-hide'), 'numeric strings count');
   });
 
@@ -3649,7 +3651,7 @@ describe('Peer Recommendations: states', () => {
   });
 
   test('switched off (R7) — a taste 403, no network on a history answer, a peers 403: one re-ping, the nav row hidden, the file explorer', async () => {
-    const off = { discovery: true, discoveryTaste: 2, discoveryP2p: false, discoveryP2pPeers: 1 };
+    const off = { discovery: true, discoveryTaste: 3, discoveryP2p: false, discoveryP2pPeers: 1 };
     const refusal = Object.assign(new Error('off'), { status: 403 });
     for (const [label, extra] of [
       ['taste 403', { taste: () => ({ disabled: true }) }],
@@ -3668,7 +3670,7 @@ describe('Peer Recommendations: states', () => {
   });
 
   test('still on after the re-ping: a refused answer is "Try again"; a refused poll leaves the page as it is', async () => {
-    const on = { discovery: true, discoveryTaste: 2, discoveryP2p: true, discoveryP2pPeers: 1 };
+    const on = { discovery: true, discoveryTaste: 3, discoveryP2p: true, discoveryP2pPeers: 1 };
     const box = prBox({ ping: on, taste: () => ({ disabled: true }) });
     await openPage(box);
     await flush();
@@ -3861,7 +3863,7 @@ const ON_STATUS = (over = {}) => ({
   knownPeers: 0, serverName: 'Kitchen <Radio>', serverDescription: 'Late & "loud"', ...over,
 });
 const OFF_FLAGS = { ...PR_FLAGS, discoveryP2p: false };
-const OFF_PING = { discovery: true, discoveryTaste: 2, discoveryP2p: false, discoveryP2pPeers: 1 };
+const OFF_PING = { discovery: true, discoveryTaste: 3, discoveryP2p: false, discoveryP2pPeers: 1 };
 const ON_PING = { ...OFF_PING, discoveryP2p: true };
 const refused = (status, error) => Object.assign(new Error(`HTTP ${status}`), { status, body: error === undefined ? null : { error } });
 // an admin, the network off, the re-ping finding it on
@@ -3914,7 +3916,7 @@ describe('W7: the nav row per role while the network is off', () => {
       S.applyDiscoveryPing({ ...OFF_PING, ...off });
       assert.equal(row(), false, `an older server: ${JSON.stringify(off)}`);
     }
-    S.applyDiscoveryPing({ ...OFF_PING, discoveryTaste: '2', discoveryP2pPeers: '1' });
+    S.applyDiscoveryPing({ ...OFF_PING, discoveryTaste: '3', discoveryP2pPeers: '1' });
     assert.equal(row(), true, 'numeric strings count');
   });
 

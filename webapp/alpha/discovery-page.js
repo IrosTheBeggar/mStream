@@ -236,24 +236,24 @@
 
   // Peer Recommendations exists where the ping says so (peer-recommendations
   // plan §2 item 2): discovery and the p2p network on, the taste route's
-  // generation 2 (networkPeers, networkOnRandomSeed, network.reason,
+  // generation 3 (networkPeers, networkOnRandomSeed, network.reason,
   // peer.label, tile) and the peers route (discoveryP2pPeers). An older
   // server shows no entry at all — there is no reduced page. Never probed.
   function peerRecsAvailable(flags) {
     if (!pageAvailable(flags) || flags.discoveryP2p !== true) { return false; }
-    return generation(flags.discoveryTaste) >= 2 && generation(flags.discoveryP2pPeers) >= 1;
+    return generation(flags.discoveryTaste) >= 3 && generation(flags.discoveryP2pPeers) >= 1;
   }
 
   // An admin can turn the network on from the page (peer-recommendations
   // plan §4.1 W7) while p2p is off, on a server with the page's routes
-  // (taste generation 2, the peers route). `who` = { admin, adminApi }:
+  // (taste generation 3, the peers route). `who` = { admin, adminApi }:
   // user.admin from GET /api, and its `admin` object present — absent while
   // lockAdmin is on, when every admin route answers 405. `discovery` is not
   // needed: turning the network on turns collection on.
   function peerRecsCanTurnOn(flags, who) {
     if (!isObj(flags) || !isObj(who) || who.admin !== true || who.adminApi !== true) { return false; }
     if (flags.discoveryP2p === true) { return false; }
-    return generation(flags.discoveryTaste) >= 2 && generation(flags.discoveryP2pPeers) >= 1;
+    return generation(flags.discoveryTaste) >= 3 && generation(flags.discoveryP2pPeers) >= 1;
   }
 
   // What the nav row opens: 'page' (Peer Recommendations), 'turnOn' (an
@@ -277,6 +277,35 @@
     const description = (f.description || '').trim();
     return name.length >= 1 && name.length <= 64 && description.length <= 180
       && TURN_ON_TEXT.test(name) && TURN_ON_TEXT.test(description);
+  }
+
+  // The Discover page's mood filters (src/api/mood-filter.js): a server
+  // whose taste route takes `moods` (generation 2 — the route's schema is
+  // strict, so an older one would refuse the key) and that has mood scores
+  // to filter by right now (`moodFilters`).
+  const MOOD_SCALES = Object.freeze({
+    valence: ['happy', 'neutral', 'sad'],
+    energy: ['relaxed', 'neutral', 'aggressive'],
+    voice: ['instrumental', 'vocals'],
+  });
+  const MOOD_TAGS = Object.freeze(['acoustic', 'party', 'danceable']);
+
+  function moodsAvailable(flags) {
+    if (!pageAvailable(flags) || flags.moodFilters !== true) { return false; }
+    return generation(flags.discoveryTaste) >= 2;
+  }
+
+  // A mood filter in the server's form — known values only, tags in its
+  // order — or null when nothing filters.
+  function cleanMoods(m) {
+    if (!isObj(m)) { return null; }
+    const out = {};
+    for (const group of Object.keys(MOOD_SCALES)) {
+      if (MOOD_SCALES[group].indexOf(m[group]) !== -1) { out[group] = m[group]; }
+    }
+    const tags = MOOD_TAGS.filter((tag) => arr(m.tags).indexOf(tag) !== -1);
+    if (tags.length) { out.tags = tags; }
+    return Object.keys(out).length ? out : null;
   }
 
   function cleanLimits(limits) {
@@ -369,6 +398,11 @@
       const limit = cleanLimits(o.limits);
       if (limit) { body.limit = limit; }
     }
+
+    // The mood filters belong to the Discover page (the network leaves a
+    // filtered call anyway), and only reach a server that takes them.
+    const moods = page === 'play' && moodsAvailable(flags) ? cleanMoods(o.moods) : null;
+    if (moods) { body.moods = moods; }
 
     const main = Object.assign({ sources: isNetworkPage(page) ? ['network'] : ['library'] }, body);
     const peers = page === 'play' && flags.federationDiscovery === true ? Object.assign({ sources: ['peers'] }, body) : null;
@@ -1386,7 +1420,7 @@
   }
 
   // The network's state on its page (an answer in hand). An empty section
-  // says why (taste generation 2's `reason`; peer-recommendations plan §2
+  // says why (taste generation 3's `reason`; peer-recommendations plan §2
   // item 18), and each state draws at most one line:
   //   failed      the call failed, or the walk did (reason 'error'):
   //               "Try again" alone (reason null)
@@ -1474,7 +1508,8 @@
     WINDOWS, DEFAULT_WINDOW, SOURCES, PAGES, PIN_CAP, EXCLUDE_CAP, HASH_MAX,
     LIMIT_DEFAULTS, LIMIT_CAPS, PEER_LIMITS, LOOKUP_BATCH_MAX, STORAGE_KEYS, SEED_CHIPS_MAX, PAGE_SIZE, ALBUM_STRIP_MAX,
     storedWindow, dropSeed, restoreSeed, passPick, randomPick, noPickLeft,
-    pageAvailable, peerRecsAvailable, peerRecsCanTurnOn, peerRecsEntry, turnOnValid, buildRequests, peersRequest, batchRequest, mergeResponses,
+    pageAvailable, peerRecsAvailable, peerRecsCanTurnOn, peerRecsEntry, turnOnValid, moodsAvailable, cleanMoods,
+    buildRequests, peersRequest, batchRequest, mergeResponses,
     fmtLength,
     seedChips, windowOptions,
     librarySections, networkRows,

@@ -43,8 +43,8 @@ const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-05T12:00:00.000Z');
 const ago = (days) => new Date(NOW - days * DAY).toISOString();
 const FLAGS = { discovery: true, discoveryTaste: 1, discoveryP2p: true, federationDiscovery: true };
-// Peer Recommendations' gate: taste generation 2 and the peers route.
-const PFLAGS = { ...FLAGS, discoveryTaste: 2, discoveryP2pPeers: 1 };
+// Peer Recommendations' gate: taste generation 3 and the peers route.
+const PFLAGS = { ...FLAGS, discoveryTaste: 3, discoveryP2pPeers: 1 };
 const PEER_PAGE = { page: 'peerRecs' };
 
 // ── fixtures in the route's own shapes ──────────────────────────────────
@@ -192,6 +192,35 @@ describe('the contract constants agree with the server', () => {
 
 // ── requests ──────────────────────────────────────────────────────────
 
+describe('buildRequests: the mood filter', () => {
+  const MOODY = { ...FLAGS, discoveryTaste: 2, moodFilters: true };
+  const moods = { energy: 'relaxed', tags: ['danceable', 'acoustic'] };
+
+  test('the Discover page sends it on both calls, in the server\'s form', () => {
+    const { main, peers } = D.buildRequests({ flags: MOODY, moods });
+    assert.deepEqual(main.moods, { energy: 'relaxed', tags: ['acoustic', 'danceable'] });
+    assert.deepEqual(peers.moods, main.moods);
+  });
+
+  test('only to a server that takes it (generation 2) and has scores', () => {
+    assert.equal(D.moodsAvailable(MOODY), true);
+    for (const flags of [FLAGS, { ...FLAGS, moodFilters: true }, { ...FLAGS, discoveryTaste: 2 }, { ...MOODY, discovery: false }]) {
+      assert.equal(D.moodsAvailable(flags), false, JSON.stringify(flags));
+      const { main } = D.buildRequests({ flags, moods });
+      assert.ok(main === null || !('moods' in main), JSON.stringify(flags));
+    }
+    assert.equal(D.moodsAvailable({ ...MOODY, discoveryTaste: '2' }), true, 'a string generation still counts');
+  });
+
+  test('never on the explore page, and nothing for an empty or unknown filter', () => {
+    assert.equal('moods' in D.buildRequests({ flags: MOODY, moods, page: 'explore' }).main, false);
+    for (const m of [null, {}, { tags: [] }, { energy: 'sleepy', tags: ['sad'] }, 'relaxed']) {
+      assert.equal('moods' in D.buildRequests({ flags: MOODY, moods: m }).main, false, JSON.stringify(m));
+    }
+    assert.deepEqual(D.cleanMoods({ valence: 'neutral', voice: 'vocals', extra: 1 }), { valence: 'neutral', voice: 'vocals' });
+  });
+});
+
 describe('buildRequests', () => {
   const strip = (b) => { const c = { ...b }; delete c.sources; return c; };
 
@@ -241,14 +270,14 @@ describe('buildRequests', () => {
   test('Peer Recommendations without any one of its four flags: no bodies at all', () => {
     const offs = [
       { ...PFLAGS, discovery: false }, { ...PFLAGS, discoveryP2p: false }, { ...PFLAGS, discoveryP2p: 'true' },
-      { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discoveryTaste: undefined }, { ...PFLAGS, discoveryP2pPeers: 0 },
+      { ...PFLAGS, discoveryTaste: 1 }, { ...PFLAGS, discoveryTaste: 2 }, { ...PFLAGS, discoveryTaste: undefined }, { ...PFLAGS, discoveryP2pPeers: 0 },
       { ...PFLAGS, discoveryP2pPeers: undefined }, { ...PFLAGS, discoveryP2pPeers: true }, FLAGS, {}, null,
     ];
     for (const flags of offs) {
       assert.deepEqual(D.buildRequests({ flags, ...PEER_PAGE }), { main: null, peers: null }, JSON.stringify(flags));
       assert.equal(D.peerRecsAvailable(flags), false, JSON.stringify(flags));
     }
-    for (const flags of [PFLAGS, { ...PFLAGS, discoveryTaste: '2', discoveryP2pPeers: '1' }, { ...PFLAGS, discoveryTaste: 3, discoveryP2pPeers: 2 }]) {
+    for (const flags of [PFLAGS, { ...PFLAGS, discoveryTaste: '3', discoveryP2pPeers: '1' }, { ...PFLAGS, discoveryTaste: 4, discoveryP2pPeers: 2 }]) {
       assert.equal(D.peerRecsAvailable(flags), true, JSON.stringify(flags));
       assert.ok(D.buildRequests({ flags, ...PEER_PAGE }).main, 'a later generation, a numeric string: still the page');
     }
@@ -382,12 +411,14 @@ describe('W7: an admin can turn the network on (peerRecsCanTurnOn, peerRecsEntry
     }
   });
 
-  test('the page\'s routes: generation 2 and the peers route — numbers, numeric strings, later generations', () => {
-    for (const flags of [{ ...OFF, discoveryTaste: '2' }, { ...OFF, discoveryP2pPeers: '1' }, { ...OFF, discoveryTaste: ' 2 ', discoveryP2pPeers: '1' },
-      { ...OFF, discoveryTaste: 3, discoveryP2pPeers: 2 }, { ...OFF, discoveryTaste: '3', discoveryP2pPeers: '2' }]) {
+  test('the page\'s routes: generation 3 and the peers route — numbers, numeric strings, later generations', () => {
+    for (const flags of [{ ...OFF, discoveryTaste: '3' }, { ...OFF, discoveryP2pPeers: '1' }, { ...OFF, discoveryTaste: ' 3 ', discoveryP2pPeers: '1' },
+      { ...OFF, discoveryTaste: 4, discoveryP2pPeers: 2 }, { ...OFF, discoveryTaste: '4', discoveryP2pPeers: '2' }]) {
       assert.equal(D.peerRecsEntry(flags, ADMIN), 'turnOn', JSON.stringify(flags));
     }
-    for (const flags of [{ ...OFF, discoveryTaste: 1 }, { ...OFF, discoveryTaste: '1' }, { ...OFF, discoveryTaste: undefined }, { ...OFF, discoveryTaste: '2.5' },
+    // 2 = the mood filters' generation, without the page's keys
+    for (const flags of [{ ...OFF, discoveryTaste: 1 }, { ...OFF, discoveryTaste: '1' }, { ...OFF, discoveryTaste: 2 }, { ...OFF, discoveryTaste: '2' },
+      { ...OFF, discoveryTaste: undefined }, { ...OFF, discoveryTaste: '3.5' },
       { ...OFF, discoveryTaste: true }, { ...OFF, discoveryP2pPeers: 0 }, { ...OFF, discoveryP2pPeers: '0' },
       { ...OFF, discoveryP2pPeers: undefined }, { ...OFF, discoveryP2pPeers: true }, { ...OFF, discoveryP2pPeers: '' }, {}, null, 'flags']) {
       assert.equal(D.peerRecsCanTurnOn(flags, ADMIN), false, JSON.stringify(flags));
@@ -398,7 +429,7 @@ describe('W7: an admin can turn the network on (peerRecsCanTurnOn, peerRecsEntry
   test('p2p on: the page for everyone the gate lets in; nothing to turn on where it does not', () => {
     for (const who of [ADMIN, { admin: false, adminApi: false }, { admin: true, adminApi: false }, null]) {
       assert.equal(D.peerRecsEntry(PFLAGS, who), 'page', JSON.stringify(who));
-      assert.equal(D.peerRecsEntry({ ...PFLAGS, discoveryTaste: '2', discoveryP2pPeers: '1' }, who), 'page');
+      assert.equal(D.peerRecsEntry({ ...PFLAGS, discoveryTaste: '3', discoveryP2pPeers: '1' }, who), 'page');
       assert.equal(D.peerRecsCanTurnOn(PFLAGS, who), false, 'already on');
       // collection off under a running network: the page's gate fails, and
       // the enable route has nothing to turn on

@@ -52,6 +52,9 @@ import { requireAccount } from '../util/require-account.js';
 import * as peerDbs from '../state/discovery-peer-dbs.js';
 import * as discoveryCatalog from '../state/discovery-catalog.js';
 import { peerLabels, leadTile } from '../state/discovery-peer-view.js';
+import {
+  moodFilterSchema, normalizeMoods, applicableMoods, matchingTrackIds, matchingAlbumIds, trackMatcher,
+} from './mood-filter.js';
 import * as taste from '../discovery/taste-queries.js';
 
 const d = () => db.getDB();
@@ -64,6 +67,10 @@ const NETWORK_HEADROOM = 2;
 // Failed visibility probes each step of choosing seeds may spend
 // (collectSeeds).
 const VISIBLE_MISS_CAP = 2 * taste.SEED_CAP * taste.SEED_OVERFETCH;
+// With a mood filter the library ranks this many times deeper: the filter
+// drops most near neighbours after the ranking, and the walk still has to
+// fill its rows.
+const MOOD_HEADROOM = 4;
 
 // ── Validation ───────────────────────────────────────────────────────────
 
@@ -86,7 +93,9 @@ const tasteSchema = Joi.object({
   limit: limitSchema,
   newArtistsOnly: Joi.boolean().default(false),
   ignoreVPaths: Joi.array().items(Joi.string().max(256)).max(100),
-  // Generation 2, the Peer Recommendations page (both ignored without the
+  // A mood filter (api/mood-filter.js) — server-info discoveryTaste >= 2.
+  moods: moodFilterSchema,
+  // Generation 3, the Peer Recommendations page (both ignored without the
   // network source). networkPeers narrows the shelf walk to these peers
   // (a peer tab; absent = the whole shelf, [] is a 400): ids not on the
   // shelf match nothing. networkOnRandomSeed walks the shelf on a random
@@ -203,6 +212,28 @@ function collectSeeds(req, index, body, ctx) {
     out.seedSource = source;
   };
 
+  // With a mood filter, the history and counters steps first take only
+  // songs that match it — a relaxed seed's neighbours are mostly relaxed,
+  // so the filtered results stay full — and fall through to the usual
+  // chain when the history holds none (the results are filtered either
+  // way). Two more probe steps: up to 6 × VISIBLE_MISS_CAP failed probes.
+  if (ctx.moods) {
+    const matches = trackMatcher(d(), ctx.moods);
+    const matchingVisible = () => {
+      const ok = analyzedVisible();
+      return (h) => ok(h) && matches(rows.get(h).id);
+    };
+    const moodHist = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: matchingVisible() });
+    if (moodHist.hashes.length) {
+      out.window = moodHist.window;
+      out.widenedFrom = moodHist.widenedFrom;
+      take(moodHist.hashes, 'history');
+      return out;
+    }
+    const moodCounters = taste.counterSeeds(d(), req.user, { ...opts, accept: matchingVisible() });
+    if (moodCounters.hashes.length) { take(moodCounters.hashes, 'counters'); return out; }
+  }
+
   const hist = taste.historySeeds(d(), req.user, { ...opts, windowDays, accept: analyzedVisible() });
   out.window = hist.window;
   out.widenedFrom = hist.widenedFrom;
@@ -276,12 +307,12 @@ function seedNameKey(s) {
 const ROW_CHUNK = 100;
 
 async function librarySection(req, index, ctx) {
-  const { uid, libIds, libSeeds, allSeeds, exclusions, limit } = ctx;
+  const { uid, libIds, libSeeds, allSeeds, exclusions, limit, moods } = ctx;
   const out = { tracks: [], albums: [], capped: false };
   if (libSeeds.length === 0 || (limit.tracks === 0 && limit.albums === 0)) { return out; }
 
   const cutoff = toSqlite(new Date(Date.now() - taste.DEFAULT_STALE_DAYS * DAY_MS));
-  const budget = considerBudget(Math.max(limit.tracks, limit.albums));
+  const budget = considerBudget(Math.max(limit.tracks, limit.albums)) * (moods ? MOOD_HEADROOM : 1);
   // Seed songs never come back, by hash or by any other file of the song.
   // dedupe:false — the ranking cannot see visibility, so the best file of a
   // song in a library this user cannot open must not hide the one they can;
@@ -298,10 +329,13 @@ async function librarySection(req, index, ctx) {
   // with its album id (index entries carry none). One chunked probe, not a
   // probe per row — the album pass needs the whole pool.
   const vis = taste.visibleTracksByHash(d(), ranked.map((r) => r.entry.hash), libIds);
+  // A mood filter keeps only the songs that match it, so the album cards
+  // and the song rows below are built from matching songs alone.
+  const keep = moods ? matchingTrackIds(d(), moods, [...vis.values()].map((t) => t.id)) : null;
   const pool = [];
   for (const r of ranked) {
     const t = vis.get(r.entry.hash);
-    if (t) { pool.push({ ...r, trackId: t.id, albumId: t.albumId }); }
+    if (t && (!keep || keep.has(t.id))) { pool.push({ ...r, trackId: t.id, albumId: t.albumId }); }
   }
   const seedHashOf = (i) => (i == null ? null : libSeeds[i]?.hash ?? null);
 
@@ -314,7 +348,15 @@ async function librarySection(req, index, ctx) {
     for (const p of pool) {
       if (p.albumId != null && !bestByAlbum.has(p.albumId)) { bestByAlbum.set(p.albumId, p); }
     }
-    const cardRows = taste.albumCardRows(d(), req.user, [...bestByAlbum.keys()], { libIds });
+    // With a mood filter a card also needs the album to match as a whole
+    // — most of its songs, the Albums list's rule — not just the one song
+    // that brought it in.
+    let cardIds = [...bestByAlbum.keys()];
+    if (moods && cardIds.length) {
+      const whole = matchingAlbumIds(d(), moods, cardIds, libIds);
+      cardIds = cardIds.filter((id) => whole.has(id));
+    }
+    const cardRows = taste.albumCardRows(d(), req.user, cardIds, { libIds });
     const scored = cardRows.map((row) => {
       let best = null;
       for (const id of row.albumIds) {
@@ -563,7 +605,10 @@ export function setup(mstream) {
 
     const filter = libraryFilter(req.user, body.ignoreVPaths);
     const libIds = taste.tasteScope(req.user, body.ignoreVPaths);
-    const picked = collectSeeds(req, index, body, { uid, filter, libIds, exclusions: new Set(exclusions), windowDays: body.window });
+    // The answer echoes the filter it applied (`moods`), and leaves the key
+    // out when this server has no scores to filter by (api/mood-filter.js).
+    const { moods, echo } = applicableMoods(normalizeMoods(body.moods));
+    const picked = collectSeeds(req, index, body, { uid, filter, libIds, exclusions: new Set(exclusions), windowDays: body.window, moods });
     const { seeds } = picked;
 
     // Seeds render through one batched enrichment (pins already carry it).
@@ -594,8 +639,12 @@ export function setup(mstream) {
     // (networkOnRandomSeed; its vector is the centroid, so every lead's
     // seedHash is the pick). The federation fan-out sends the centroid to
     // other servers: never for a random seed.
+    // The network is not filtered by mood yet — its rows carry the peers'
+    // exported labels, not scores this pass tests — so a filtered call
+    // leaves it out (null: not available) rather than answering unfiltered
+    // rows.
     const wantNetwork = want.has('network') && config.program.discoveryP2p.enabled === true
-      && (!random || body.networkOnRandomSeed === true);
+      && (!random || body.networkOnRandomSeed === true) && !moods;
     const wantPeers = want.has('peers') && federationDiscoveryOn() && !random;
 
     const response = {
@@ -613,6 +662,7 @@ export function setup(mstream) {
       library: null,
       network: null,
       peers: null,
+      ...(echo && { moods: echo }),
     };
     // No analyzed seed (the scan is pending): nothing to rank or send. The
     // sections the caller asked for come back EMPTY, never null and never
@@ -628,7 +678,7 @@ export function setup(mstream) {
     const centroid = (wantNetwork || wantPeers) ? sim.centroidOf(analyzed.map((s) => s.entry.vec)) : null;
     const ctx = {
       uid, filter, libIds, libSeeds, allSeeds: seeds, exclusions,
-      limit: body.limit, newArtistsOnly: body.newArtistsOnly, seeds: analyzed,
+      limit: body.limit, newArtistsOnly: body.newArtistsOnly, seeds: analyzed, moods,
       networkPeers: body.networkPeers ?? null,
     };
 
@@ -644,7 +694,7 @@ export function setup(mstream) {
     if (wantPeers && body.limit.peers > 0) {
       await loadFederationClient();
       fed = fanOutFederation(centroid, index.modelId, {
-        limit: body.limit.peers, newArtistsOnly: body.newArtistsOnly, onPeerStatus: recordPeerStatus,
+        limit: body.limit.peers, newArtistsOnly: body.newArtistsOnly, onPeerStatus: recordPeerStatus, moods,
       });
       fed.catch(() => {});
       await new Promise(setImmediate);

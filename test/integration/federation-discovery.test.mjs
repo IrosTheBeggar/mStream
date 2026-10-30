@@ -296,6 +296,39 @@ describe('federation discovery similar (peer side)', () => {
       'admin vpaths span both libraries, so the testlib track leads');
   });
 
+  test('a mood filter in the query string: matching songs only, echoed back; a bad one is a 400', async () => {
+    const dbPath = path.join(server.tmpDir, 'db', 'mstream.db');
+    const write = (sql) => {
+      const db = new DatabaseSync(dbPath, { timeout: 5000 });
+      try { db.exec(sql); } finally { db.close(); }
+    };
+    write(`INSERT INTO track_moods (track_id, relaxed, aggressive) SELECT id, 0.9, 0.1 FROM tracks WHERE title = 'Alpha Song';
+           INSERT INTO track_moods (track_id, relaxed, aggressive) SELECT id, 0.1, 0.9 FROM tracks WHERE title = 'Beta Song';`);
+    const ask = async (query) => {
+      const r = await fetch(`${server.baseUrl}/api/v1/federation/discovery/similar${query}`, {
+        method: 'POST', headers: fedHeaders(fedKey), body: JSON.stringify({ embedding: b64(Q), modelId: 'test-fake' }),
+      });
+      return { status: r.status, body: await r.json().catch(() => null) };
+    };
+    try {
+      const relaxed = await ask(`?moods=${encodeURIComponent(JSON.stringify({ energy: 'relaxed' }))}`);
+      assert.equal(relaxed.status, 200);
+      assert.deepEqual(relaxed.body.results.map((r) => r.title), ['Alpha Song']);
+      assert.deepEqual(relaxed.body.moods, { energy: 'relaxed' });
+      const plain = await ask('');
+      assert.deepEqual(plain.body.results.map((r) => r.title), ['Alpha Song', 'Beta Song']);
+      assert.deepEqual(plain.body.moods, {}, 'it says it could filter');
+      for (const bad of ['?moods=nope', `?moods=${encodeURIComponent('{"energy":"sleepy"}')}`]) {
+        assert.equal((await ask(bad)).status, 400, bad);
+      }
+    } finally {
+      write('DELETE FROM track_moods');
+    }
+    const none = await ask(`?moods=${encodeURIComponent(JSON.stringify({ energy: 'relaxed' }))}`);
+    assert.equal('moods' in none.body, false, 'no scores: no echo, so a caller drops these rows');
+    assert.equal(none.body.results.length, 2, 'and nothing was filtered');
+  });
+
   test('discovery-off server: health capability null, similar 403', async () => {
     const health = await fetch(`${offServer.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(offKey) });
     assert.equal(health.status, 200);

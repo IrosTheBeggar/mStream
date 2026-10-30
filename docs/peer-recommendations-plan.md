@@ -17,14 +17,14 @@ A second discovery page beside Discover, **Peer Recommendations** (terminal nav 
 | Row tap | the recommendation window (`openDiscoverModal(raw,'p2p',{from:'peerRecs'})`) | the lead sheet | the lead modal |
 | Plays | only the always-visible play icon; a sticky band at the bottom of the browser column | only the 44 px circle; a band docked above the mini player | only `▸` / `l`; the band replaces the verbs line on row 6 |
 
-What changes on the server: a member-readable peers route; an async admin Add that makes room on a full shelf; taste generation 2 (a server-side peer filter, network leads for users with no history, an empty-state reason, a stamped peer label, and a **server-stamped generated tile**); a new feature flag; a no-sidecar stage for live checks.
+What changes on the server: a member-readable peers route; an async admin Add that makes room on a full shelf; taste generation 3 (a server-side peer filter, network leads for users with no history, an empty-state reason, a stamped peer label, and a **server-stamped generated tile**); a new feature flag; a no-sidecar stage for live checks.
 
 ## 2. Decisions (chosen defaults; flagged where the user may want to change them)
 
 Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator before planning. **[review]** = a review fix taken here. **[flag]** = a default the user should confirm (§7).
 
 1. **[user] Layout "B + C"** (DECISIONS-v2 §1). The peer strip is the peer list: there is no Peers button, popover or window. There are two song columns. A row tap opens the plug-in modal, and only the play icon plays. Nothing else plays: not a row tap, and not the modal opening.
-2. **[orch] Gate**: `discovery === true && discoveryP2p === true && discoveryTaste >= 2 && discoveryP2pPeers >= 1` (ping flat keys, or `/api` `features`). **[user] The admin exception (web, §4.1 W7)**: while p2p is off, an admin who can turn the network on gets the entry too, and the page is a form that turns it on. "Can turn on" = `user.admin`, the `/api` `admin` object present (lockAdmin off), `discoveryTaste >= 2` and `discoveryP2pPeers >= 1`. `discovery` is not required: the enable forces collection on. Members get no entry while p2p is off. An older server shows **no entry point at all**, and there is no reduced page. The strict taste schema answers 400 to the new keys (`src/api/discovery-taste.js:84-94`), and a client-side filter of a global top-N can leave a peer nearly empty. The now-playing panel's Network tab keeps serving older servers unchanged.
+2. **[orch] Gate**: `discovery === true && discoveryP2p === true && discoveryTaste >= 3 && discoveryP2pPeers >= 1` (ping flat keys, or `/api` `features`). **[user] The admin exception (web, §4.1 W7)**: while p2p is off, an admin who can turn the network on gets the entry too, and the page is a form that turns it on. "Can turn on" = `user.admin`, the `/api` `admin` object present (lockAdmin off), `discoveryTaste >= 3` and `discoveryP2pPeers >= 1`. `discovery` is not required: the enable forces collection on. Members get no entry while p2p is off. An older server shows **no entry point at all**, and there is no reduced page. The strict taste schema answers 400 to the new keys (`src/api/discovery-taste.js:84-94`), and a client-side filter of a global top-N can leave a peer nearly empty. The now-playing panel's Network tab keeps serving older servers unchanged.
 3. **[orch] Narrowing is server-side.** A peer tab re-asks taste with `networkPeers:[id]`, pinned to the seed batch on screen (§3.5), so each peer gets its own top-N.
 4. **[orch] Users with no finished songs still get leads (S6)**: `networkOnRandomSeed: true` walks the network on the single random pick.
 5. **[orch] Add is admin-only and async** (202 plus a per-peer state). A page Add **does not pin**. A full shelf swaps out unpinned snapshots in rotation's eviction order. **No room** appears only when the incoming snapshot cannot fit even after evicting every unpinned one. Member pull is deferred.
@@ -79,7 +79,7 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
 ## 3. Server contract (mStream)
 
 ### 3.1 Flags
-- `src/api/server-info.js:102`: `discoveryTaste: 2`. Generation 2 adds the `networkPeers` and `networkOnRandomSeed` body keys, `network.reason`, `peer.label` and `tile` on leads. Clients gate on `>= n` (house rule, `:94-101`).
+- `src/api/server-info.js:102`: `discoveryTaste: 3`. Generation 2 is master's `moods` filter (#1092), so the Peer Recommendations keys are generation 3: it adds the `networkPeers` and `networkOnRandomSeed` body keys, `network.reason`, `peer.label` and `tile` on leads. Clients gate on `>= n` (house rule, `:94-101`).
 - New, next to it: `discoveryP2pPeers: 1`. It covers `GET /api/v1/discovery/p2p/peers` and `POST /api/v1/admin/discovery/p2p/peer-dbs/add`.
 - `src/api/playlist.js:35-39` (the hand-built ping): add `discoveryP2pPeers: features.discoveryP2pPeers`. The drift-lock (`test/integration/api-server-info.test.mjs:219-237`) fails until it is added.
 - `discoveryP2p` stays the config flag (`server-info.js:84`), not the running state. The peers route says whether the stack is running (`shelf.running`, below).
@@ -186,7 +186,7 @@ export function planRoom({ shelf, catalog, incoming /* {endpointId,size} */, cap
   - `add … swapped out <id12>…`;
   - `add … failed (<code>): <raw>`.
 
-### 3.4 `POST /api/v1/discovery/taste`, generation 2
+### 3.4 `POST /api/v1/discovery/taste`, generation 3
 - **Body keys** (strict schema, `discovery-taste.js:84-94`):
 ```js
 networkPeers: Joi.array().items(Joi.string().hex().length(64).lowercase()).min(1).max(50).unique(),
@@ -320,7 +320,7 @@ Notes for builders:
     21. A taste call during an Add that evicts → 200.
     22. Discover's body (no new keys) is unchanged.
   - Flags:
-    23. `discoveryTaste === 2` and `discoveryP2pPeers === 1` on `/api/` and on ping; the drift-lock stays green.
+    23. `discoveryTaste === 3` and `discoveryP2pPeers === 1` on `/api/` and on ping; the drift-lock stays green.
 
 ### 3.9 Stage: NEW `test/stage/peer-recs-stage.mjs` (not a `.test.mjs`)
 Derived from the discovery-page stage (`~/.claude/projects/-Users-sherika-code-mStream--claude-worktrees-mstream-discovery-page-03fbc1/stage-backup/stage.mjs`, which already hand-stages a two-peer p2p shelf at `:189-192`; memory saying it does not is stale).
@@ -614,7 +614,7 @@ Order: PH1 ∥ PH3 → PH2 ∥ PH4 → PH5 → PH6 ∥ PH7 → PH0 → PH8 → P
 
 ### 4.3 Terminal (`mstream-terminal-player`, Rust ratatui, GUI mode)
 **Entry and gating.**
-- `Capabilities::peer_recs()` = `discovery && discovery_p2p && discovery_taste >= 2 && discovery_p2p_peers >= 1`, plus `session.peer.is_none()`. A new `discoveryP2pPeers` field on `Ping` (`src/api/types.rs:77-128`), `LayeredFeatures` (`:150-168`) and `Capabilities` (`:284-308`).
+- `Capabilities::peer_recs()` = `discovery && discovery_p2p && discovery_taste >= 3 && discovery_p2p_peers >= 1`, plus `session.peer.is_none()`. A new `discoveryP2pPeers` field on `Ping` (`src/api/types.rs:77-128`), `LayeredFeatures` (`:150-168`) and `Capabilities` (`:284-308`).
 - Without the gate: no row, `R` dead, nothing asked. The room yields to Files when the row goes.
 - Nav, `src/gui/mod.rs`:
   - `NavId::PeerRecs`, last in `NAV` (`:427-441`, index 13, `PEER_RECS_NAV`);
@@ -679,7 +679,7 @@ At the 100×24 floor (hints on) the blank rows drop: tabs on 3, verbs on 4, head
   - `ping_reads_discovery_p2p_peers_flat_and_layered`;
   - `the_peer_recs_gate_needs_all_four_flags`;
   - `discover_taste_body_is_unchanged_by_the_network_keys` (golden);
-  - `the_peer_recs_body_spells_the_generation_2_keys` (R1);
+  - `the_peer_recs_body_spells_the_generation_3_keys` (R1);
   - `network_reason_parses_every_word_and_tolerates_new_ones`;
   - `a_lead_reads_its_peer_label_and_tile_and_keeps_raw_verbatim`.
 - **peer_recs.rs (types)**: `the_peers_answer_parses_the_server_plans_sample` (+ a bad id dropped); `a_preview_answer_parses_deezer_itunes_and_null`; `a_preview_never_keeps_artwork`.
@@ -862,7 +862,7 @@ House rules for every phase:
 
 ### 6.1 Phase 1: server (mStream)
 - Worktree `.claude/worktrees/peer-recs-server`, branch `claude/peer-recs-server`, fresh from `master`. Copy ffmpeg and ffprobe into the worktree.
-- PR "feat(discovery): Peer Recommendations server — peers route, async Add, taste generation 2".
+- PR "feat(discovery): Peer Recommendations server — peers route, async Add, taste generation 3".
 - Workflow waves: P1 ∥ P2 → P3 → P3b → P4 → P5 ∥ P6.
 - **Gate S**:
   - `npm test` (unit + integration) green; `npm run docs:api:validate`; lint;
@@ -891,7 +891,7 @@ House rules for every phase:
   - `integration_test/peer_recs_test.dart` on the iPhone 17 Pro simulator;
   - the §4.2 walk with one build;
   - re-run `test/media/*` if #209 landed.
-- Merge. The card stays hidden until a generation-2 server.
+- Merge. The card stays hidden until a generation-3 server.
 
 ### 6.4 Phase 4: terminal (mstream-terminal-player)
 - Worktree `.claude/worktrees/peer-recs`, branch `claude/peer-recs`, fresh from **origin/main**.

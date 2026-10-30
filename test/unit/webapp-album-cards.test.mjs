@@ -56,7 +56,7 @@ function sliceConst(name) {
 
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths',
   'artUrl', 'artImgAttr', 'albumCredit', 'renderAlbum', 'renderArtist', 'createMusicFileHtml',
-  'setBrowserRootPanel', 'discoveryHideHead', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
   'getAllAlbums', 'getAlbumsOnClick', 'getAlbumSongs', 'queueAlbum', 'runLocalSearch'];
 
 // Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
@@ -111,6 +111,7 @@ function makeSandbox(api, { altLayout = {}, peer = null } = {}) {
     let peerContext = ${peer ? JSON.stringify(peer) : 'null'};
     let browseGeneration = 0;
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
     ${keepState()}
     ${FNS.map(sliceFn).join('\n\n')}
     return {

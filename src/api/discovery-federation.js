@@ -365,9 +365,15 @@ export function peerTags(v) {
  * `results` is that walk as one list. Its first `limit` rows are exactly the
  * per-song route's answer: no peer's list can fill before `limit` rows were
  * accepted in total, so up to there the walk is the old single-cap walk.
+ *
+ * `moods`, when the peers were asked with a mood filter: a peer whose answer
+ * does not echo one (older than the filter, or with no scores to filter by)
+ * answered unfiltered, so its rows are dropped and its entry says
+ * `moodsUnsupported: true` (counted in searched.moodsUnsupported). Both
+ * keys exist only on a filtered call.
  */
-export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly = false, limit = DEFAULT_LIMIT }) {
-  const searched = { peers: 0, unreachable: 0, mismatched: 0 };
+export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly = false, limit = DEFAULT_LIMIT, moods = null }) {
+  const searched = { peers: 0, unreachable: 0, mismatched: 0, ...(moods && { moodsUnsupported: 0 }) };
   const groups = [];
   const merged = [];   // { group, row }
   for (const [i, peer] of peers.entries()) {
@@ -390,6 +396,11 @@ export function mergePeerAnswers(peers, answers, { excludeSets, newArtistsOnly =
     // nothing rather than throwing the whole fan-out away.
     const body = outcome.value?.body || {};
     if (body.modelMismatch) { group.mismatched = true; searched.mismatched += 1; continue; }
+    if (moods && !(body.moods && typeof body.moods === 'object')) {
+      group.moodsUnsupported = true;
+      searched.moodsUnsupported += 1;
+      continue;
+    }
     searched.peers += 1;
     for (const r of Array.isArray(body.results) ? body.results.slice(0, PEER_LIMIT_CAP) : []) {
       if (!r || typeof r !== 'object') { continue; }
@@ -486,6 +497,12 @@ export async function loadFederationClient() {
  *   onPeerStatus    optional (peer row, { reachable, mismatched }) callback,
  *                   once per peer after the fan-out settles; pass
  *                   recordPeerStatus to refresh last_seen (throttled)
+ *   moods           optional mood filter (api/mood-filter.js, normalized).
+ *                   It rides in the `moods` query parameter, not the body:
+ *                   the peer route's body schema is strict, and a peer
+ *                   older than the filter ignores a query string — then
+ *                   answers unfiltered, without the echo that
+ *                   mergePeerAnswers keeps a peer's rows on
  *   failures, now, fedClient
  *                   the miss memory, clock and federation client (tests
  *                   inject; default the module's peerFailures, Date.now and
@@ -499,7 +516,7 @@ export async function loadFederationClient() {
  * unreachable peer is an outcome, never an error.
  */
 export async function fanOutFederation(vec, modelId, {
-  peerId, limit = DEFAULT_LIMIT, newArtistsOnly = false, headroom = HEADROOM, onPeerStatus,
+  peerId, limit = DEFAULT_LIMIT, newArtistsOnly = false, headroom = HEADROOM, onPeerStatus, moods = null,
   failures = peerFailures, now = Date.now, fedClient: givenClient,
 } = {}) {
   let peers = fedDb.getFederationPeers().filter((p) => p.use_discovery === 1);
@@ -517,6 +534,8 @@ export async function fanOutFederation(vec, modelId, {
     // An integer within the peer route's Joi bounds, or the peer 400s.
     limit: Math.max(1, Math.min(PEER_LIMIT_CAP, Math.ceil(limit * headroom))),
   });
+  const similarPath = '/api/v1/federation/discovery/similar'
+    + (moods ? `?moods=${encodeURIComponent(JSON.stringify(moods))}` : '');
 
   // Loaded lazily like the admin routes do — federation-client pulls in
   // the iroh machinery, which stays cold until a peer is actually dialed.
@@ -528,7 +547,7 @@ export async function fanOutFederation(vec, modelId, {
   const answers = await settlePeers(peers, {
     dial: async (peer) => {
       try {
-        return await fedFetchWithDeadline(fedClient, peer, '/api/v1/federation/discovery/similar', {
+        return await fedFetchWithDeadline(fedClient, peer, similarPath, {
           method: 'POST',
           // Uncompressed, so PEER_ANSWER_MAX_BYTES bounds what is inflated
           // and not only what is parsed: every mStream answers identity
@@ -577,7 +596,7 @@ export async function fanOutFederation(vec, modelId, {
   }
 
   const out = mergePeerAnswers(peers, answers, {
-    excludeSets: localIdentitySets(), newArtistsOnly, limit,
+    excludeSets: localIdentitySets(), newArtistsOnly, limit, moods,
   });
 
   if (typeof onPeerStatus === 'function') {

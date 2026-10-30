@@ -304,9 +304,12 @@ function renderArtist(artist) {
     </li>`;
 }
 
-function renderGenre(genre, trackCount) {
+// `source` — 'tag' | 'model', the one kind of genre the list shows — rides
+// on the row so its songs are asked for the same way; null when the list
+// shows both kinds, or the server does not tell them apart.
+function renderGenre(genre, trackCount, source) {
   return `<li class="collection-item">
-    <div data-genre="${escapeHtml(genre)}"${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
+    <div data-genre="${escapeHtml(genre)}"${source ? ` data-genre-source="${escapeHtml(source)}"` : ''}${peerAttr()} class="artistz" onclick="getGenreSongsList(this)">
       ${escapeHtml(genre)} <span style="color:#888;font-size:13px;">(${escapeHtml(trackCount)})</span>
     </div>
   </li>`;
@@ -432,6 +435,11 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('local_search_btn').style.display = '';
   document.getElementById('upload_btn').classList.add('super-hide');
   document.getElementById('mkdir_btn').classList.add('super-hide');
+  // The Genres panel's switch; getAllGenres shows it when there's a choice.
+  document.getElementById('genre_source')?.classList.add('super-hide');
+  // The mood filters: Albums and Artists show them again (showMoodFilters),
+  // with the panel closed — hidden by default on every visit.
+  hideMoodFilters();
 
   // Inside a peer view every panel says whose library it is showing.
   const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
@@ -2849,7 +2857,7 @@ async function onBackButton() {
   } else if (backState.state === 'allGenres') {
     await getAllGenres(undefined);
   } else if (backState.state === 'genre') {
-    await getGenreSongs(backState.name);
+    await getGenreSongs(backState.name, backState.source);
   } else if (backState.state === 'fileExplorer') {
     fileExplorerArray.pop();
     await senddir();
@@ -3245,15 +3253,18 @@ function albumSongsBody(album, artist, year, albumArtist) {
   return body;
 }
 
-async function getAllArtists() {
-  setBrowserRootPanel(t('panel.artists'));
+async function getAllArtists(opts) {
+  // A mood-filter change asks again in place: the bar and its open panel stay.
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.artists')); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
 
   const gen = browseGeneration;
   try {
-    const response = await browseApi('artists', artistsBody());
+    const moods = moodFilterBody('artists');
+    const response = await browseApi('artists', { ...artistsBody(), ...(moods && { moods }) });
     if (gen !== browseGeneration) { return; }
+    showMoodFilters('artists', response);
 
     // parse through the json array and make an array of corresponding divs
     let artists = '<ul class="collection">';
@@ -3272,6 +3283,7 @@ async function getAllArtists() {
 }
 
 function getArtistz(el) {
+  hideMoodFilters();
   adoptPeer(el);
   const artist = el.getAttribute('data-artist');
   programState.push({
@@ -3317,7 +3329,195 @@ async function getArtistsAlbums(artist) {
   }
 }
 
+/////////////// Mood filters
+// The browse lists' mood filters (Albums, Artists; the server half is
+// src/api/mood-filter.js) — and Discover's, drawn in its own bar. One
+// filter per page for the visit: a value per scale (`valence`, `energy`,
+// `voice`) and a `tags` list, a group left out filtering nothing. The bar's
+// #mood_filter_btn shows when the list's answer carries `moods` (this
+// server, or the connected one being browsed, can filter); its panel,
+// #mood_filters, is hidden until the button opens it, and every other panel
+// hides it again (setBrowserRootPanel) — so the panel's own visibility is
+// its open state. The button is orange with a dot while a filter is set.
+const MOODS = {
+  scales: [
+    ['valence', ['happy', 'neutral', 'sad'], 'moods.valenceGroup'],
+    ['energy', ['relaxed', 'neutral', 'aggressive'], 'moods.energyGroup'],
+    ['voice', ['instrumental', 'vocals'], 'moods.voiceGroup'],
+  ],
+  tags: ['acoustic', 'party', 'danceable'],
+  filters: { albums: {}, artists: {}, discover: {} },
+  list: null,   // the list the bar's button and panel belong to
+};
+
+// A page's filter in the server's wire form, or null when nothing filters.
+function moodFilterBody(list) {
+  const f = MOODS.filters[list] || {};
+  const out = {};
+  for (const [group] of MOODS.scales) {
+    if (f[group]) { out[group] = f[group]; }
+  }
+  const tags = MOODS.tags.filter((tag) => (f.tags || []).includes(tag));
+  if (tags.length) { out.tags = tags; }
+  return Object.keys(out).length ? out : null;
+}
+
+// One pressed value per scale (pressed again, it lets go), any number of
+// tags, and Clear while anything is set. The lists' buttons call their
+// handlers; Discover's carry data-dp actions for its own dispatcher (and
+// its focus restore after a redraw).
+function moodPanelHtml(list) {
+  const f = MOODS.filters[list] || {};
+  const dp = list === 'discover';
+  const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : `onclick="${handler}"`);
+  const scale = ([group, values, label]) => `<div class="mood-seg" role="group" aria-label="${escapeHtml(t(label))}">${values.map((v) =>
+    `<button type="button" class="mood-seg-btn" data-mood-group="${group}" data-mood-value="${v}" aria-pressed="${f[group] === v}" ${on(`pickMood('${group}', '${v}')`, 'mood', `${group}:${v}`)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
+  const tags = `<div class="mood-tags" role="group" aria-label="${escapeHtml(t('moods.tagsGroup'))}">${MOODS.tags.map((tag) =>
+    `<button type="button" class="mood-chip" data-mood-tag="${tag}" aria-pressed="${(f.tags || []).includes(tag)}" ${on(`toggleMoodTag('${tag}')`, 'moodTag', tag)}>${escapeHtml(t(`moods.${tag}`))}</button>`).join('')}</div>`;
+  return MOODS.scales.map(scale).join('') + tags
+    + `<button type="button" class="mood-clear${moodFilterBody(list) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>`;
+}
+
+// After a list's answer: the button when the answer says the server can
+// filter, the panel as this visit left it. An answer without `moods` (an
+// older server, or one with no scores) filtered nothing: no filters shown.
+function showMoodFilters(list, response) {
+  const btn = document.getElementById('mood_filter_btn');
+  const panel = document.getElementById('mood_filters');
+  if (!btn || !panel) { return; }
+  if (!response || !response.moods || typeof response.moods !== 'object') {
+    hideMoodFilters();
+    return;
+  }
+  // Another list's panel closes (a fresh visit's is closed already).
+  if (MOODS.list !== list) {
+    MOODS.list = list;
+    panel.classList.add('super-hide');
+    panel.innerHTML = '';
+  }
+  btn.classList.remove('super-hide');
+  btn.classList.toggle('mood-on', moodFilterBody(list) !== null);
+  btn.setAttribute('aria-expanded', String(!panel.classList.contains('super-hide')));
+}
+
+function hideMoodFilters() {
+  document.getElementById('mood_filter_btn')?.classList.add('super-hide');
+  const panel = document.getElementById('mood_filters');
+  if (panel) {
+    panel.classList.add('super-hide');
+    panel.innerHTML = '';
+  }
+}
+
+function toggleMoodPanel() {
+  const panel = document.getElementById('mood_filters');
+  if (!MOODS.list || !panel) { return; }
+  const open = panel.classList.contains('super-hide');
+  panel.innerHTML = open ? moodPanelHtml(MOODS.list) : '';
+  panel.classList.toggle('super-hide', !open);
+  document.getElementById('mood_filter_btn')?.setAttribute('aria-expanded', String(open));
+}
+
+function pickMood(group, value) {
+  const f = MOODS.filters[MOODS.list];
+  if (!f) { return; }
+  f[group] = f[group] === value ? undefined : value;
+  moodFilterChanged();
+}
+
+function toggleMoodTag(tag) {
+  const f = MOODS.filters[MOODS.list];
+  if (!f) { return; }
+  const tags = new Set(f.tags || []);
+  if (tags.has(tag)) { tags.delete(tag); } else { tags.add(tag); }
+  f.tags = [...tags];
+  moodFilterChanged();
+}
+
+function clearMoodFilters() {
+  if (!MOODS.filters[MOODS.list]) { return; }
+  MOODS.filters[MOODS.list] = {};
+  moodFilterChanged();
+  // Clear hides itself: focus goes back to the button that opened the panel.
+  document.getElementById('mood_filter_btn')?.focus();
+}
+
+// The pressed states change in place (a re-render would drop the focused
+// button), then the list asks again with the new filter.
+function moodFilterChanged() {
+  const list = MOODS.list;
+  const f = MOODS.filters[list] || {};
+  const panel = document.getElementById('mood_filters');
+  panel?.querySelectorAll('[data-mood-group]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(f[b.getAttribute('data-mood-group')] === b.getAttribute('data-mood-value')));
+  });
+  panel?.querySelectorAll('[data-mood-tag]').forEach((b) => {
+    b.setAttribute('aria-pressed', String((f.tags || []).includes(b.getAttribute('data-mood-tag'))));
+  });
+  panel?.querySelector('.mood-clear')?.classList.toggle('super-hide', moodFilterBody(list) === null);
+  document.getElementById('mood_filter_btn')?.classList.toggle('mood-on', moodFilterBody(list) !== null);
+  // A newer ask wins: one still out for the old filter draws nothing.
+  browseGeneration++;
+  if (list === 'albums') { getAllAlbums({ refresh: true }); }
+  else if (list === 'artists') { getAllArtists({ refresh: true }); }
+}
+
+// A mood button on Discover: the lists' rules (pickMood, toggleMoodTag,
+// clearMoodFilters) on the page's own filter, then the page asks again.
+function discoveryPickMood(act, val) {
+  const f = MOODS.filters.discover;
+  if (act === 'mood') {
+    const [group, value] = String(val).split(':');
+    if (!MOODS.scales.some(([g, values]) => g === group && values.includes(value))) { return; }
+    f[group] = f[group] === value ? undefined : value;
+  } else if (act === 'moodTag') {
+    if (!MOODS.tags.includes(val)) { return; }
+    const tags = new Set(f.tags || []);
+    if (tags.has(val)) { tags.delete(val); } else { tags.add(val); }
+    f.tags = [...tags];
+  } else {
+    MOODS.filters.discover = {};
+  }
+  redoDiscovery();
+  // Clear hides itself: the keyboard goes back to the Filters button.
+  if (act === 'moodClear') { discoveryRefocus('[data-dp="moods"]'); }
+}
+
 /////////////// Genres
+// Which genres the panel lists: 'tag' — the files' own — 'model' — the
+// discovery model's — or 'both' (the server's `source` filter, left off
+// for both). Remembered across visits; this visit's pick comes first, as
+// storage can be off (a private window). The switch is the browse bar's
+// #genre_source, shown only when the server has both kinds.
+let genreSourceChoice = null;
+
+const GENRE_SOURCES = ['tag', 'model', 'both'];
+
+function preferredGenreSource() {
+  if (genreSourceChoice) { return genreSourceChoice; }
+  try {
+    const v = localStorage.getItem('genre-source');
+    return GENRE_SOURCES.includes(v) ? v : null;
+  } catch (_) { return null; }
+}
+
+function chooseGenreSource(source) {
+  if (programState[0]?.state === 'allGenres' && programState[0].genreSource === source) { return; }
+  genreSourceChoice = source;
+  try { localStorage.setItem('genre-source', source); } catch (_) { /* storage off: this visit only */ }
+  getAllGenres();
+}
+
+// Show the bar's switch with `active` pressed (setBrowserRootPanel hides it).
+function showGenreSourceSwitch(active) {
+  const bar = document.getElementById('genre_source');
+  if (!bar) { return; }
+  bar.classList.remove('super-hide');
+  bar.querySelectorAll('button[data-source]').forEach((btn) => {
+    btn.setAttribute('aria-pressed', String(btn.getAttribute('data-source') === active));
+  });
+}
+
 async function getAllGenres() {
   setBrowserRootPanel(t('panel.genres'));
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3325,13 +3525,33 @@ async function getAllGenres() {
 
   const gen = browseGeneration;
   try {
-    const response = await browseApi('genres', {});
+    // The remembered kind; when the server has none of a single kind (an
+    // untagged library, a server without the model) the other one. A
+    // server that predates the filter ignores it and sends no `sources`:
+    // every genre, no switch.
+    let source = preferredGenreSource() || 'tag';
+    const ask = (s) => browseApi('genres', s === 'both' ? {} : { source: s });
+    let response = await ask(source);
     if (gen !== browseGeneration) { return; }
+    const sources = response.sources;
+    if (sources && source !== 'both' && !(sources[source] > 0)) {
+      const other = source === 'tag' ? 'model' : 'tag';
+      if (sources[other] > 0) {
+        source = other;
+        response = await ask(source);
+      }
+    }
+    if (gen !== browseGeneration) { return; }
+
+    programState[0].genreSource = source;
+    if (sources && sources.tag > 0 && sources.model > 0) { showGenreSourceSwitch(source); }
+    // What a row asks its songs with: the one kind listed, or nothing.
+    const listSource = sources && source !== 'both' ? source : null;
 
     let html = '<ul class="collection">';
     response.genres.forEach(value => {
-      html += renderGenre(value.name, value.track_count);
-      currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count });
+      html += renderGenre(value.name, value.track_count, listSource);
+      currentBrowsingList.push({ type: 'genre', name: value.name, track_count: value.track_count, source: listSource });
     });
     html += '</ul>';
 
@@ -3347,16 +3567,20 @@ async function getAllGenres() {
 function getGenreSongsList(el) {
   adoptPeer(el);
   const genre = el.getAttribute('data-genre');
+  const source = el.getAttribute('data-genre-source');
   programState.push({
     state: 'genre',
     name: genre,
+    source,
     previousScroll: document.getElementById('filelist').scrollTop,
     previousSearch: document.getElementById('localSearchBar').value
   });
-  getGenreSongs(genre);
+  getGenreSongs(genre, source);
 }
 
-async function getGenreSongs(genre) {
+// `source` narrows the songs to the list's kind of genre; absent, every
+// song with the genre (and what a server without the filter answers).
+async function getGenreSongs(genre, source) {
   setBrowserRootPanel(t('panel.songs'));
   document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3364,7 +3588,7 @@ async function getGenreSongs(genre) {
   const gen = browseGeneration;
   try {
     const gate = keepGateFor(peerContext);
-    const response = await browseApi('genreSongs', { genre: genre });
+    const response = await browseApi('genreSongs', source ? { genre, source } : { genre });
     await gate;
     if (gen !== browseGeneration) { return; }
 
@@ -3388,8 +3612,9 @@ async function getGenreSongs(genre) {
 }
 
 /////////////// Albums
-async function getAllAlbums() {
-  setBrowserRootPanel(t('panel.albums'));
+async function getAllAlbums(opts) {
+  // A mood-filter change asks again in place: the bar and its open panel stay.
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.albums')); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   
   programState = [{ state: 'allAlbums' }];
@@ -3397,9 +3622,11 @@ async function getAllAlbums() {
   const gen = browseGeneration;
   try {
     const gate = keepGateFor(peerContext);
-    const response = await browseApi('albums', { ignoreVPaths: localIgnoreVPaths() });
+    const moods = moodFilterBody('albums');
+    const response = await browseApi('albums', { ignoreVPaths: localIgnoreVPaths(), ...(moods && { moods }) });
     await gate;
     if (gen !== browseGeneration) { return; }
+    showMoodFilters('albums', response);
 
     let albums = '<div class="album-grid">';
     response.albums.forEach(value => {
@@ -3434,6 +3661,7 @@ async function getAllAlbums() {
 }
 
 function getAlbumsOnClick(el) {
+  hideMoodFilters();
   adoptPeer(el);
   getAlbumSongs(
     el.hasAttribute('data-album') ? el.getAttribute('data-album') : null,
@@ -3994,6 +4222,7 @@ const discoveryView = {
   more: { library: 16, peers: 16 }, // rows each song column shows ("Show more")
   allSeeds: false,    // "Show all" opened (the dropped seeds show too)
   optionsOpen: false, // the bar's "More options" opened (the seed picker shows)
+  moodsOpen: false,   // the bar's Filters opened (the mood filters show)
   plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
   badgeRows: [],      // the rows looked up, with their job badges: the
                       // play page's connected-server songs (never library
@@ -4015,7 +4244,7 @@ const DPAGE_ICONS = { play: '<svg xmlns="http://www.w3.org/2000/svg" width="13" 
 // re-ping). A server with the taste route says so with discoveryTaste >= 1
 // (an integer generation); the p2p and federation sections exist only
 // where the ping advertises them, and Peer Recommendations only with
-// generation 2 and the peers route (discoveryP2pPeers).
+// generation 3 and the peers route (discoveryP2pPeers).
 function applyDiscoveryPing(response) {
   const r = response || {};
   MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
@@ -4026,6 +4255,7 @@ function applyDiscoveryPing(response) {
     discoveryP2pPeers: Number(r.discoveryP2pPeers) || 0,
     federationDiscovery: r.federationDiscovery === true,
     discoveryPlugins: r.discoveryPlugins === true,
+    moodFilters: r.moodFilters === true,
   };
   discoverySetEntry(DISCOVERYPAGE.pageAvailable(discoveryView.flags));
   peerRecsSetEntry(peerRecsEntryNow() !== null);
@@ -4163,6 +4393,7 @@ function discoveryPanel(opts) {
     v.passed = [];
     v.allSeeds = false;
     v.optionsOpen = false;
+    v.moodsOpen = false;
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
     // A failed or refused answer is not drawn again while the new one is
     // asked: the page's loading state instead.
@@ -4221,6 +4452,7 @@ async function redoDiscovery(opts) {
     // same on both of Discover's calls (Peer Recommendations has its own)
     limits: DPAGE_LIMITS,
     flags: v.flags,
+    moods: moodFilterBody('discover'),
   });
   if (!reqs.main) {
     if (discoveryOnScreen()) { renderDiscovery(); }
@@ -4535,6 +4767,9 @@ function renderDiscovery() {
   // Recommendations the chips are the batch's (a tab's answer is pinned to
   // it: every seed would read as picked).
   let barHtml = discoveryHeadHtml(v.window);
+  if (v.moodsOpen && page === 'play' && DISCOVERYPAGE.moodsAvailable(v.flags)) {
+    barHtml += `<div class="mood-filters dpage-moods" id="dpage-moods" role="region" aria-label="${escapeHtml(t('moods.filters'))}">${moodPanelHtml('discover')}</div>`;
+  }
   if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, page === 'peerRecs' && peerRecsView.batch ? peerRecsView.batch : res); }
   let html = `<div class="dpage ${cls}"${st.state === 'loading' ? ' aria-busy="true"' : ''}>`;
   // No host (an index.html older than this script): the bar heads the page
@@ -4606,11 +4841,16 @@ function discoveryHeadHtml(windowDays) {
   const opts = DISCOVERYPAGE.windowOptions(windowDays)
     .map((o) => `<option value="${escapeHtml(o.value)}"${o.selected ? ' selected' : ''}>${escapeHtml(discoveryT(o.label))}</option>`).join('');
   const open = discoveryView.optionsOpen === true;
+  // The mood filters (moodPanelHtml), on the Discover page of a server
+  // that takes them; orange with a dot while one is set.
+  const moods = discoveryView.page === 'play' && DISCOVERYPAGE.moodsAvailable(discoveryView.flags)
+    ? `<button type="button" class="mood-filter-btn dpage-moods-btn${moodFilterBody('discover') ? ' mood-on' : ''}" data-dp="moods" aria-expanded="${discoveryView.moodsOpen ? 'true' : 'false'}"${discoveryView.moodsOpen ? ' aria-controls="dpage-moods"' : ''} aria-label="${escapeHtml(t('moods.filters'))}" title="${escapeHtml(t('moods.filters'))}"><svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg></button>`
+    : '';
   return `<div class="dpage-bar">
     <span class="grow"></span>
     <label class="dpage-window"><span>${escapeHtml(t('dpage.basedOnLast'))}</span><select class="browser-default" data-dp-change="window">${opts}</select></label>
     <span class="dpage-bar-r">
-      <button type="button" class="dpage-bar-opt" data-dp="options" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dpage-options"' : ''}>${escapeHtml(t(open ? 'dpage.bar.fewerOptions' : 'dpage.bar.moreOptions'))}<span class="dpage-bar-caret" aria-hidden="true">${open ? '&#9652;' : '&#9662;'}</span></button>
+      ${moods}<button type="button" class="dpage-bar-opt" data-dp="options" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dpage-options"' : ''}>${escapeHtml(t(open ? 'dpage.bar.fewerOptions' : 'dpage.bar.moreOptions'))}<span class="dpage-bar-caret" aria-hidden="true">${open ? '&#9652;' : '&#9662;'}</span></button>
       <button type="button" class="dpage-icon-btn" data-dp="refresh" title="${escapeHtml(t('dpage.verb.newSeeds'))}" aria-label="${escapeHtml(t('dpage.verb.newSeeds'))}">${DPAGE_ICONS.refresh}</button>
     </span>
   </div>`;
@@ -5088,6 +5328,12 @@ function discoveryAction(act, el) {
     redoDiscovery();
   } else if (act === 'restore') {
     discoveryRestoreSeed(v.shown.excluded[i]);
+  } else if (act === 'moods') {
+    v.moodsOpen = !v.moodsOpen;
+    renderDiscovery();
+    discoveryRefocus('[data-dp="moods"]');
+  } else if (act === 'mood' || act === 'moodTag' || act === 'moodClear') {
+    discoveryPickMood(act, val);
   } else if (act === 'options') {
     v.optionsOpen = !v.optionsOpen;
     renderDiscovery();
@@ -7914,7 +8160,7 @@ function runLocalSearch(el) {
       } else if (x.type === 'artist') {
         filelist += renderArtist(x.name);
       } else if (x.type === 'genre') {
-        filelist += renderGenre(x.name, x.track_count);
+        filelist += renderGenre(x.name, x.track_count, x.source);
       } else {
         if (programState[programState.length - 1].state === 'playlist') {
           filelist += renderFileWithMetadataHtml(x.filepath, x.lokiId, x.metadata);

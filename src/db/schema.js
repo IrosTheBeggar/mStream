@@ -98,7 +98,13 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // V78 adds audio_analysis_lookups.bpm / musical_key, what the essentia pass
 // measured, so a re-parse that clears them never costs a re-decode. See
 // SCHEMA_V78.
-export const SCHEMA_VERSION = 78;
+// V79 adds genre provenance — track_genres.source ('tag' | 'model') so the
+// discovery model's style predictions can join the real genre tables
+// without being confused with file tags, and genres.parent for the model
+// taxonomy's two-level hierarchy. See SCHEMA_V79.
+// V80 adds track_moods — the discovery model's mood/character scores per
+// track, synced from discovery.db by src/db/mood-sync.js. See SCHEMA_V80.
+export const SCHEMA_VERSION = 80;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3337,6 +3343,54 @@ export const SCHEMA_V78 = `
                         OR (t.audio_hash IS NULL AND t.file_hash = audio_analysis_lookups.audio_hash)));
 `;
 
+// ── Genre provenance — model-generated genres ───────────────────────────────
+//
+// track_genres.source records where a genre link came from:
+//   'tag'   — file tags, written by the scanners. The column DEFAULT, so
+//             neither scanner needs changing: their INSERTs keep working
+//             and land as tag-sourced rows.
+//   'model' — the discovery embedding model's style predictions
+//             (discovery_tracks.genre_tags), written by the reconcile in
+//             src/db/genre-sync.js.
+// The (track_id, genre_id) primary key is unchanged — a genre links once
+// per track, and tag wins on collision (the sync only INSERT OR IGNOREs).
+//
+// genres.parent carries the model taxonomy's parent for style-level rows
+// ("Synthwave" → "Electronic", from the Discogs "Genre---Style" tag
+// format). Tag-sourced genres keep NULL; a tag genre whose name collides
+// with a model style simply gains its parent (backfill-only — the sync
+// never overwrites a non-NULL parent).
+export const SCHEMA_V79 = `
+  ALTER TABLE track_genres ADD COLUMN source TEXT NOT NULL DEFAULT 'tag';
+  ALTER TABLE genres ADD COLUMN parent TEXT;
+`;
+
+// ── Model moods ─────────────────────────────────────────────────────────────
+//
+// One row per analysed track: the discovery model's mood/character head
+// scores, 0–1 (the probability of the trait — "relaxed ≥ 0.7" reads as
+// "the model is fairly sure this is relaxed"). The truth lives in
+// discovery.db (discovery_tracks.mood_scores, keyed by audio hash); this
+// table is its per-track mirror, written only by the reconcile in
+// src/db/mood-sync.js, so filters can JOIN it like any library table.
+// Its own table, not columns on tracks: the scanners rewrite track rows
+// and know nothing of it, and a deleted track takes its row along.
+// Columns are the head keys of discovery-features-lib.js's effnet spec —
+// a head added there needs a column here.
+export const SCHEMA_V80 = `
+  CREATE TABLE IF NOT EXISTS track_moods (
+    track_id     INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    danceable    REAL,
+    happy        REAL,
+    sad          REAL,
+    relaxed      REAL,
+    aggressive   REAL,
+    party        REAL,
+    acoustic     REAL,
+    instrumental REAL
+  );
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3638,4 +3692,12 @@ export const MIGRATIONS = [
   // analysis-sourced tracks. Not rescanRequired; the scanner contract is
   // unchanged. See SCHEMA_V78.
   { version: 78, sql: SCHEMA_V78 },
+  // V79: genre provenance (track_genres.source + genres.parent) for
+  // model-generated genres. Pure column adds with defaults — existing
+  // rows become 'tag'-sourced, no rescan, no scanner contract bump (the
+  // scanners name their track_genres columns). See SCHEMA_V79.
+  { version: 79, sql: SCHEMA_V79 },
+  // V80: track_moods, the per-track mirror of the discovery model's mood
+  // scores. A new table; nothing comes from tags. See SCHEMA_V80.
+  { version: 80, sql: SCHEMA_V80 },
 ];

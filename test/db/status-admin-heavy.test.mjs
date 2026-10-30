@@ -83,16 +83,30 @@ after(() => {
 // ── migrations ──────────────────────────────────────────────────────────────
 
 describe('discovery V2 indexes', () => {
-  test('discovery.db lands at the current schema (≥ V2) with the embedded-model partial index', () => {
+  // V2's partial index, widened by V4 to the mood pin (same name stem, the
+  // V2 one dropped as its prefix).
+  test('discovery.db lands at the current schema with the embedded-model partial index', () => {
     const d2 = ddb.getDiscoveryDb();
     const v = d2.prepare('PRAGMA user_version').get().user_version;
     assert.equal(v, ddb.DISCOVERY_SCHEMA_VERSION);
-    assert.ok(v >= 2, 'the V2 index migration has been applied');
+    assert.ok(v >= 4, 'the V4 index swap has been applied');
     const idx = d2.prepare(
-      "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_discovery_tracks_embedded_model'"
+      "SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_discovery_tracks_embedded_model_mood'"
     ).get();
     assert.ok(idx, 'partial index present');
+    assert.match(idx.sql, /\(model_id, audio_hash, mood_version\)/);
     assert.match(idx.sql, /WHERE embedding IS NOT NULL/);
+  });
+
+  test('the status counts — embeddings and moods — seek through it', () => {
+    const d2 = ddb.getDiscoveryDb();
+    for (const [sql, params] of [
+      ['SELECT COUNT(*) AS n FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ?', ['m']],
+      ['SELECT COUNT(*) AS n FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ? AND mood_version = ?', ['m', '1']],
+    ]) {
+      const plan = d2.prepare(`EXPLAIN QUERY PLAN ${sql}`).all(...params).map((r) => r.detail).join(' | ');
+      assert.match(plan, /idx_discovery_tracks_embedded_model_mood/, plan);
+    }
   });
 });
 
