@@ -2003,6 +2003,20 @@ select {
 }
 .mood-clear:focus { background-color: transparent; }
 .mood-clear:hover { color: #dfe3ea; }
+/* A song list's Sort (m.js moodSortHtml): its label, then the segments;
+   Match rests, greyed, while no mood is set. Scoped: Auto DJ's row
+   disables its pressed segments too, and those keep their colours. */
+.mood-sort .mood-seg-btn:disabled { color: #5c636e; cursor: default; }
+.mood-sort .mood-seg-btn:disabled:hover { background-color: transparent; }
+.mood-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.mood-sort-label {
+  color: #8a919e;
+  font-size: 13px;
+}
 .mood-filter-btn:focus-visible, .mood-seg-btn:focus-visible, .mood-chip:focus-visible, .mood-clear:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: -2px;

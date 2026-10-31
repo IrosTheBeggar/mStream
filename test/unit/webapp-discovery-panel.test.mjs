@@ -98,7 +98,7 @@ function sliceConst(name) {
 }
 
 const FNS = ['escapeHtml', 'peerAttr', 'artUrl', 'artImgAttr', 'renderAlbum', 'setBrowserRootPanel',
-  'hideMoodFilters', 'moodFilterBody', 'moodPanelHtml', 'discoveryPickMood',
+  'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'discoveryPickMood',
   'localIgnoreVPaths', 'applyDiscoveryPing', 'discoverySetEntry',
   'discoveryWatchJobs', 'discoveryMergeJobs', 'discoveryPatchBadges', 'discoveryLeadTag',
   'discoveryMatchOpts', 'discoveryDropSeed', 'discoveryT', 'discoveryText', 'discoveryOnScreen', 'discoveryNowPlayingPath',
@@ -1428,6 +1428,34 @@ describe('Discover page: changes re-ask', () => {
 });
 
 describe('Discover page: the configuration bar', () => {
+  test('Strict | Standard | Loose: in the panel, always, one pressed; the asks carry the threshold', async () => {
+    const { S, click, calls } = makeSandbox({ taste: answer, flags: { ...FLAGS_ALL, discoveryTaste: 2, moodFilters: true } });
+    await S.discoveryPanel();
+    assert.ok(S.page().includes('data-dp="moods"'));
+    assert.ok(!S.page().includes('data-dp="moodLevel"'), 'the panel is closed');
+    assert.ok(!S.page().includes('moodStrict'), 'no Strict pill on the bar');
+    click({ 'data-dp': 'moods' });
+    await flush(); await flush();
+    const level = (v) => findDrawn(S.page(), { 'data-dp': 'moodLevel', 'data-v': v }).attrs['aria-pressed'];
+    assert.deepEqual(['strict', 'standard', 'loose'].map(level), ['false', 'true', 'false'], 'Standard from the start');
+    const asked = tasteCalls(calls).length;
+    click({ 'data-dp': 'moodLevel', 'data-v': 'loose' });
+    await flush(); await flush();
+    assert.equal(tasteCalls(calls).length, asked, 'no mood set: nothing new to ask');
+    assert.equal(level('loose'), 'true');
+    click({ 'data-dp': 'mood', 'data-v': 'energy:relaxed' });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-1).moods, { energy: 'relaxed', threshold: 0.3 });
+    click({ 'data-dp': 'moodLevel', 'data-v': 'strict' });
+    await flush(); await flush();
+    assert.deepEqual(tasteCalls(calls).at(-1).moods, { energy: 'relaxed', threshold: 0.7 });
+    assert.deepEqual(['strict', 'standard', 'loose'].map(level), ['true', 'false', 'false']);
+    click({ 'data-dp': 'moodClear' });
+    await flush(); await flush();
+    assert.equal('moods' in tasteCalls(calls).at(-1), false);
+    assert.equal(level('standard'), 'true', 'Clear: back to Standard');
+  });
+
   test('the bar: the window form, More options, then refresh — no tagline, no back link, no seed strip in the body', async () => {
     const { S } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();

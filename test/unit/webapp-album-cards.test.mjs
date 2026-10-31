@@ -56,7 +56,7 @@ function sliceConst(name) {
 
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths',
   'artUrl', 'artImgAttr', 'albumCredit', 'renderAlbum', 'renderArtist', 'createMusicFileHtml',
-  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'showMoodFilters', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
   'getAllAlbums', 'getAlbumsOnClick', 'getAlbumSongs', 'queueAlbum', 'runLocalSearch'];
 
 // Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /

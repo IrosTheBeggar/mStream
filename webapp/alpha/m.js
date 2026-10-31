@@ -3346,6 +3346,10 @@ async function getArtistsAlbums(artist) {
 // #mood_filters, is hidden until the button opens it, and every other panel
 // hides it again (setBrowserRootPanel) — so the panel's own visibility is
 // its open state. The button is orange with a dot while a filter is set.
+// In the panel, always: Strict | Standard | Loose (the filter's `level`,
+// sent as the server's `threshold`), and on the song lists their Sort —
+// their own order or best match first (moodSorted). Neither lets go: one
+// of each is always pressed.
 const MOODS = {
   scales: [
     ['valence', ['happy', 'neutral', 'sad'], 'moods.valenceGroup'],
@@ -3353,9 +3357,20 @@ const MOODS = {
     ['voice', ['instrumental', 'vocals'], 'moods.voiceGroup'],
   ],
   tags: ['acoustic', 'party', 'danceable'],
+  // How sure every group must be — the server's `threshold`. Standard is
+  // its default, left off the wire (and a filter's `level` left unset).
+  levels: [['strict', 0.7], ['standard', 0.5], ['loose', 0.3]],
   filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {} },
+  // The song lists' order: 'list' — their own (rating, date added) — or
+  // 'match'. Per list for the visit, and not part of the filter.
+  sort: { rated: 'list', recent: 'list' },
   list: null,   // the list the bar's button and panel belong to
 };
+
+// A filter's strictness: its `level`, Standard when unset or unknown.
+function moodLevel(f) {
+  return MOODS.levels.some(([l]) => l === f.level) ? f.level : 'standard';
+}
 
 // A page's filter in the server's wire form, or null when nothing filters.
 function moodFilterBody(list, f = MOODS.filters[list] || {}) {
@@ -3365,7 +3380,10 @@ function moodFilterBody(list, f = MOODS.filters[list] || {}) {
   }
   const tags = MOODS.tags.filter((tag) => (f.tags || []).includes(tag));
   if (tags.length) { out.tags = tags; }
-  return Object.keys(out).length ? out : null;
+  if (!Object.keys(out).length) { return null; }
+  const level = moodLevel(f);
+  if (level !== 'standard') { out.threshold = MOODS.levels.find(([l]) => l === level)[1]; }
+  return out;
 }
 
 // One pressed value per scale (pressed again, it lets go), any number of
@@ -3381,8 +3399,24 @@ function moodPanelHtml(list, f = MOODS.filters[list] || {}) {
     `<button type="button" class="mood-seg-btn" data-mood-group="${group}" data-mood-value="${v}" aria-pressed="${f[group] === v}" ${on(`pickMood('${group}', '${v}')`, 'mood', `${group}:${v}`)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
   const tags = `<div class="mood-tags" role="group" aria-label="${escapeHtml(t('moods.tagsGroup'))}">${MOODS.tags.map((tag) =>
     `<button type="button" class="mood-chip" data-mood-tag="${tag}" aria-pressed="${(f.tags || []).includes(tag)}" ${on(`toggleMoodTag('${tag}')`, 'moodTag', tag)}>${escapeHtml(t(`moods.${tag}`))}</button>`).join('')}</div>`;
-  return MOODS.scales.map(scale).join('') + tags
+  const level = moodLevel(f);
+  const levels = `<div class="mood-seg" role="group" aria-label="${escapeHtml(t('moods.strictnessGroup'))}">${MOODS.levels.map(([v]) =>
+    `<button type="button" class="mood-seg-btn" data-mood-level="${v}" aria-pressed="${level === v}" ${on(`pickMoodLevel('${v}')`, 'moodLevel', v)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
+  return MOODS.scales.map(scale).join('') + tags + levels
+    + (MOODS.sort[list] !== undefined ? moodSortHtml(list, f) : '')
     + `<button type="button" class="mood-clear${moodFilterBody(list, f) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>`;
+}
+
+// A song list's Sort: its own order (named for it) or best match first.
+// Match needs a mood to rank by: with none set it rests, and the list
+// shows in its own order — the choice comes back with the filter.
+function moodSortHtml(list, f = MOODS.filters[list] || {}) {
+  const filtered = moodFilterBody(list, f) !== null;
+  const by = filtered ? MOODS.sort[list] : 'list';
+  const own = list === 'rated' ? 'moods.sortRating' : 'moods.sortNewest';
+  const btn = (v, label) => `<button type="button" class="mood-seg-btn" data-mood-sort="${v}" aria-pressed="${by === v}"${v === 'match' && !filtered ? ' disabled' : ''} onclick="pickMoodSort('${v}')">${escapeHtml(t(label))}</button>`;
+  return `<div class="mood-sort"><span class="mood-sort-label" id="mood_sort_label">${escapeHtml(t('moods.sort'))}</span>`
+    + `<div class="mood-seg" role="group" aria-labelledby="mood_sort_label">${btn('list', own)}${btn('match', 'moods.sortMatch')}</div></div>`;
 }
 
 // After a list's answer: the button when the answer says the server can
@@ -3413,6 +3447,16 @@ function showMoodFilters(list, response) {
 // filters. Returns what showMoodFilters reads off a browse list's answer.
 function songListMoods() {
   return !peerContext && discoveryView.flags.moodFilters === true ? { moods: {} } : null;
+}
+
+// A song list in the order its Sort asks for: its own, or best match first
+// — each song's `moodMatch`, from the server, in a stable sort, so equal
+// matches keep the list's order. A list with no matches (unfiltered) is as
+// it came.
+function moodSorted(list, songs) {
+  if (MOODS.sort[list] !== 'match' || !songs.some((s) => typeof s.moodMatch === 'number')) { return songs; }
+  const m = (s) => (typeof s.moodMatch === 'number' ? s.moodMatch : -1);
+  return [...songs].sort((a, b) => m(b) - m(a));
 }
 
 function hideMoodFilters() {
@@ -3449,6 +3493,28 @@ function toggleMoodTag(tag) {
   moodFilterChanged();
 }
 
+// Strict | Standard | Loose: one is always pressed — the pressed one does
+// nothing.
+function pickMoodLevel(level) {
+  const f = MOODS.filters[MOODS.list];
+  if (!f || !MOODS.levels.some(([l]) => l === level) || moodLevel(f) === level) { return; }
+  if (level === 'standard') { delete f.level; } else { f.level = level; }
+  // With no mood set the ask would be the same: only the pressed state moves.
+  moodFilterChanged({ ask: moodFilterBody(MOODS.list) !== null });
+}
+
+// A song list's Sort, the same way — by what the panel shows pressed: while
+// Match rests (no mood set) the list's own order does, and Match stays the
+// choice for when a mood comes back.
+function pickMoodSort(by) {
+  const list = MOODS.list;
+  if (MOODS.sort[list] === undefined || !['list', 'match'].includes(by)) { return; }
+  const shown = moodFilterBody(list) !== null ? MOODS.sort[list] : 'list';
+  if (shown === by) { return; }
+  MOODS.sort[list] = by;
+  moodFilterChanged();
+}
+
 function clearMoodFilters() {
   if (!MOODS.filters[MOODS.list]) { return; }
   MOODS.filters[MOODS.list] = {};
@@ -3458,8 +3524,9 @@ function clearMoodFilters() {
 }
 
 // The pressed states change in place (a re-render would drop the focused
-// button), then the list asks again with the new filter.
-function moodFilterChanged() {
+// button), then the list asks again with the new filter (unless `ask` is
+// false: nothing it would send changed).
+function moodFilterChanged({ ask = true } = {}) {
   const list = MOODS.list;
   const f = MOODS.filters[list] || {};
   const panel = document.getElementById('mood_filters');
@@ -3469,8 +3536,18 @@ function moodFilterChanged() {
   panel?.querySelectorAll('[data-mood-tag]').forEach((b) => {
     b.setAttribute('aria-pressed', String((f.tags || []).includes(b.getAttribute('data-mood-tag'))));
   });
-  panel?.querySelector('.mood-clear')?.classList.toggle('super-hide', moodFilterBody(list) === null);
-  document.getElementById('mood_filter_btn')?.classList.toggle('mood-on', moodFilterBody(list) !== null);
+  panel?.querySelectorAll('[data-mood-level]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(moodLevel(f) === b.getAttribute('data-mood-level')));
+  });
+  const filtered = moodFilterBody(list) !== null;
+  panel?.querySelectorAll('[data-mood-sort]').forEach((b) => {
+    const by = b.getAttribute('data-mood-sort');
+    b.setAttribute('aria-pressed', String((filtered ? MOODS.sort[list] : 'list') === by));
+    if (by === 'match') { b.disabled = !filtered; }
+  });
+  panel?.querySelector('.mood-clear')?.classList.toggle('super-hide', !filtered);
+  document.getElementById('mood_filter_btn')?.classList.toggle('mood-on', filtered);
+  if (!ask) { return; }
   // A newer ask wins: one still out for the old filter draws nothing.
   browseGeneration++;
   if (list === 'albums') { getAllAlbums({ refresh: true }); }
@@ -3480,7 +3557,8 @@ function moodFilterChanged() {
 }
 
 // A mood button on Discover: the lists' rules (pickMood, toggleMoodTag,
-// clearMoodFilters) on the page's own filter, then the page asks again.
+// pickMoodLevel, clearMoodFilters) on the page's own filter, then the
+// page asks again.
 function discoveryPickMood(act, val) {
   const f = MOODS.filters.discover;
   if (act === 'mood') {
@@ -3492,6 +3570,15 @@ function discoveryPickMood(act, val) {
     const tags = new Set(f.tags || []);
     if (tags.has(val)) { tags.delete(val); } else { tags.add(val); }
     f.tags = [...tags];
+  } else if (act === 'moodLevel') {
+    if (!MOODS.levels.some(([l]) => l === val) || moodLevel(f) === val) { return; }
+    if (val === 'standard') { delete f.level; } else { f.level = val; }
+    // With no mood set the ask would be the same: only the pressed state moves.
+    if (moodFilterBody('discover') === null) {
+      renderDiscovery();
+      discoveryRefocus(`[data-dp="moodLevel"][data-v="${val}"]`);
+      return;
+    }
   } else {
     MOODS.filters.discover = {};
   }
@@ -3772,7 +3859,8 @@ async function getRatedSongs(opts) {
     showMoodFilters('rated', can);
     //parse through the json array and make an array of corresponding divs
     let files = '';
-    response.forEach(value => {
+    const songs = moodSorted('rated', response);
+    songs.forEach((value) => {
       let rating = (value.metadata.rating / 2);
       if (!Number.isInteger(rating)) {
         rating = rating.toFixed(1);
@@ -3940,7 +4028,8 @@ async function redoRecentlyAdded() {
 
     //parse through the json array and make an array of corresponding divs
     let filelist = '<ul class="collection">';
-    response.forEach(el => {
+    const songs = moodSorted('recent', response);
+    songs.forEach((el) => {
       const title = el.metadata.title ? `${el.metadata.title}`: el.filepath.split("/").pop();
       const aa = artImgAttr(el.metadata['album-art'], 's');
       const subtitle = el.metadata.artist ? el.metadata.artist : '';
@@ -5356,7 +5445,7 @@ function discoveryAction(act, el) {
     v.moodsOpen = !v.moodsOpen;
     renderDiscovery();
     discoveryRefocus('[data-dp="moods"]');
-  } else if (act === 'mood' || act === 'moodTag' || act === 'moodClear') {
+  } else if (act === 'mood' || act === 'moodTag' || act === 'moodLevel' || act === 'moodClear') {
     discoveryPickMood(act, val);
   } else if (act === 'options') {
     v.optionsOpen = !v.optionsOpen;
@@ -6369,7 +6458,7 @@ async function autoDjPanel() {
           <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
         </label>
       </div>
-      <div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', AUTODJ.state.djMoods)}</div>
+      <div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...AUTODJ.state.djMoods, level: AUTODJ.state.djMoodLevel })}</div>
     </div>` : '';
 
   const durationOn = AUTODJ.state.djDurationEnabled;
@@ -7075,6 +7164,9 @@ async function autoDjPanel() {
       moodBox.querySelectorAll('[data-mood-tag]').forEach((b) => {
         b.setAttribute('aria-pressed', String((f.tags || []).includes(b.getAttribute('data-mood-tag'))));
       });
+      moodBox.querySelectorAll('[data-mood-level]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(AUTODJ.state.djMoodLevel === b.getAttribute('data-mood-level')));
+      });
       moodBox.querySelector('.mood-clear')?.classList.toggle('super-hide', AUTODJ.cleanMoods(f) === null);
       moodBox.querySelectorAll('button').forEach((b) => { b.disabled = !AUTODJ.state.djMoodEnabled; });
     };
@@ -7089,6 +7181,13 @@ async function autoDjPanel() {
       const f = { ...AUTODJ.state.djMoods };
       const group = btn.getAttribute('data-mood-group');
       const tag = btn.getAttribute('data-mood-tag');
+      const level = btn.getAttribute('data-mood-level');
+      if (level) {
+        // One is always pressed: the pressed one does nothing.
+        if (level !== AUTODJ.state.djMoodLevel) { AUTODJ.setState({ djMoodLevel: level }); }
+        syncMoods();
+        return;
+      }
       if (group) {
         const value = btn.getAttribute('data-mood-value');
         f[group] = f[group] === value ? undefined : value;
@@ -7097,7 +7196,7 @@ async function autoDjPanel() {
         if (tags.has(tag)) { tags.delete(tag); } else { tags.add(tag); }
         f.tags = [...tags];
       } else if (btn.classList.contains('mood-clear')) {
-        AUTODJ.setState({ djMoods: {} });
+        AUTODJ.setState({ djMoods: {}, djMoodLevel: 'standard' });
         syncMoods();
         // Clear hides itself: the keyboard goes back to the toggle.
         moodOnEl.focus();

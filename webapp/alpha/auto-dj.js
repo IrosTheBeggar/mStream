@@ -331,6 +331,9 @@
     voice: Object.freeze(['instrumental', 'vocals']),
   });
   const MOOD_TAGS = Object.freeze(['acoustic', 'party', 'danceable']);
+  // How sure every group must be: the route's `threshold` (src/api/
+  // mood-filter.js), Standard its default and so never sent.
+  const MOOD_LEVELS = Object.freeze({ strict: 0.7, standard: 0.5, loose: 0.3 });
   const DJ_LIMIT_MAX = 25;              // mirrors src/api/random.js PICK_LIMIT_MAX — songs one fetch may ask for
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
@@ -480,6 +483,9 @@
       // unknown groups and values, so a junk LS value would 400 every pick.
       djMoodEnabled: !!_read('djMoodEnabled', false),
       djMoods:       cleanMoods(_read('djMoods', null)) || {},
+      // Strict | Standard | Loose, kept apart from the filter so it holds
+      // while no mood is picked; unknown → Standard.
+      djMoodLevel:   Object.keys(MOOD_LEVELS).includes(_read('djMoodLevel', null)) ? _read('djMoodLevel', null) : 'standard',
       // Sonic similarity (discovery embeddings, PR #697 server API).
       // `sonicMinSimilarity` is the RAW cosine threshold the server
       // takes; the panel slider maps a perceptual scale onto it.
@@ -541,8 +547,9 @@
   }
 
   // A mood filter in the server's form — known values only, tags in the
-  // server's order — or null when nothing filters.
-  function cleanMoods(raw) {
+  // server's order, and `level`'s threshold unless it is Standard — or
+  // null when nothing filters (a level alone raises no bar).
+  function cleanMoods(raw, level) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
     const out = {};
     for (const [group, values] of Object.entries(MOOD_SCALES)) {
@@ -550,7 +557,9 @@
     }
     const tags = MOOD_TAGS.filter((tag) => Array.isArray(raw.tags) && raw.tags.includes(tag));
     if (tags.length > 0) { out.tags = tags; }
-    return Object.keys(out).length > 0 ? out : null;
+    if (Object.keys(out).length === 0) { return null; }
+    if (Object.keys(MOOD_LEVELS).includes(level) && level !== 'standard') { out.threshold = MOOD_LEVELS[level]; }
+    return out;
   }
 
   // Backing store for state — wrapped in a Proxy below so direct

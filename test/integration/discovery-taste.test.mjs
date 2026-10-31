@@ -874,11 +874,12 @@ describe('discovery taste: public mode', () => {
 // album's analysed songs to. Scores go straight into track_moods for this
 // block only (the mood sync's table): Descent and Sketch 1 get none.
 //   aggressive: Be Somebody, Rise, Static   relaxed: Orbit, Return, Highway, Neon
+// Neon is relaxed at 0.6: under a threshold of 0.7.
 describe('discovery taste: mood filter', () => {
   const RELAXED = new Set([P.orbit, P.ret, P.highway, P.neon]);
   const SCORES = [
-    ['Be Somebody', false], ['Rise', false], ['Static', false],
-    ['Orbit', true], ['Return', true], ['Highway', true], ['Neon', true],
+    ['Be Somebody', 0.1, 0.9], ['Rise', 0.1, 0.9], ['Static', 0.1, 0.9],
+    ['Orbit', 0.9, 0.1], ['Return', 0.9, 0.1], ['Highway', 0.9, 0.1], ['Neon', 0.6, 0.1],
   ];
   const withDb = (fn) => {
     const db = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'), { timeout: 5000 });
@@ -888,7 +889,7 @@ describe('discovery taste: mood filter', () => {
     withDb((db) => {
       const ins = db.prepare(`INSERT INTO track_moods (track_id, relaxed, aggressive)
         SELECT id, ?, ? FROM tracks WHERE title = ?`);
-      for (const [title, relaxed] of SCORES) { ins.run(relaxed ? 0.9 : 0.1, relaxed ? 0.1 : 0.9, title); }
+      for (const [title, relaxed, aggressive] of SCORES) { ins.run(relaxed, aggressive, title); }
     });
     // moe: one aggressive song, 20 days ago — this block's own history.
     await postPlays(server, tokens.moe, [play(P.beSomebody, 20 * DAY, 'completed', 200000, 200000)]);
@@ -923,6 +924,15 @@ describe('discovery taste: mood filter', () => {
       for (const t of a.tracks) { assert.ok(RELAXED.has(t), `${a.name}: ${t}`); }
     }
     assert.deepEqual(paths(r.body.library.tracks), [P.orbit]);
+  });
+
+  test('threshold 0.7: only the surer fits, in songs and album cards alike', async () => {
+    const r = await taste('moe', { sources: ['library'], moods: { energy: 'relaxed', threshold: 0.7 } });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.moods, { energy: 'relaxed', threshold: 0.7 });
+    // Night Drive keeps Highway alone (1 of 3): no card, and Neon nowhere.
+    assert.deepEqual(r.body.library.albums.map((a) => a.name), ['Later Works']);
+    assert.deepEqual(pathSet(r.body.library.tracks), new Set([P.orbit, P.highway]));
   });
 
   test('seeds come from the history songs that match, when there are any', async () => {

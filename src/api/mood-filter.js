@@ -18,6 +18,15 @@
 // neutral when neither reaches it (relaxed / aggressive alike). A song with
 // no track_moods row (not analysed yet) matches no filter.
 //
+// A score is the head's confidence, not an intensity: a song at 0.9
+// relaxed is one the model is surer of, not a more relaxed one. A filter's
+// `threshold` (0.1–0.9, MOOD_THRESHOLD when left out) is how sure every
+// group must be: a head that must hold reaches it, one that must not
+// (neutral's two, vocals' instrumental) stays under its mirror, 1 − the
+// threshold. Clients name the bars they offer — the webapp's Loose is 0.3,
+// Strict 0.7. A filtered song list also tells each song's match (moodMatches):
+// how surely it fits the whole filter, for a client's Sort by match.
+//
 // Albums and artists match when MORE than half of their analysed songs
 // match — "most of it is relaxed" — counted over the songs the caller can
 // see. The subqueries are non-correlated `id IN (… GROUP BY … HAVING …)`
@@ -31,8 +40,12 @@ import { joiValidate } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 
 // The mood heads' tagThreshold (discovery-features-lib.js): the score at
-// which a head's label is exported, and here the score at which it holds.
+// which a head's label is exported, and here the default bar.
 export const MOOD_THRESHOLD = 0.5;
+// The bars a filter may ask for. Within them every value both holds for
+// some songs and leaves a mirror to stay under.
+export const MOOD_THRESHOLD_MIN = 0.1;
+export const MOOD_THRESHOLD_MAX = 0.9;
 
 export const VALENCE = Object.freeze(['happy', 'neutral', 'sad']);
 export const ENERGY = Object.freeze(['relaxed', 'neutral', 'aggressive']);
@@ -46,11 +59,13 @@ export const moodFilterSchema = Joi.object({
   energy: Joi.string().valid(...ENERGY),
   voice: Joi.string().valid(...VOICE),
   tags: Joi.array().items(Joi.string().valid(...MOOD_TAGS)).unique().max(MOOD_TAGS.length),
+  threshold: Joi.number().min(MOOD_THRESHOLD_MIN).max(MOOD_THRESHOLD_MAX).precision(2),
 });
 
 /**
  * The canonical form of a validated filter: only the groups that filter,
- * tags in MOOD_TAGS order — or null when nothing does.
+ * tags in MOOD_TAGS order, `threshold` only when it is not the default —
+ * or null when nothing filters (a threshold alone raises no bar).
  */
 export function normalizeMoods(value) {
   if (!value || typeof value !== 'object') { return null; }
@@ -60,7 +75,11 @@ export function normalizeMoods(value) {
   if (value.voice) { out.voice = value.voice; }
   const tags = MOOD_TAGS.filter((t) => Array.isArray(value.tags) && value.tags.includes(t));
   if (tags.length) { out.tags = tags; }
-  return Object.keys(out).length ? out : null;
+  if (!Object.keys(out).length) { return null; }
+  if (typeof value.threshold === 'number' && value.threshold !== MOOD_THRESHOLD) {
+    out.threshold = value.threshold;
+  }
+  return out;
 }
 
 /** Validate + normalize a request's filter (undefined/null → null). */
@@ -113,24 +132,40 @@ export function applicableMoods(requested) {
   return { moods: requested, echo: requested || {} };
 }
 
+// A filter's bar as a number SQL can carry: the schema's range, to two
+// places — anything else (a caller that skipped parseMoods) is the default.
+function barOf(threshold) {
+  const t = Number(threshold);
+  if (!Number.isFinite(t) || t < MOOD_THRESHOLD_MIN || t > MOOD_THRESHOLD_MAX) { return MOOD_THRESHOLD; }
+  return Math.round(t * 100) / 100;
+}
+
 // Head-score conditions, one per group value, over a track_moods alias.
-// The threshold is a constant, not a bound parameter, so every caller can
-// splice the predicate anywhere (CASE WHEN, a WHERE, a HAVING).
-function scale(tm, value, [lo, hi]) {
-  const t = MOOD_THRESHOLD;
-  if (value === 'neutral') { return `(${tm}.${lo} < ${t} AND ${tm}.${hi} < ${t})`; }
-  if (value === lo) { return `(${tm}.${lo} >= ${t} AND ${tm}.${lo} >= ${tm}.${hi})`; }
-  return `(${tm}.${hi} >= ${t} AND ${tm}.${hi} > ${tm}.${lo})`;
+// The bars are numbers, not bound parameters, so every caller can splice
+// the predicate anywhere (CASE WHEN, a WHERE, a HAVING). `on` is what a
+// head that must hold meets, `off` what one that must not does: under the
+// mirror, rounded so 1 − 0.7 is 0.3 and not 0.30000000000000004. At the
+// default both meet at 0.5, so every scored song is one value per scale.
+function bars(threshold) {
+  const t = barOf(threshold);
+  return { on: `>= ${t}`, off: `< ${Math.round((1 - t) * 100) / 100}` };
+}
+
+function scale(tm, value, [lo, hi], b) {
+  if (value === 'neutral') { return `(${tm}.${lo} ${b.off} AND ${tm}.${hi} ${b.off})`; }
+  if (value === lo) { return `(${tm}.${lo} ${b.on} AND ${tm}.${lo} >= ${tm}.${hi})`; }
+  return `(${tm}.${hi} ${b.on} AND ${tm}.${hi} > ${tm}.${lo})`;
 }
 
 /** The SQL condition a song's track_moods row (alias `tm`) must meet. */
 export function moodPredicate(moods, tm = 'tm') {
+  const b = bars(moods.threshold);
   const parts = [];
-  if (moods.valence) { parts.push(scale(tm, moods.valence, ['happy', 'sad'])); }
-  if (moods.energy) { parts.push(scale(tm, moods.energy, ['relaxed', 'aggressive'])); }
-  if (moods.voice === 'instrumental') { parts.push(`${tm}.instrumental >= ${MOOD_THRESHOLD}`); }
-  if (moods.voice === 'vocals') { parts.push(`${tm}.instrumental < ${MOOD_THRESHOLD}`); }
-  for (const tag of moods.tags || []) { parts.push(`${tm}.${tag} >= ${MOOD_THRESHOLD}`); }
+  if (moods.valence) { parts.push(scale(tm, moods.valence, ['happy', 'sad'], b)); }
+  if (moods.energy) { parts.push(scale(tm, moods.energy, ['relaxed', 'aggressive'], b)); }
+  if (moods.voice === 'instrumental') { parts.push(`${tm}.instrumental ${b.on}`); }
+  if (moods.voice === 'vocals') { parts.push(`${tm}.instrumental ${b.off}`); }
+  for (const tag of moods.tags || []) { parts.push(`${tm}.${tag} ${b.on}`); }
   return parts.length ? parts.join(' AND ') : '1=1';
 }
 
@@ -176,6 +211,46 @@ export function matchingTrackIds(d, moods, ids) {
     const rows = d.prepare(`SELECT tm.track_id AS id FROM track_moods tm
       WHERE tm.track_id IN (${slice.map(() => '?').join(',')}) AND ${pred}`).all(...slice);
     for (const r of rows) { out.add(r.id); }
+  }
+  return out;
+}
+
+// How surely a song fits the whole filter, 0..1, as SQL over alias `tm`:
+// its weakest condition — a head that must hold by its score, one that
+// must not by 1 − its score. The strictest threshold a song still passes
+// is about its match. null when no group filters.
+function matchExpr(moods, tm = 'tm') {
+  const terms = [];
+  const scaleTerms = (value, [lo, hi]) => (value === 'neutral'
+    ? [`1 - ${tm}.${lo}`, `1 - ${tm}.${hi}`]
+    : [`${tm}.${value === lo ? lo : hi}`]);
+  if (moods.valence) { terms.push(...scaleTerms(moods.valence, ['happy', 'sad'])); }
+  if (moods.energy) { terms.push(...scaleTerms(moods.energy, ['relaxed', 'aggressive'])); }
+  if (moods.voice === 'instrumental') { terms.push(`${tm}.instrumental`); }
+  if (moods.voice === 'vocals') { terms.push(`1 - ${tm}.instrumental`); }
+  for (const tag of moods.tags || []) { terms.push(`${tm}.${tag}`); }
+  if (!terms.length) { return null; }
+  // SQLite's MIN is the aggregate with one argument, a scalar with more.
+  return terms.length === 1 ? terms[0] : `MIN(${terms.join(', ')})`;
+}
+
+/**
+ * A filtered song list's matches, as a Map id → 0..1 (to three places):
+ * how surely each song fits `moods` (matchExpr) — what a client's Sort by
+ * match orders by. `ids` are the list's songs; one without scores (it
+ * cannot be in a filtered list) is left out.
+ */
+export function moodMatches(d, moods, ids) {
+  const out = new Map();
+  const expr = matchExpr(moods);
+  if (!expr) { return out; }
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const slice = ids.slice(i, i + CHUNK);
+    const rows = d.prepare(`SELECT tm.track_id AS id, ${expr} AS m FROM track_moods tm
+      WHERE tm.track_id IN (${slice.map(() => '?').join(',')})`).all(...slice);
+    for (const r of rows) {
+      if (r.m !== null) { out.set(r.id, Math.round(r.m * 1000) / 1000); }
+    }
   }
   return out;
 }
