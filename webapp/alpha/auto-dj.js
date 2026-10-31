@@ -323,6 +323,14 @@
   const DURATION_MAX_SECONDS = 86400;   // mirrors src/api/random.js Joi.number().max(86400) — 24h
   const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
   const GENRE_MODES = Object.freeze(['whitelist', 'blacklist']);
+  // The mood filter's groups and values — mirrors src/api/mood-filter.js,
+  // whose schema refuses anything else with a 400.
+  const MOOD_SCALES = Object.freeze({
+    valence: Object.freeze(['happy', 'neutral', 'sad']),
+    energy: Object.freeze(['relaxed', 'neutral', 'aggressive']),
+    voice: Object.freeze(['instrumental', 'vocals']),
+  });
+  const MOOD_TAGS = Object.freeze(['acoustic', 'party', 'danceable']);
   const DJ_LIMIT_MAX = 25;              // mirrors src/api/random.js PICK_LIMIT_MAX — songs one fetch may ask for
 
   // Safe-ish localStorage shim — Node tests + private-mode browsers
@@ -466,6 +474,12 @@
       djMinDuration:          _readNumber('djMinDuration', 0, 0, DURATION_MAX_SECONDS),
       djMaxDuration:          _readNumber('djMaxDuration', 0, 0, DURATION_MAX_SECONDS),
       djAllowUnknownDuration: !!_read('djAllowUnknownDuration', false),
+      // Mood filter (src/api/mood-filter.js) — the toggle plus the filter
+      // in the server's form, a preference like the genre filter (it
+      // survives reset()). Hydrated through cleanMoods: the route refuses
+      // unknown groups and values, so a junk LS value would 400 every pick.
+      djMoodEnabled: !!_read('djMoodEnabled', false),
+      djMoods:       cleanMoods(_read('djMoods', null)) || {},
       // Sonic similarity (discovery embeddings, PR #697 server API).
       // `sonicMinSimilarity` is the RAW cosine threshold the server
       // takes; the panel slider maps a perceptual scale onto it.
@@ -524,6 +538,19 @@
         return (v && typeof v === 'object' && !Array.isArray(v)) ? v : {};
       })(),
     };
+  }
+
+  // A mood filter in the server's form — known values only, tags in the
+  // server's order — or null when nothing filters.
+  function cleanMoods(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) { return null; }
+    const out = {};
+    for (const [group, values] of Object.entries(MOOD_SCALES)) {
+      if (values.includes(raw[group])) { out[group] = raw[group]; }
+    }
+    const tags = MOOD_TAGS.filter((tag) => Array.isArray(raw.tags) && raw.tags.includes(tag));
+    if (tags.length > 0) { out.tags = tags; }
+    return Object.keys(out).length > 0 ? out : null;
   }
 
   // Backing store for state — wrapped in a Proxy below so direct
@@ -1332,6 +1359,7 @@
     bpmAvg,
     buildBpmRanges,
     songBlocked,
+    cleanMoods,
 
     // State (live mirror — direct mutation logs a console.warn via
     // the Proxy. Use setState() for clean writes.)

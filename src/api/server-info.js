@@ -106,10 +106,10 @@ export function buildFeatures() {
     // A mood filter would find something RIGHT NOW: the mood heads are on
     // and some songs have scores (api/mood-filter.js). The local Discover
     // page shows its filters on this, and so do the song lists (/db/rated,
-    // /db/recent/added: bare arrays, with no room for an echo); the browse
-    // lists read the `moods` key their own answers carry (a connected
-    // server's included). Every server that sends the key takes `moods` on
-    // all of them.
+    // /db/recent/added: bare arrays, with no room for an echo) and Auto DJ
+    // (/db/random-songs, whose schema is strict); the browse lists read the
+    // `moods` key their own answers carry (a connected server's included).
+    // Every server that sends the key takes `moods` on all of them.
     moodFilters: moodFiltersReady(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,

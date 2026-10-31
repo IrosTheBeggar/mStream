@@ -135,6 +135,17 @@ describe('mood filters: the panel', () => {
     assert.match(set, /class="mood-clear"/);
   });
 
+  test("Auto DJ's form: no handlers, and the filter it is given", () => {
+    const { S } = makeSandbox();
+    const none = S.moodPanelHtml('autodj', {});
+    assert.doesNotMatch(none, /onclick=|data-dp=/, 'its panel listens on the row');
+    assert.match(none, /class="mood-clear super-hide"/);
+    const set = S.moodPanelHtml('autodj', { energy: 'relaxed', tags: ['party'] });
+    assert.deepEqual(pressed(set), ['moods.relaxed', 'moods.party']);
+    assert.match(set, /class="mood-clear"/);
+    assert.equal(S.moodFilterBody('autodj'), null, "the browse lists' filters are untouched");
+  });
+
   test("Discover's buttons carry data-dp actions, not handlers", () => {
     const { S } = makeSandbox();
     const html = S.moodPanelHtml('discover');

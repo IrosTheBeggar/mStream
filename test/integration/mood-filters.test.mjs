@@ -6,7 +6,9 @@
  * scores, and leaves the key out (filtering nothing) when it has none. The
  * song lists, /db/rated and /db/recent/added, take the same filter per
  * song; their answers are bare arrays, so they carry no echo (clients go by
- * server-info's `moodFilters`).
+ * server-info's `moodFilters`). Auto DJ's /db/random-songs takes it as an
+ * always-on condition — never relaxed, so a filter nothing meets is a 400 —
+ * and echoes it like the browse lists.
  *
  * The fixture library's songs get scores written straight into track_moods
  * after the scan, the way the mood sync would. 'Descent' gets none (not
@@ -58,6 +60,8 @@ const names = (r) => r.body.albums.map((a) => a.name);
 const rated = (moods) => call('POST', '/api/v1/db/rated', moods === undefined ? {} : { moods });
 const recent = (limit, moods) => call('POST', '/api/v1/db/recent/added', { limit, ...(moods !== undefined && { moods }) });
 const titles = (r) => r.body.map((s) => s.metadata.title);
+const dj = (body) => call('POST', '/api/v1/db/random-songs', body);
+const picked = (r) => r.body.songs.map((s) => s.metadata.title);
 
 // Which songs each value holds for, by the scores above ('Descent' has none).
 const RELAXED = new Set(['Orbit', 'Return', 'Highway', 'Neon', 'Sketch 1']);
@@ -206,6 +210,37 @@ describe('/db/recent/added mood filter', () => {
   });
 });
 
+describe('Auto DJ (/db/random-songs) mood filter', () => {
+  test('every pick matches, and the answer echoes the filter', async () => {
+    const r = await dj({ limit: 25, moods: { energy: 'relaxed' } });
+    assert.equal(r.status, 200);
+    assert.deepEqual(picked(r).sort(), [...RELAXED].sort(), 'all five relaxed songs, nothing else');
+    assert.deepEqual(r.body.moods, { energy: 'relaxed' });
+    const narrow = await dj({ limit: 25, moods: { voice: 'vocals', tags: ['acoustic'] } });
+    assert.deepEqual(picked(narrow), ['Static']);
+  });
+
+  test('without a filter: every song can come, and the echo is {}', async () => {
+    const r = await dj({ limit: 25 });
+    assert.equal(r.body.songs.length, 9);
+    assert.deepEqual(r.body.moods, {});
+  });
+
+  test('the waterfall never relaxes it: a mood nothing meets is a 400', async () => {
+    // Happy and relaxed: Neon and Sketch 1, neither acoustic.
+    const r = await dj({ moods: { valence: 'happy', energy: 'relaxed', tags: ['acoustic'] }, requireBpm: true });
+    assert.equal(r.status, 400);
+    assert.match(r.body, /No songs that match criteria/);
+    assert.equal((await dj({ moods: { energy: 'sleepy' } })).status, 400);
+  });
+
+  test('it holds alongside the other always-on conditions', async () => {
+    const r = await dj({ limit: 25, moods: { energy: 'relaxed' }, minDuration: 1 });
+    assert.equal(r.status, 200);
+    assert.ok(picked(r).every((t) => RELAXED.has(t)));
+  });
+});
+
 describe('mood filters without scores', () => {
   test('the capability flag follows the scores', async () => {
     const api = await call('GET', '/api/');
@@ -228,6 +263,9 @@ describe('mood filters without scores', () => {
     assert.deepEqual((await artists({ moods: { energy: 'relaxed' } })).body, { artists: ['Icarus', 'Vosto'] });
     assert.deepEqual(titles(await rated({ energy: 'relaxed' })), ['Be Somebody', 'Orbit', 'Return', 'Static', 'Descent']);
     assert.equal(titles(await recent(100, { energy: 'aggressive' })).length, 9);
+    const pick = await dj({ limit: 25, moods: { energy: 'aggressive' } });
+    assert.equal(pick.body.songs.length, 9, 'Auto DJ unfiltered too');
+    assert.equal('moods' in pick.body, false);
     assert.equal((await call('GET', '/api/v1/ping')).body.moodFilters, false);
     // Still validated: a bad filter is refused either way.
     assert.equal((await albums({ valence: 'angry' })).status, 400);
