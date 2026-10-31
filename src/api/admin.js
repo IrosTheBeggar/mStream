@@ -23,6 +23,7 @@ import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as discoverySeeds from '../state/discovery-seeds.js';
 import * as discoveryStack from '../state/discovery-p2p-stack.js';
 import * as discoveryPeerDbs from '../state/discovery-peer-dbs.js';
+import { peerAdder } from '../state/discovery-peer-add.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as ytDlpBootstrap from '../util/yt-dlp-bootstrap.js';
 import * as userSettingsDb from '../db/user-settings.js';
@@ -721,18 +722,20 @@ export function setup(mstream) {
   // The catalog: every peer we've heard a signed announcement from (newest
   // per peer), enriched with what the shelf knows (fetched? current?) and
   // sorted most-useful-first: online-now (heard within ~90s — announcers
-  // re-broadcast every ~15s), then by library size. True popularity
+  // re-broadcast every ~15s; the shelf's one online window, the same the
+  // peers route and rotation read), then by library size. True popularity
   // (seeder counts) arrives with the N3 provider tracking.
   mstream.get("/api/v1/admin/discovery/p2p/catalog", (req, res) => {
     requireP2pEnabled();
     const now = Date.now();
+    const onlineWindowMs = discoveryPeerDbs.onlineWindowMs();
     const localModel = discoveryDb.openDiscoveryDbIfExists()
       ? discoveryDb.getMeta('embedding_model_id') : null;
     const peers = discoveryCatalog.list().map((entry) => {
       const held = discoveryPeerDbs.get(entry.from);
       return {
         ...entry,
-        online: now - Date.parse(entry.updatedAt) < 90 * 1000,
+        online: now - Date.parse(entry.updatedAt) < onlineWindowMs,
         // Live holders of this peer's current snapshot (from signed holds
         // beacons) — the observable popularity signal. The author beacons
         // its own hash too, so a healthy snapshot shows at least 1.
@@ -779,17 +782,42 @@ export function setup(mstream) {
   // Manual shelf management: fetch a specific catalog peer's snapshot now
   // (still subject to the blocklist + storage cap), or drop one. A manual
   // download PINS the entry — an admin's explicit choice must not be
-  // silently rotated away later; the pin route below undoes it.
+  // silently rotated away later; the pin route below undoes it. It waits
+  // for the download and never swaps anything out to make room; a download
+  // already running for that peer (a page Add, the auto-fetch) is joined,
+  // not raced. While it runs the Peer Recommendations strip shows it as an
+  // Add (peerAdder.track): adding, then done or failed — never "No room",
+  // since this fetch does not make room.
   mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/fetch", async (req, res) => {
     requireP2pEnabled();
     const schema = Joi.object({ endpointId: Joi.string().hex().length(64).required() });
     joiValidate(schema, req.body);
+    const { endpointId } = req.body;
     try {
-      res.json(await discoveryPeerDbs.fetchPeer(req.body.endpointId, { pinned: true }));
+      res.json(await peerAdder.track(endpointId, discoveryPeerDbs.fetchPeer(endpointId, { pinned: true }), {
+        by: req.user?.username,
+      }));
     } catch (err) {
-      winston.warn(`discovery peer-db fetch failed for admin '${req.user?.username}' (peer ${req.body.endpointId.slice(0, 12)}…): ${err.message}`);
+      winston.warn(`[discovery-peer-dbs] fetch failed for admin '${req.user?.username}' (peer ${endpointId.slice(0, 12)}…): ${err.message}`);
       throw new WebError(`fetch failed: ${err.message}`, 500);
     }
+  });
+
+  // The Peer Recommendations page's "+": shelve a catalog peer's snapshot
+  // in the background (src/state/discovery-peer-add.js). The answer comes
+  // at once — 202 adding (started, queued, or already running), 200 done
+  // (already held) or failed{code} (a pre-check said no-room or offline),
+  // 404 not-in-catalog, 409 blocked / incompatible — and the outcome waits
+  // in the peer's Add state on GET /api/v1/discovery/p2p/peers. Unlike the
+  // fetch above it does NOT pin, and on a full shelf it swaps unpinned
+  // snapshots out in rotation's eviction order. Any case is accepted and
+  // compared lower-case, like the taste route's networkPeers.
+  mstream.post("/api/v1/admin/discovery/p2p/peer-dbs/add", (req, res) => {
+    requireP2pEnabled();
+    const schema = Joi.object({ endpointId: Joi.string().hex().length(64).lowercase().required() });
+    const { value } = joiValidate(schema, req.body);
+    const added = peerAdder.add(value.endpointId, { by: req.user?.username });
+    res.status(added.status).json(added.body);
   });
 
   // Rotation immunity for one downloaded snapshot. 404 when there's nothing
@@ -1165,7 +1193,9 @@ export function setup(mstream) {
     }
   });
 
-  // Pull a peer's snapshot into {dbDirectory}/discovery-peers/. Returns
+  // Pull a peer's snapshot into {dbDirectory}/discovery-fetched/ (never the
+  // shelf's discovery-peers/, whose unnamed files the boot sweep deletes;
+  // this file is the route's deliverable and stays). Returns
   // { hash, size, path }; the transfer is BLAKE3-verified by the protocol,
   // so a completed fetch is an intact file. Addressing is EITHER a blob
   // ticket (manual hand-off, works with zero prior contact) OR the
@@ -1202,7 +1232,7 @@ export function setup(mstream) {
       maxBytes = entry.payload.size > 0 ? entry.payload.size : undefined;
     }
 
-    const outDir = path.join(config.program.storage.dbDirectory, 'discovery-peers');
+    const outDir = discoveryPeerDbs.rawFetchDir();
     try {
       // No hold: this raw route delivers a file, not a shelf membership —
       // nothing here would ever forget() the blob, so rooting it in the

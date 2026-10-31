@@ -1,5 +1,5 @@
 /**
- * Unit tests for the pure shelf-rotation policy
+ * Unit tests for the pure shelf policy
  * (src/state/discovery-peer-rotation.js). No server, no sidecar, no config
  * singleton — every decision input is handcrafted, so each rule is pinned
  * down in isolation:
@@ -16,20 +16,27 @@
  *     candidates at all — novelty never outranks reachability
  *   - capacity: the incoming snapshot must fit AFTER the eviction;
  *     evictFirst signals when it only fits because of it
+ *   - planRoom (an admin's Add): as many evictions as the bytes need, in
+ *     the same eviction order, never pinned, never the incoming peer's own
+ *     entry; other downloads' reservations count against the cap
+ *   - the online window is an argument everywhere (default 90s)
  */
 
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   planRotation,
+  planRoom,
   candidateOrder,
   rotationCandidateOrder,
+  evictionOrder,
   modelCompatible,
   ONLINE_WINDOW_MS,
 } from '../../src/state/discovery-peer-rotation.js';
 
 const NOW = Date.parse('2026-07-28T12:00:00Z');
 const DAY = 24 * 60 * 60 * 1000;
+const MINUTE = 60 * 1000;
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
 const id = (ch) => ch.repeat(64);
 
@@ -280,6 +287,23 @@ describe('planRotation — candidate fetchability', () => {
     }));
     assert.equal(plan.fetchId, id('e'));
   });
+
+  test('onlineWindowMs decides who is reachable', () => {
+    const quiet = inputs({ catalog: [cat('d', { silentMs: 5 * MINUTE })] });
+    assert.equal(planRotation(quiet), null, 'silent 5 min is offline under the 90 s default');
+    assert.equal(planRotation({ ...quiet, onlineWindowMs: DAY })?.fetchId, id('d'));
+  });
+
+  test('onlineWindowMs reaches the eviction order too', () => {
+    // a heard 2 min ago, b 1 min ago: under 90 s only b is online, so a goes;
+    // under 10 min both are, and the older membership (b) goes instead.
+    const base = inputs({
+      shelf: [held('a', { heldDays: 8 }), held('b', { heldDays: 30 })],
+      catalog: [cat('a', { silentMs: 2 * MINUTE }), cat('b', { silentMs: 1 * MINUTE }), cat('c')],
+    });
+    assert.equal(planRotation(base).evictId, id('a'));
+    assert.equal(planRotation({ ...base, onlineWindowMs: 10 * MINUTE }).evictId, id('b'));
+  });
 });
 
 describe('planRotation — capacity', () => {
@@ -313,6 +337,145 @@ describe('planRotation — capacity', () => {
   });
 });
 
+// planRoom inputs: two 400-byte held entries (a online, b silent a day),
+// a 300-byte incoming peer n, and a cap with room for exactly 800 + 200.
+function room(overrides = {}) {
+  return {
+    shelf: [held('a', { sizeBytes: 400 }), held('b', { sizeBytes: 400 })],
+    catalog: [cat('a'), cat('b', { silentMs: DAY }), cat('n')],
+    incoming: { endpointId: id('n'), size: 300 },
+    capBytes: 1000,
+    now: NOW,
+    ...overrides,
+  };
+}
+
+describe('planRoom — making room for one chosen snapshot', () => {
+  test('fits in current headroom -> no eviction', () => {
+    assert.deepEqual(planRoom(room({ capBytes: 2000 })), { fits: true, evictIds: [] });
+  });
+
+  test('exactly at the cap fits', () => {
+    assert.deepEqual(planRoom(room({ capBytes: 1100 })), { fits: true, evictIds: [] });
+  });
+
+  test('evicts in evictionOrder: the longest-silent first', () => {
+    const plan = planRoom(room({
+      shelf: [held('a', { sizeBytes: 400 }), held('b', { sizeBytes: 400 }), held('c', { sizeBytes: 400 })],
+      catalog: [cat('a'), cat('b', { silentMs: DAY }), cat('c', { silentMs: 2 * DAY }), cat('n')],
+      capBytes: 1200,
+    }));
+    assert.deepEqual(plan, { fits: true, evictIds: [id('c')] });
+  });
+
+  test('equal silence: the oldest membership goes first', () => {
+    const plan = planRoom(room({
+      shelf: [held('a', { sizeBytes: 400, heldDays: 8 }), held('b', { sizeBytes: 400, heldDays: 30 })],
+      catalog: [cat('a', { silentMs: DAY }), cat('b', { silentMs: DAY }), cat('n')],
+    }));
+    assert.deepEqual(plan.evictIds, [id('b')]);
+  });
+
+  test('full tie: the snapshot other seeders still hold goes first', () => {
+    const a = held('a', { sizeBytes: 400 });
+    const b = held('b', { sizeBytes: 400 });
+    const plan = planRoom(room({
+      shelf: [a, b],
+      catalog: [cat('a', { silentMs: DAY }), cat('b', { silentMs: DAY }), cat('n')],
+      seederCountOf: (hash) => (hash === b.hash ? 3 : 1),
+    }));
+    assert.deepEqual(plan.evictIds, [id('b')]);
+  });
+
+  test('no age gate: a snapshot fetched today is still evictable', () => {
+    const plan = planRoom(room({
+      shelf: [held('a', { sizeBytes: 400, heldDays: 0 }), held('b', { sizeBytes: 400, heldDays: 0 })],
+    }));
+    assert.deepEqual(plan, { fits: true, evictIds: [id('b')] });
+  });
+
+  test('several evictions when one is not enough, and no more than needed', () => {
+    const plan = planRoom(room({
+      shelf: [held('a', { sizeBytes: 400 }), held('b', { sizeBytes: 400 }), held('c', { sizeBytes: 400 })],
+      catalog: [cat('a'), cat('b', { silentMs: DAY }), cat('c', { silentMs: 2 * DAY }), cat('n')],
+      incoming: { endpointId: id('n'), size: 700 },
+      capBytes: 1200,
+    }));
+    assert.deepEqual(plan, { fits: true, evictIds: [id('c'), id('b')] });
+  });
+
+  test('never a pinned snapshot, however badly it sorts', () => {
+    const plan = planRoom(room({
+      shelf: [held('a', { sizeBytes: 400 }), held('b', { sizeBytes: 400, pinned: true }),
+        held('c', { sizeBytes: 400 })],
+      catalog: [cat('a'), cat('b', { silentMs: 9 * DAY }), cat('c', { silentMs: DAY }), cat('n')],
+      incoming: { endpointId: id('n'), size: 700 },
+      capBytes: 1200,
+    }));
+    assert.deepEqual(plan, { fits: true, evictIds: [id('c'), id('a')] });
+  });
+
+  test('everything pinned -> fits:false', () => {
+    assert.deepEqual(planRoom(room({
+      shelf: [held('a', { sizeBytes: 400, pinned: true }), held('b', { sizeBytes: 400, pinned: true })],
+    })), { fits: false });
+  });
+
+  test('bigger than cap − pinned -> fits:false, even with every unpinned one gone', () => {
+    assert.deepEqual(planRoom(room({
+      shelf: [held('a', { sizeBytes: 600, pinned: true }), held('b', { sizeBytes: 300 })],
+      incoming: { endpointId: id('n'), size: 500 },
+    })), { fits: false });
+  });
+
+  test('bigger than the cap itself -> fits:false on an empty shelf', () => {
+    assert.deepEqual(planRoom(room({ shelf: [], incoming: { endpointId: id('n'), size: 1001 } })),
+      { fits: false });
+  });
+
+  test('reservedBytes (other downloads in flight) count against the cap', () => {
+    const plan = room({ shelf: [held('a', { sizeBytes: 400 })], incoming: { endpointId: id('n'), size: 500 } });
+    assert.deepEqual(planRoom(plan), { fits: true, evictIds: [] });
+    assert.deepEqual(planRoom({ ...plan, reservedBytes: 200 }), { fits: true, evictIds: [id('a')] });
+    assert.deepEqual(planRoom({ ...plan, reservedBytes: 600 }), { fits: false },
+      'a reservation is not evictable');
+  });
+
+  test("the incoming peer's own entry (a refresh) is neither counted nor evicted", () => {
+    // n is held at 900 bytes and would sort first to go (silent a month).
+    const own = held('n', { sizeBytes: 900 });
+    assert.deepEqual(planRoom(room({
+      shelf: [own, held('a', { sizeBytes: 100 })],
+      catalog: [cat('n', { silentMs: 30 * DAY }), cat('a')],
+      incoming: { endpointId: id('n'), size: 900 },
+    })), { fits: true, evictIds: [] }, 'the old copy is replaced, not added to');
+    assert.deepEqual(planRoom(room({
+      shelf: [own, held('a', { sizeBytes: 400 })],
+      catalog: [cat('n', { silentMs: 30 * DAY }), cat('a')],
+      incoming: { endpointId: id('n'), size: 700 },
+    })), { fits: true, evictIds: [id('a')] });
+  });
+
+  test('a zero-byte entry frees nothing, so it is never evicted', () => {
+    const plan = planRoom(room({
+      shelf: [held('z', { sizeBytes: 0 }), held('a', { sizeBytes: 400 }), held('b', { sizeBytes: 400 })],
+      catalog: [cat('a'), cat('b', { silentMs: DAY }), cat('n')], // z: silent forever
+    }));
+    assert.deepEqual(plan.evictIds, [id('b')]);
+  });
+
+  test('onlineWindowMs is honoured', () => {
+    // a heard 2 min ago, b 1 min ago. 90 s: a is the only offline one, so it
+    // goes. 10 min: both online, and the older membership (b) goes instead.
+    const base = room({
+      shelf: [held('a', { sizeBytes: 400, heldDays: 8 }), held('b', { sizeBytes: 400, heldDays: 30 })],
+      catalog: [cat('a', { silentMs: 2 * MINUTE }), cat('b', { silentMs: 1 * MINUTE }), cat('n')],
+    });
+    assert.deepEqual(planRoom(base).evictIds, [id('a')]);
+    assert.deepEqual(planRoom({ ...base, onlineWindowMs: 10 * MINUTE }).evictIds, [id('b')]);
+  });
+});
+
 describe('order helpers', () => {
   test('candidateOrder: compatible > online > rowCount', () => {
     const list = [
@@ -337,6 +500,29 @@ describe('order helpers', () => {
     const list = [cat('a', { rowCount: 999 }), cat('b'), cat('c', { rowCount: 1 })]
       .sort(rotationCandidateOrder(ledger, null, NOW));
     assert.deepEqual(list.map((c) => c.from[0]), ['c', 'b', 'a']);
+  });
+
+  test('candidateOrder takes the online window', () => {
+    const list = [cat('a', { rowCount: 500, silentMs: 5 * MINUTE }), cat('b', { rowCount: 10 })];
+    assert.equal([...list].sort(candidateOrder(null, NOW)).at(0).from, id('b'), 'online first');
+    assert.equal([...list].sort(candidateOrder(null, NOW, DAY)).at(0).from, id('a'),
+      'both online under a day-long window, so the bigger library wins');
+  });
+
+  test('evictionOrder: offline before online, longest-silent, oldest, then seeded', () => {
+    const shelf = [
+      held('a'),                    // online
+      held('b'),                    // silent 1 day
+      held('c'),                    // silent 2 days
+      held('d', { heldDays: 30 }),  // online, older membership than a
+    ];
+    const byFrom = new Map([cat('a'), cat('b', { silentMs: DAY }), cat('c', { silentMs: 2 * DAY }), cat('d')]
+      .map((c) => [c.from, c]));
+    const sorted = [...shelf].sort(evictionOrder(byFrom, () => 0, NOW));
+    assert.deepEqual(sorted.map((e) => e.endpointId[0]), ['c', 'b', 'd', 'a']);
+    const wide = [...shelf].sort(evictionOrder(byFrom, () => 0, NOW, 3 * DAY));
+    assert.deepEqual(wide.map((e) => e.endpointId[0]), ['d', 'a', 'b', 'c'],
+      'all online under a 3-day window: membership age alone decides');
   });
 
   test('the online window matches the announce cadence', () => {
