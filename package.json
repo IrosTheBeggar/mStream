@@ -45,6 +45,7 @@
     "fetch-mstream-player": "node scripts/fetch-mstream-player.mjs",
     "fetch-yt-dlp": "node scripts/fetch-yt-dlp.mjs",
     "test:smoke:sidecar-volume": "bash test/smoke/docker/p2p-sidecar-volume-smoke.sh",
+    "test:smoke:sqlite-bind-mount": "bash test/smoke/docker/sqlite-bind-mount-smoke.sh",
     "test:smoke:api-errors": "node test/smoke/api-error-codes-smoke.mjs"
   },
   "repository": {

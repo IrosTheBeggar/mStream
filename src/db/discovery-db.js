@@ -31,6 +31,7 @@ import crypto from 'crypto';
 import { DatabaseSync } from './sqlite-driver.js';
 import winston from 'winston';
 import * as config from '../state/config.js';
+import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode.js';
 
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
 export const DISCOVERY_SCHEMA_VERSION = 4;
@@ -193,21 +194,28 @@ export function getDiscoveryDb() {
 }
 
 // Idempotent open + migrate. Mirrors manager.js initDB(): WAL for
-// concurrent reader/writer friendliness, busy_timeout so a future forked
-// worker holding a write lock doesn't turn admin reads into instant
-// SQLITE_BUSY errors.
+// concurrent reader/writer friendliness (or the rollback journal
+// journal-mode.js picks where file locks can't keep processes apart),
+// busy_timeout so a forked worker holding a write lock doesn't turn admin
+// reads into instant SQLITE_BUSY errors.
 //
 // `dbPath` is optional — the server passes nothing (config-derived path);
-// an explicit path is for callers with no config state (the future forked
-// embedding worker, which receives paths via its JSON payload, and tests).
+// an explicit path is for callers with no config state (the forked workers,
+// which receive paths via their JSON payload, and tests). Only the server
+// sets the journal mode, like initDB(): the workers inherit it from the
+// database header.
 export function initDiscoveryDb(dbPath) {
   if (db) { return db; }
 
   openedPath = dbPath || discoveryDbPath();
+  ensureDbFile(openedPath);
   db = new DatabaseSync(openedPath);
   try {
-    db.exec('PRAGMA journal_mode = WAL');
     db.exec('PRAGMA busy_timeout = 5000');
+    if (!dbPath) {
+      setJournalMode(db, resolveJournalMode(config.program.storage.dbDirectory,
+        { override: config.program.db?.journalMode }), openedPath);
+    }
     runMigrations();
     seedMeta();
   } catch (err) {
@@ -245,6 +253,32 @@ export function openDiscoveryDbIfExists() {
       winston.warn(`discovery DB unavailable — treating it as absent until it can be opened: ${err.message}`);
     }
     return null;
+  }
+}
+
+// Boot with collection off: the server leaves discovery.db closed, but a
+// worker can still open an existing file (acoustid does whenever it exists)
+// and inherit its mode. Where this directory needs the DELETE fallback, put
+// an existing file in it now, while the server is its only user — a worker
+// holding it open in WAL later would refuse the switch. WAL needs no such
+// step: the server sets it whenever it opens the file. Best-effort, no
+// migrations: discovery data is optional and must never stop the boot.
+export function settleDiscoveryJournalMode() {
+  if (db) { return; }
+  const p = discoveryDbPath();
+  if (!fs.existsSync(p)) { return; }
+  const mode = resolveJournalMode(config.program.storage.dbDirectory,
+    { override: config.program.db?.journalMode });
+  if (mode !== 'DELETE') { return; }
+  let conn = null;
+  try {
+    conn = new DatabaseSync(p);
+    conn.exec('PRAGMA busy_timeout = 5000');
+    setJournalMode(conn, mode, p);
+  } catch (err) {
+    winston.warn(`discovery DB journal mode not settled: ${err.message}`);
+  } finally {
+    try { conn?.close(); } catch (_err) { /* never opened */ }
   }
 }
 

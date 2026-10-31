@@ -16,6 +16,7 @@ real processes. Run them by hand when working on the matching code.
 | Desktop player open (`player-open-smoke.sh`) | `npm run test:smoke:player-open` | a built launcher + `python3`; Linux needs a display (`xvfb-run`) and a terminal emulator (`xterm` will do); on macOS it pops a Terminal.app window |
 | Boot-probe under PowerShell 5.1 (`boot-probe-51-smoke.ps1`) | `npm run test:smoke:boot-probe:win51` | `rustc` + git-bash + real Python; run under `powershell.exe` (Desktop 5.1) — that floor is the point |
 | API error codes (`api-error-codes-smoke.mjs`) | `npm run test:smoke:api-errors` | Node + the fixture library only (built by `npm test`'s pretest); boots a throwaway server; ~2 min |
+| SQLite on a Docker Desktop bind mount (`docker/sqlite-bind-mount-smoke.sh`) | `npm run test:smoke:sqlite-bind-mount [-- <git ref>]` | Docker Desktop (macOS host); pulls `node:24-bookworm` and `rust:1-slim-bookworm`; ~2 min the first run per commit |
 
 Each script just runs the harness; bringing the daemons up (and tearing them
 down) is the operator's job. The setup, credentials and env knobs are
@@ -68,6 +69,12 @@ documented at:
   add → scan → serve → delete lifecycle, and a grep of the server log for
   crash lines. The integration suites pin the same contracts
   deterministically; this is the broad, real-environment sweep.
+- **SQLite on a Docker Desktop bind mount:** the header comment of
+  [docker/sqlite-bind-mount-smoke.sh](docker/sqlite-bind-mount-smoke.sh) —
+  the filesystem's lock quirk itself, then a real server on a fresh
+  bind-mounted `/config`: its API writes must reach a second process and
+  survive `docker stop`. Pass a git ref (default `HEAD`); a ref without the
+  journal-mode fallback fails it.
 - **CI note:** the update watchdog + apply smokes ALSO run automatically on
   launcher PRs (the `check` matrix in `build-rust-launcher.yml` runs them
   with the binary it just built), and the desktop-player smoke runs there on
