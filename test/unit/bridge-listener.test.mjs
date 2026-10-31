@@ -149,25 +149,20 @@ describe('bridge listener (real sockets)', () => {
     await listen(pub, '127.0.0.1');
     assert.equal(JSON.parse((await get(port, '/api/v1/ping')).body).from, 'third');
   });
-});
 
-// What the public app saw of a request's URL, as Express reads it.
-function echoApp() {
-  const app = express();
-  app.get('/api/v1/echo', (req, res) => res.json({ url: req.url, originalUrl: req.originalUrl, query: req.query }));
-  return app;
-}
+  // What the public app saw of a request's URL, as Express reads it.
+  function echoApp() {
+    const app = express();
+    app.get('/api/v1/echo', (req, res) => res.json({ url: req.url, originalUrl: req.originalUrl, query: req.query }));
+    return app;
+  }
 
-// The phone app's loopback proxy (the Rust shim from mstream-iroh-tunnel)
-// adds `__lt=<token>` to every request URL and forwards the bytes as they
-// are, so a route whose query schema rejects unknown keys answered 400 over
-// Quick Connect. The bridge drops that parameter, and only that one, from
-// requests and upgrades alike; the public listener itself is not touched.
-describe("the tunnel client's __lt query parameter", () => {
-  const servers = [];
-  const track = (srv) => { servers.push(srv); return srv; };
-  after(() => { for (const s of servers) { s.close(); s.closeAllConnections?.(); } });
-
+  // The phone app tags every request URL with `__lt=<token>` for its loopback
+  // proxy (the Rust shim from mstream-iroh-tunnel), which checks the first
+  // request line of each connection and forwards the bytes as sent, so a route
+  // whose query schema rejects unknown keys answered 400 over Quick Connect.
+  // The bridge drops that parameter, and only that one, from requests and
+  // upgrades alike; the public listener itself is not touched.
   test('stripLocalToken drops that parameter and nothing else', () => {
     const cases = [
       ['/api/v1/ping', '/api/v1/ping'],

@@ -142,11 +142,12 @@ function scenario(execPath, { extraConfig, precondition }) {
     }
   });
 
-  // The phone app's loopback proxy (the Rust shim from mstream-iroh-tunnel)
-  // adds `__lt=<token>` to every request URL and forwards the bytes as they
-  // are. This route's query schema rejects unknown keys, so through the
-  // tunnel it answered 400 ("__lt" is not allowed) until the bridge listener
-  // dropped the parameter.
+  // The phone app tags every request URL with `__lt=<token>` for its loopback
+  // proxy (the Rust shim from mstream-iroh-tunnel), which checks the first
+  // request line of each connection and forwards the bytes as sent. This
+  // route's query schema rejects unknown keys, so through the tunnel it
+  // answered 400 ("__lt" is not allowed) until the bridge listener dropped
+  // the parameter.
   test("a request carrying the tunnel client's __lt parameter is answered by a route with a strict query schema", { timeout: 60_000 }, async () => {
     const { qr } = await tunnelStatus();
     const { client, conn } = await iroh.connectTunnel(qr, { awaitOnline: false });

@@ -16,17 +16,15 @@ import winston from 'winston';
 // What whileDown says (the reboot stub), for an upgrade's raw socket.
 const DOWN_RESPONSE = 'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n';
 
-// The query parameter the phone app's loopback proxy (the Rust shim from
-// mstream-iroh-tunnel) adds to every request URL, so it can tell its own
-// app's connections from other local programs. The shim checks the token
-// and forwards the request bytes as they are, so every request through
-// Quick Connect reaches the web server with it, and a route whose query
-// schema rejects unknown keys answers 400 ("__lt" is not allowed): the
-// discovery plugin-jobs and downloads listings, the stats routes, the
-// yt-dlp metadata lookup. Dropping it inside the shim is the fix that
-// belongs there (a crate release and an app re-pin away); until then every
-// bridged request and upgrade loses it here, and nothing else in its URL.
+// The phone app tags every request URL with `__lt=<token>` for its loopback
+// proxy (the Rust shim from mstream-iroh-tunnel), which checks the first
+// request line of each connection and forwards the bytes as sent. This
+// listener is the only hop that sees each request, so it drops the parameter
+// here, for requests and upgrades alike, and nothing else in the URL: a route
+// whose query schema rejects unknown keys would otherwise answer 400 through
+// the tunnel. Streams that fall back to the public port keep it.
 const LOCAL_TOKEN_KEY = '__lt';
+const LOCAL_TOKEN_PARAM = `${LOCAL_TOKEN_KEY}=`;
 
 // `url` without its __lt parameter: the path, every other parameter and
 // the fragment stay byte for byte, and a query left empty takes its '?'
@@ -37,7 +35,7 @@ export function stripLocalToken(url) {
   const hash = url.indexOf('#', q);
   const end = hash < 0 ? url.length : hash;
   const query = url.slice(q + 1, end).split('&')
-    .filter((p) => p !== LOCAL_TOKEN_KEY && !p.startsWith(`${LOCAL_TOKEN_KEY}=`))
+    .filter((p) => p !== LOCAL_TOKEN_KEY && !p.startsWith(LOCAL_TOKEN_PARAM))
     .join('&');
   return url.slice(0, q) + (query ? `?${query}` : '') + url.slice(end);
 }
