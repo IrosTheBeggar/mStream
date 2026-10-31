@@ -8,9 +8,12 @@ import { shouldMigrate, migrate } from './migrate-from-loki.js';
 import { normalizeArtistName } from '../util/artist-normalize.js';
 import { albumKey } from './album-key.js';
 import { nameKey } from './name-key.js';
+import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode.js';
 
 let db = null;
 let clearSharedTimer = null;
+// The main connection's journal mode as initDB left it (see isWalMode()).
+let walMode = true;
 
 // FTS5 capability flag. Set at initDB() time from
 // `SELECT sqlite_compileoption_used('ENABLE_FTS5')`. Read by the search
@@ -64,12 +67,20 @@ export function initDB() {
     try { db.close(); } catch (err) { winston.warn(`Could not close the previous database handle: ${err.message}`); }
     db = null;
   }
+  // WAL for concurrent readers and writers, unless this directory's file
+  // locks can't keep the server, scanner and workers apart — then a rollback
+  // journal (journal-mode.js). This connection owns the choice: the mode is
+  // stored in the database header, and the other processes inherit it.
+  const journalMode = resolveJournalMode(config.program.storage.dbDirectory,
+    { override: config.program.db?.journalMode });
+  ensureDbFile(dbPath);
   db = new DatabaseSync(dbPath);
 
-  // Enable WAL mode for better concurrent read/write performance
-  db.exec('PRAGMA journal_mode = WAL');
-  db.exec('PRAGMA foreign_keys = ON');
+  // busy_timeout first: the journal_mode switch reads the schema, which
+  // waits on a writer's lock like any read.
   db.exec('PRAGMA busy_timeout = 5000');
+  walMode = String(setJournalMode(db, journalMode, dbPath)).toLowerCase() === 'wal';
+  db.exec('PRAGMA foreign_keys = ON');
   // V31 adds AFTER triggers on tracks/artists/albums to maintain the
   // FTS5 index. The triggers themselves don't recursively fire other
   // user triggers (they write to FTS5 virtual tables, which have no
@@ -147,12 +158,24 @@ export function getDB() {
 // next transaction with no reboot — so the admin toggle
 // (util/admin.editDbSynchronous) can apply a change immediately. PRAGMA values
 // can't be bound parameters, so the mode is allowlisted before interpolation.
+// NORMAL is crash-safe only under WAL; on the rollback-journal fallback
+// (journal-mode.js) a power cut mid-commit can corrupt, so FULL there
+// whatever the setting says.
 export function setSynchronous(mode) {
   const m = String(mode).toUpperCase();
   if (m !== 'FULL' && m !== 'NORMAL') {
     throw new Error(`Invalid synchronous mode: ${mode}`);
   }
-  db.exec(`PRAGMA synchronous = ${m}`);
+  db.exec(`PRAGMA synchronous = ${walMode ? m : 'FULL'}`);
+}
+
+// Whether the main database is in WAL. Otherwise it is in a rollback journal:
+// the fallback journal-mode.js chose because WAL would lose writes on this
+// filesystem, or the mode one that can't map WAL's shared memory left it in.
+// No other process may switch it back to WAL — task-queue.js gates the
+// rust-parser binary on this.
+export function isWalMode() {
+  return walMode;
 }
 
 // Set the main connection's SQLite page-cache size, in MEBIBYTES. PRAGMA

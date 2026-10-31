@@ -655,6 +655,29 @@ describe('task-queue: probeHashGeneration', () => {
   });
 });
 
+// ── describe: scanner journal-mode capability probe ─────────────────────────
+//
+// While the main database is in a rollback journal (journal-mode.js: WAL
+// loses writes on its filesystem), findRustParser refuses a binary that
+// can't answer --journal-mode-contract: older binaries force WAL on open and
+// would switch the database back for every process.
+describe('task-queue: probeJournalModeContract', () => {
+  let taskQueue;
+  before(async () => { taskQueue = await import('../../src/db/task-queue.js'); });
+
+  test('a missing binary probes as null (forces WAL)', () => {
+    assert.equal(taskQueue.probeJournalModeContract(
+      path.join(os.tmpdir(), 'no-such-rust-parser.exe')), null);
+  });
+
+  test('a binary built from this source inherits the journal mode', async (t) => {
+    const { findRustParser, rustParserIsStale } = await import('../helpers/scanner-runner.mjs');
+    const bin = findRustParser();
+    if (!bin || rustParserIsStale(bin)) { t.skip('no rust binary built from this source'); return; }
+    assert.ok(taskQueue.probeJournalModeContract(bin) >= taskQueue.JOURNAL_MODE_CONTRACT);
+  });
+});
+
 // ── describe: boot rescan marker lifecycle ──────────────────────────────────
 //
 // Covers the two marker-lifecycle fixes:

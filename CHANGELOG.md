@@ -279,6 +279,16 @@ removed.
 
 ### 🐛 Bug fixes
 
+- **No more lost database writes on Docker Desktop bind mounts.** With
+  `/config` bind-mounted from a Mac, the server's own writes (playlists,
+  ratings, the genre and mood syncs) never reached the database file:
+  other processes didn't see them and `docker stop` discarded them.
+  Docker Desktop hides a file lock taken through the handle that
+  created the file, which is how SQLite's WAL holds its shared-memory
+  file. mStream now checks the database directory at boot and uses
+  the DELETE journal where locks can't keep its processes apart,
+  logging why; `db.journalMode` (`auto`, `WAL`, `DELETE`) overrides
+  the check. A Docker named volume keeps WAL and full speed.
 - The main UI's top-bar scan progress cards now actually appear on
   locally-served sessions. The widget required a truthy
   `currentServer.host` before polling, but host is the empty string

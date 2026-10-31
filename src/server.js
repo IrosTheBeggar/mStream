@@ -440,6 +440,10 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     } catch (err) {
       winston.error(`discovery DB failed to initialize — discovery data collection disabled this boot: ${err.message}`);
     }
+  } else {
+    // Closed this boot, but a worker may still open an existing file: give
+    // it this directory's journal mode while the server is its only user.
+    discoveryDb.settleDiscoveryJournalMode();
   }
 
   // remove trailing slashes, needed for relative URLs on the webapp
