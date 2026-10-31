@@ -8791,6 +8791,8 @@ paths:
                   endpointId: { type: string, nullable: true }
                   online: { type: boolean }
                   relayUrl: { type: string, nullable: true }
+                  bridgeOk: { type: boolean, nullable: true, description: "Whether the web server answered the endpoint's probe of its bridge target (the loopback listener peers' requests go through); null until the probe has answered, and while stopped" }
+                  bridgeError: { type: string, nullable: true, description: "Why the probe failed, when bridgeOk is false" }
                   limitDefaults:
                     type: object
                     description: Config defaults (federation.limits) that pre-fill the mint dialog. 0 = unlimited.

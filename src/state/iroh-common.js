@@ -1,13 +1,16 @@
 // Shared iroh plumbing (@number0/iroh v1), used by every in-process iroh
 // endpoint: the remote-access tunnel (src/state/iroh.js) and the federation
-// endpoint (src/state/federation.js). Three groups live here:
+// endpoint (src/state/federation.js). Four groups live here:
 //
 //  1. The lazy native-module loader (+ the Bun-standalone .node staging) and
 //     the selfTest() smoke check the build CI runs.
 //  2. The byte pumps coupling an iroh QUIC bi-stream to a Node TCP socket —
 //     subtle backpressure/teardown code (see the Reset(0) note on bridge())
 //     that must not be duplicated per consumer.
-//  3. The versioned ticket envelope `<prefix><version>:<base64url(JSON)>`
+//  3. Where those streams go: the bridge target server.js registers (its
+//     loopback bridge listener, util/bridge-listener.js) and the probe that
+//     tells the admin panel whether the web server answers there.
+//  4. The versioned ticket envelope `<prefix><version>:<base64url(JSON)>`
 //     shared by the tunnel pairing code (`mstr1:`, docs/iroh-pairing-code.md)
 //     and the federation ticket (`mstrfed1:`, docs/federation-ticket.md).
 //
@@ -16,6 +19,7 @@
 //  * recv.read(limit) RETURNS a byte array (EOF == empty array); writeAll()/
 //    connect() take Array<number>, NOT Buffers. reset()/stop() take bigint.
 
+import http from 'http';
 import net from 'net';
 import os from 'os';
 import crypto from 'crypto';
@@ -245,10 +249,77 @@ export function bridgeStreamToBackend(bi, targetHost, targetPort) {
   socket.once('connect', () => { started = true; bridge(socket, bi); });
   socket.once('error', (err) => {
     if (started) { return; } // bridge() now owns teardown
-    winston.warn(`[iroh] backend connect failed (${targetHost}:${targetPort}): ${err.message}`);
+    warnConnectFailed(`${targetHost}:${targetPort}`, err);
     bi.send.reset(0n).catch(() => {});
     bi.recv.stop(0n).catch(() => {});
   });
+}
+
+// A broken bridge fails every stream a client opens, and a phone opens a few
+// per tap: warn once a minute per backend, counting the failures in between.
+const CONNECT_WARN_MS = 60 * 1000;
+const connectWarnings = new Map(); // "host:port" -> { at, quiet }
+
+function warnConnectFailed(where, err) {
+  const last = connectWarnings.get(where);
+  if (last && Date.now() - last.at < CONNECT_WARN_MS) { last.quiet += 1; return; }
+  const more = last && last.quiet > 0 ? ` (${last.quiet} more since the last warning)` : '';
+  connectWarnings.set(where, { at: Date.now(), quiet: 0 });
+  winston.warn(`[iroh] backend connect failed (${where}): ${err.message}${more} — tunnel and federation requests need the web server answering plain HTTP there (check its bind address and port)`);
+}
+
+// ---------------------------------------------------------------------------
+// The bridge target (mStream#1101)
+// ---------------------------------------------------------------------------
+
+// Where accepted streams go when start() is not given a target: the loopback
+// bridge listener server.js opens for them. Not the public listener, which
+// may be bound to another interface or speak TLS.
+let bridgeTarget = null;
+export function setBridgeTarget(targetHost, targetPort) { bridgeTarget = { targetHost, targetPort }; }
+export function getBridgeTarget() { return bridgeTarget; }
+
+// One HEAD / to a bridge target, bounded: any HTTP answer means bridged
+// streams reach the web server there; a refusal, a reset or silence is what
+// a tunnel client gets instead. `/` sits in front of the auth wall, so the
+// probe needs no token and logs no rejection.
+export function probeBackend({ targetHost, targetPort }, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: targetHost, port: targetPort, method: 'HEAD', path: '/', agent: false, timeout: timeoutMs }, (res) => {
+      res.resume();
+      resolve({ ok: true, error: null });
+    });
+    req.on('timeout', () => req.destroy(new Error(`no answer within ${timeoutMs / 1000}s`)));
+    req.on('error', (err) => {
+      // HPE_*: the parser choked on the reply, which is what TLS answering
+      // plain HTTP looks like. A failed connect's message names the address.
+      const why = String(err.code).startsWith('HPE_') ? 'the reply was not HTTP (TLS on that port?)' : err.message;
+      resolve({ ok: false, error: err.syscall === 'connect' ? why : `${why} (${targetHost}:${targetPort})` });
+    });
+    req.end();
+  });
+}
+
+// An endpoint's view of its bridge, for its admin status route: run() probes
+// after a start, clear() forgets on stop, get() reads { bridgeOk, bridgeError }
+// (both null until the probe answers). A probe that lands after a newer
+// run() or a clear() is dropped.
+export function createBridgeCheck(tag) {
+  let result = null;
+  let runs = 0;
+  return {
+    run(target) {
+      const mine = ++runs;
+      result = null;
+      probeBackend(target).then((r) => {
+        if (mine !== runs) { return; }
+        result = r;
+        if (!r.ok) { winston.warn(`${tag} is up but cannot reach the web server: ${r.error}`); }
+      });
+    },
+    clear() { runs += 1; result = null; },
+    get() { return { bridgeOk: result ? result.ok : null, bridgeError: result ? result.error : null }; },
+  };
 }
 
 // ---------------------------------------------------------------------------

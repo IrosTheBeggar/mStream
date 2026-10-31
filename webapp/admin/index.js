@@ -4238,6 +4238,9 @@ const federationView = Vue.component('federation-view', {
               <div v-if="fed.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the federation endpoint can’t run here.</p>
               </div>
+              <div v-if="fed.bridgeOk === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Endpoint is up but cannot reach the web server:</b> {{ fed.bridgeError }}. Paired servers will connect, then fail every request.</p>
+              </div>
               <p><b>Tickets are credentials.</b> Anyone holding an unredeemed ticket can read the libraries it grants — send tickets over a private channel. The first server to use a ticket claims it; revoke a ticket at any time to cut access.</p>
               <p style="margin-top:8px" v-if="fed.enabled && fed.running"><b>Status:</b>
                 <span style="color:#2e7d32">On{{ fed.online ? ' · connected to relay' : ' · connecting…' }}</span>
@@ -8888,6 +8891,9 @@ const irohView = Vue.component('iroh-view', {
               </div>
               <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
+              </div>
+              <div v-if="iroh.bridgeOk === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Tunnel is up but cannot reach the web server:</b> {{ iroh.bridgeError }}. Paired devices will connect, then fail every request.</p>
               </div>
               <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
             </div>

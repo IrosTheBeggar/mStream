@@ -79,6 +79,22 @@ A heavily edited config would look like:
 
 Defaults to 3000 if not set
 
+## Address
+
+The address the web server listens on. Defaults to `::`, every interface
+(IPv4 too, on a dual-stack host). Set one IP to listen on that interface
+alone: `127.0.0.1` behind a reverse proxy on the same machine, or a LAN
+address.
+
+```json
+  "address": "192.168.1.20"
+```
+
+Quick Connect and federation do not depend on it: they reach the web server
+through a listener of their own on `127.0.0.1` (a random port, plain HTTP;
+the iroh connection around it is end-to-end encrypted), whatever `address`
+and `ssl` are set to.
+
 ## Folders
 
 Folders are set by key value pairs.  The key is used later to give access to folders on a per user basis.  (more info in the users section)
@@ -243,6 +259,8 @@ mStream comes with SSL support built in.  Just add your key and cert and the ser
     "cert": "/path/to/cert.pem"
   }
 ```
+
+Quick Connect and federation keep working with SSL on (see [Address](#address)).
 
 ## Disable Uploading
 
