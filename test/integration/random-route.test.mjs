@@ -642,6 +642,9 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
   // bounded ORDER BY RANDOM() pool; the waterfall and sonic paths
   // filter by id in finalisePick. Stale values (deleted tracks or a
   // pre-rework index-based list) match nothing and age out via the cap.
+  // Once every song in scope is cooled, repeats come back in list order,
+  // oldest first: an exhausted pool cycles, and the song just served is
+  // never served again straight away.
 
   function trackIdsByTitle() {
     const sdb = new DatabaseSync(path.join(tmpDir, 'db', 'mstream.db'), { readOnly: true });
@@ -697,6 +700,49 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     assert.equal(r.body.ignoreList.at(-1), picked);
     assert.equal(r.body.ignoreList.filter((x) => x === picked).length, 1);
     assert.equal(r.body.ignoreList.length, all.length);
+  });
+
+  test('a fully cooled pool repeats the song served longest ago', async () => {
+    const ids = trackIdsByTitle();
+    // Every song cooled: t5 was served longest ago, t2 just now.
+    const order = ['t5', 't8', 't1', 't7', 't3', 't6', 't4', 't2'];
+    for (let i = 0; i < 6; i++) {
+      const r = await randomReq(server.baseUrl, { ignoreList: order.map((t) => ids[t]) });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't5', `pick ${i} was not the oldest repeat`);
+    }
+  });
+
+  test('chained picks over an exhausted pool cycle, never back to back', async () => {
+    let ignoreList = [];
+    const picks = [];
+    for (let i = 0; i < 20; i++) {
+      const r = await randomReq(server.baseUrl, { ignoreList });
+      assert.equal(r.status, 200);
+      picks.push(pickedTitle(r));
+      ignoreList = r.body.ignoreList;
+    }
+    const chain = picks.join(' → ');
+    assert.equal(new Set(picks.slice(0, 8)).size, 8, `the first eight are all fresh: ${chain}`);
+    for (let i = 8; i < picks.length; i++) {
+      assert.equal(picks[i], picks[i - 8], `pick ${i} broke the cycle: ${chain}`);
+    }
+    for (let i = 1; i < picks.length; i++) {
+      assert.notEqual(picks[i], picks[i - 1], `back-to-back repeat at pick ${i}: ${chain}`);
+    }
+  });
+
+  test('the waterfall repeats oldest first too', async () => {
+    const ids = trackIdsByTitle();
+    // bpm 124-125 narrows to {t1, t2, t7}, all cooled; t7 served longest ago.
+    const ignoreList = [ids.t7, ids.t1, ids.t2];
+    for (let i = 0; i < 6; i++) {
+      const r = await randomReq(server.baseUrl, {
+        bpmRanges: [{ min: 124, max: 125 }], ignoreList,
+      });
+      assert.equal(r.status, 200);
+      assert.equal(pickedTitle(r), 't7', `pick ${i} was not the oldest in-range repeat`);
+    }
   });
 
   test('stale ids are inert and retained until capped out', async () => {
@@ -771,6 +817,19 @@ describe('POST /api/v1/db/random-songs — BPM/key waterfall', () => {
     // Move-to-end for every served id: 6 sent − 3 re-served + 5 served = 8.
     assert.equal(r.body.ignoreList.length, 8);
     assert.deepEqual(r.body.ignoreList.slice(-5), titles.map((t) => ids[t]));
+  });
+
+  test('a batch tops up with the oldest repeats, in order', async () => {
+    const ids = trackIdsByTitle();
+    // t3 and t6 fresh; the rest cooled, oldest first.
+    const cooled = ['t8', 't1', 't5', 't2', 't4', 't7'];
+    const r = await randomReq(server.baseUrl, {
+      limit: 5, ignoreList: cooled.map((t) => ids[t]),
+    });
+    assert.equal(r.status, 200);
+    const titles = titlesOf(r);
+    assert.deepEqual([...titles.slice(0, 2)].sort(), ['t3', 't6'], 'the two fresh songs lead');
+    assert.deepEqual(titles.slice(2), ['t8', 't1', 't5'], 'then the three served longest ago');
   });
 
   test('a batch honours the always-on filters and enriches every row', async () => {
