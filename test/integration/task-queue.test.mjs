@@ -678,6 +678,70 @@ describe('task-queue: probeJournalModeContract', () => {
   });
 });
 
+// ── describe: the gate re-runs when the journal mode changes ────────────────
+//
+// findRustParser() caches its verdict for the process, and the journal-mode
+// gate runs only while deciding. A soft reboot re-runs initDB(), which can
+// change the mode (an edited db.journalMode): a WAL-forcing binary accepted
+// under WAL must be gated again, and refused, once the database is in
+// DELETE — otherwise its next scan flips the database back to WAL for every
+// process. The probes are stood in for (a binary that predates the journal
+// contract), so no stale binary is needed on disk, only a candidate to find.
+describe('task-queue: findRustParser re-gates after a journal-mode change', () => {
+  let testRoot, config, dbManager, taskQueue;
+
+  before(async () => {
+    testRoot = makeTestEnv();
+    config = await import('../../src/state/config.js');
+    await config.setup(path.join(testRoot, 'config.json'));
+    dbManager = await import('../../src/db/manager.js');
+    taskQueue = await import('../../src/db/task-queue.js');
+  });
+
+  after(async () => {
+    if (taskQueue) { await waitForIdle(taskQueue); taskQueue._resetRustParserForTests(); }
+    if (config) { config.program.db.journalMode = 'auto'; }
+    if (dbManager) { dbManager.close(); }
+    try { fs.rmSync(testRoot, { recursive: true, force: true }); } catch (_) { /* cleanup */ }
+  });
+
+  test('a binary accepted under WAL is refused once initDB() switches to DELETE, and back', async (t) => {
+    const { findRustParser: candidate } = await import('../helpers/scanner-runner.mjs');
+    if (!candidate()) { t.skip('no rust-parser candidate on this machine'); return; }
+    const { HASH_GENERATION } = await import('../../src/db/audio-hash.js');
+    const { SCANNER_SCHEMA_CONTRACT } = await import('../../src/db/schema.js');
+
+    let journalProbes = 0;
+    taskQueue._resetRustParserForTests({ probes: {
+      hashGeneration: () => HASH_GENERATION,
+      schemaContract: () => SCANNER_SCHEMA_CONTRACT,
+      // Predates the contract: a binary that forces WAL on open.
+      journalModeContract: () => { journalProbes++; return null; },
+    } });
+
+    config.program.db.journalMode = 'WAL';
+    dbManager.initDB();
+    assert.equal(dbManager.isWalMode(), true);
+    assert.equal(taskQueue.findRustParser(), true, 'accepted under WAL: the journal gate does not apply');
+    assert.equal(journalProbes, 0);
+    assert.equal(taskQueue.findRustParser(), true, 'cached while the mode is unchanged');
+    assert.equal(journalProbes, 0);
+
+    config.program.db.journalMode = 'DELETE';
+    dbManager.initDB();                       // what a soft reboot does
+    assert.equal(dbManager.isWalMode(), false);
+    assert.equal(taskQueue.findRustParser(), false, 'gated again and refused once the database is in DELETE');
+    assert.ok(journalProbes >= 1, 'the journal gate ran');
+    const probesAfterRefusal = journalProbes;
+    assert.equal(taskQueue.findRustParser(), false, 'the refusal is cached while the mode is unchanged');
+    assert.equal(journalProbes, probesAfterRefusal);
+
+    config.program.db.journalMode = 'WAL';
+    dbManager.initDB();
+    assert.equal(taskQueue.findRustParser(), true, 'accepted again once the database is back in WAL');
+  });
+});
+
 // ── describe: boot rescan marker lifecycle ──────────────────────────────────
 //
 // Covers the two marker-lifecycle fixes:

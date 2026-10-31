@@ -186,8 +186,36 @@ function probeIntFlag(binPath, flag) {
 // on the next server start, same as rustBinaryReady's positive cache.
 let generationGateFailed = false;
 
-function findRustParser() {
+// The capability probes the gate below runs on a candidate binary, as an
+// object so _resetRustParserForTests() can stand in for a binary that
+// answers them a chosen way (a test cannot ship one).
+const defaultProbes = {
+  hashGeneration: probeHashGeneration,
+  schemaContract: probeSchemaContract,
+  journalModeContract: probeJournalModeContract,
+};
+const probes = { ...defaultProbes };
+
+// The journal mode (db.isWalMode()) the cached verdict was made under, or
+// null before the first one. The journal-mode gate below runs only while
+// deciding, and a soft reboot re-runs initDB(), which changes the mode when
+// db.journalMode was edited in between — so a verdict from the other mode
+// is stale: a WAL-forcing binary accepted under WAL would flip a database
+// initDB() has since put in DELETE straight back. findRustParser() drops
+// both caches when the mode it sees differs from this.
+let verdictWalMode = null;
+
+// Exported for test/integration/task-queue.test.mjs (the mode-change case
+// needs the verdict itself); the server reaches it through the enqueue paths.
+export function findRustParser() {
   if (rustParserDisabled) { return false; }
+  const walMode = db.isWalMode();
+  if (verdictWalMode !== null && verdictWalMode !== walMode) {
+    rustBinaryReady = false;
+    generationGateFailed = false;
+    rustParserBin = null;
+  }
+  verdictWalMode = walMode;
   if (rustBinaryReady) { return true; }
   if (generationGateFailed) { return false; }
 
@@ -212,7 +240,7 @@ function findRustParser() {
   // rejecting here degrades to slower-but-correct scans until the binary
   // catches up (CI rebuilds bin/ on merge; `npm run build-rust` locally).
   const generationCurrent = (binPath, label) => {
-    const gen = probeHashGeneration(binPath);
+    const gen = probes.hashGeneration(binPath);
     if (gen !== HASH_GENERATION) {
       winston.warn(`${label} rust-parser at ${binPath} stamps hash generation `
         + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
@@ -226,7 +254,7 @@ function findRustParser() {
     // re-fragmenting into rows no later scanner can match. Older contract →
     // JS scanner until the binary catches up (CI rebuilds bin/ on merge;
     // `cargo build --release` locally).
-    const contract = probeSchemaContract(binPath);
+    const contract = probes.schemaContract(binPath);
     if (contract === null || contract < SCANNER_SCHEMA_CONTRACT) {
       winston.warn(`${label} rust-parser at ${binPath} was built for scanner schema contract `
         + `${contract ?? 'unknown (pre-probe build)'} but this server needs ${SCANNER_SCHEMA_CONTRACT} — `
@@ -239,7 +267,7 @@ function findRustParser() {
     // back to WAL for every process mid-run. JS scanner until the binary
     // catches up (CI rebuilds bin/ on merge).
     if (!db.isWalMode()) {
-      const journal = probeJournalModeContract(binPath);
+      const journal = probes.journalModeContract(binPath);
       if (journal === null || journal < JOURNAL_MODE_CONTRACT) {
         winston.warn(`${label} rust-parser at ${binPath} predates journal-mode inheritance and would `
           + 'switch this database from its rollback journal back to WAL — refusing it; scans use the JS '
@@ -292,6 +320,20 @@ function findRustParser() {
     winston.warn(`Failed to build Rust parser: ${err.message}. Falling back to JS parser.`);
   }
   return false;
+}
+
+// Test hook (lyrics-cache has _resetForTests): forget everything
+// findRustParser() learned — the verdict caches, the mode they were made
+// under, the scan-time disable — and stand in for the capability probes:
+// `probes` maps hashGeneration / schemaContract / journalModeContract to
+// functions of the binary path; the ones left out stay the real probes.
+export function _resetRustParserForTests({ probes: overrides = null } = {}) {
+  rustBinaryReady = false;
+  generationGateFailed = false;
+  rustParserDisabled = false;
+  rustParserBin = null;
+  verdictWalMode = null;
+  Object.assign(probes, defaultProbes, overrides || {});
 }
 
 // One-shot per process: when the SHIPPED glibc rust-parser can't run on this
