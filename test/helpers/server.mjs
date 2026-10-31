@@ -396,9 +396,11 @@ export async function startServer(opts = {}) {
   const flushStderr = () => Promise.race([procClosed, sleep(250)]);
 
   // Where the server answers: a test may bind it to one other interface
-  // (extraConfig.address); the wildcard binds answer on loopback too.
+  // (extraConfig.address) or turn SSL on (extraConfig.ssl, a certificate the
+  // test's own fetches must accept); the wildcard binds answer on loopback.
   const host = ['::', '0.0.0.0'].includes(config.address) ? '127.0.0.1' : config.address;
-  const baseUrl = `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
+  const protocol = config.ssl && config.ssl.key && config.ssl.cert ? 'https' : 'http';
+  const baseUrl = `${protocol}://${host.includes(':') ? `[${host}]` : host}:${port}`;
   let exitedEarly = null;
   proc.once('exit', code => {
     if (!exitedEarly) { exitedEarly = `server exited with code ${code}`; }

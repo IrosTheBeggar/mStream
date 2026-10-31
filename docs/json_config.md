@@ -93,7 +93,10 @@ address.
 Quick Connect and federation do not depend on it: they reach the web server
 through a listener of their own on `127.0.0.1` (a random port, plain HTTP;
 the iroh connection around it is end-to-end encrypted), whatever `address`
-and `ssl` are set to.
+and `ssl` are set to. mStream opens that listener the first time either
+feature starts and keeps it until it exits. Programs on this machine can
+reach the web server there too, as they can at the default address, and an
+`adminAccess.mode` of `localhost` treats them as local.
 
 ## Folders
 

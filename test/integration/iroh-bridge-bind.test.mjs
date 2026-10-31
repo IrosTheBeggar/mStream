@@ -1,50 +1,62 @@
 /**
- * Quick Connect on a server that does not listen on loopback: the end-to-end
- * regression for mStream#1101. The tunnel's streams used to be bridged to
- * 127.0.0.1:<port>, which a server bound to one LAN interface refuses, so the
- * pairing worked and every request through the tunnel died ("Connection
- * closed before full header was received" on the phone). They now go to the
- * loopback bridge listener, whatever the public bind is.
+ * Quick Connect on a server whose public listener cannot take a bridged
+ * stream: the end-to-end regression for mStream#1101. The tunnel's streams
+ * used to be bridged to 127.0.0.1:<port>, which a server bound to another
+ * interface refuses and a server with SSL on answers in TLS, so the pairing
+ * worked and every request through the tunnel died ("Connection closed
+ * before full header was received" on the phone). They now go to the
+ * loopback bridge listener, whatever the public bind and SSL setting.
  *
  * Real native module, real server (on Node and on Bun, which the desktop
  * bundles run), real tunnel. Skips without an @number0/iroh binary for this
- * platform or a non-loopback IPv4 here.
+ * platform; the bind case without an address other than 127.0.0.1 to listen
+ * on, the SSL case without openssl to make its certificate.
  */
 
 import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import net from 'node:net';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
+import path from 'node:path';
 import * as iroh from '../../src/state/iroh.js';
+import { compareVersions } from '../../src/util/update-shared.js';
 import { startServer } from '../helpers/server.mjs';
 import { BUN_BIN, noBun, bunVersion } from '../helpers/bun.mjs';
+import { connectOutcome, otherInterfaceAddress } from '../helpers/net.mjs';
 
 let available = true;
 try { await import('@number0/iroh'); } catch { available = false; }
 
-const lan = Object.values(os.networkInterfaces()).flat()
-  .find((i) => i && i.family === 'IPv4' && !i.internal)?.address;
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-const connectOutcome = (host, port) => new Promise((resolve) => {
-  const s = net.connect({ host, port });
-  s.once('connect', () => { s.destroy(); resolve('connected'); });
-  s.once('error', (err) => resolve(err.code));
-});
 
 // Bun before 1.4.4 ignores Connection: close (and HTTP/1.0) when a response
 // ends a tick after its request, as every mStream response does: the
 // connection stays open, so a bridged stream never ends. 1.3.14 does this;
 // 1.4.4, which CI and the bundles run, closes like Node.
-const bunKeepsConnectionsOpen = !noBun && olderThan(bunVersion, [1, 4, 4]);
+const bunKeepsConnectionsOpen = !noBun && compareVersions(bunVersion, '1.4.4') < 0;
 
-function olderThan(version, than) {
-  const parts = String(version).split('.').map((p) => parseInt(p, 10));
-  for (let i = 0; i < than.length; i++) {
-    if (parts[i] !== than[i]) { return parts[i] < than[i]; }
-  }
-  return false;
+// Whether plain HTTP to host:port gets an HTTP answer at all.
+function answersPlainHttp(host, port) {
+  return new Promise((resolve) => {
+    const req = http.get({ host, port, path: '/api/', agent: false, timeout: 5000 }, (res) => { res.resume(); resolve(true); });
+    req.on('timeout', () => req.destroy());
+    req.on('error', () => resolve(false));
+  });
+}
+
+// A throwaway self-signed certificate for the SSL case, or null.
+function selfSignedCert() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-bridge-tls-'));
+  const files = { dir, key: path.join(dir, 'key.pem'), cert: path.join(dir, 'cert.pem') };
+  const r = spawnSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-subj', '/CN=localhost',
+    '-keyout', files.key, '-out', files.cert,
+  ], { encoding: 'utf8', windowsHide: true });
+  if (r.status === 0) { return files; }
+  fs.rmSync(dir, { recursive: true, force: true });
+  return null;
 }
 
 // One HTTP response off a tunnel stream: the head, then Content-Length bytes
@@ -61,15 +73,38 @@ async function readResponse(recv) {
   }
 }
 
-const skip = !available ? 'no @number0/iroh binary for this platform'
-  : !lan ? 'no non-loopback IPv4 on this machine' : false;
+const lan = available ? await otherInterfaceAddress() : null;
+const tls = available ? selfSignedCert() : null;
+if (tls) {
+  // The harness's readiness check and the status reads below fetch over
+  // HTTPS from that server, whose certificate nothing here can vouch for.
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+  after(() => fs.rmSync(tls.dir, { recursive: true, force: true }));
+}
 
-function scenario(execPath) {
+// Each way a public listener turns a bridged stream away, with the #1101
+// precondition that shows it does.
+const CASES = [
+  {
+    name: 'bound to an interface other than 127.0.0.1',
+    skip: !lan && 'no address other than 127.0.0.1 to listen on',
+    extraConfig: { address: lan },
+    precondition: async (port) => assert.equal(await connectOutcome('127.0.0.1', port), 'ECONNREFUSED'),
+  },
+  {
+    name: 'with SSL on',
+    skip: !tls && 'no openssl to make a certificate with',
+    extraConfig: tls && { ssl: { key: tls.key, cert: tls.cert } },
+    precondition: async (port) => assert.equal(await answersPlainHttp('127.0.0.1', port), false),
+  },
+];
+
+function scenario(execPath, { extraConfig, precondition }) {
   let server;
   before(async () => {
     server = await startServer({
       dlnaMode: 'disabled', waitForScan: false, execPath,
-      extraConfig: { address: lan, iroh: { enabled: true } },
+      extraConfig: { ...extraConfig, iroh: { enabled: true } },
     });
   });
   after(async () => { if (server) { await server.stop(); } });
@@ -84,8 +119,8 @@ function scenario(execPath) {
     }
   }
 
-  test('nothing answers on 127.0.0.1:<port>, and the bridge check passes anyway', async () => {
-    assert.equal(await connectOutcome('127.0.0.1', server.port), 'ECONNREFUSED', 'the #1101 precondition');
+  test('the public port turns a bridged stream away, and the bridge check passes anyway', async () => {
+    await precondition(server.port);
     const s = await tunnelStatus();
     assert.equal(s.bridgeOk, true, s.bridgeError);
   });
@@ -151,7 +186,11 @@ function scenario(execPath) {
   });
 }
 
-describe('Quick Connect on a server bound to one LAN interface', { skip }, () => {
-  describe('node', () => scenario(process.execPath));
-  describe('bun', { skip: noBun }, () => scenario(BUN_BIN));
+describe('Quick Connect on a server that turns bridged streams away', { skip: !available && 'no @number0/iroh binary for this platform' }, () => {
+  for (const c of CASES) {
+    describe(c.name, { skip: c.skip }, () => {
+      describe('node', () => scenario(process.execPath, c));
+      describe('bun', { skip: noBun }, () => scenario(BUN_BIN, c));
+    });
+  }
 });

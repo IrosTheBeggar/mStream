@@ -14,10 +14,10 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
-import os from 'node:os';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
 import { listenBridge } from '../../src/util/bridge-listener.js';
+import { connectOutcome, otherInterfaceAddress } from '../helpers/net.mjs';
 
 const listen = (srv, address) => new Promise((resolve, reject) => {
   srv.once('error', reject);
@@ -34,11 +34,13 @@ function get(port, path) {
   });
 }
 
-function connectOutcome(host, port) {
-  return new Promise((resolve) => {
-    const s = net.connect({ host, port });
-    s.once('connect', () => { s.destroy(); resolve('connected'); });
-    s.once('error', (err) => resolve(err.code));
+// The first chunk a raw request gets back, as text ('' if the socket closes).
+function rawRequest(port, text) {
+  return new Promise((resolve, reject) => {
+    const s = net.connect({ host: '127.0.0.1', port }, () => s.write(text));
+    s.once('data', (chunk) => { s.destroy(); resolve(String(chunk)); });
+    s.once('end', () => resolve(''));
+    s.once('error', reject);
   });
 }
 
@@ -49,16 +51,11 @@ function pingApp(name = 'public') {
   return app;
 }
 
-// A non-loopback address this machine can listen on, else a second loopback
-// address (Linux and Windows route all of 127/8 locally; macOS does not).
 async function otherInterfaceServer(app) {
-  const lan = Object.values(os.networkInterfaces()).flat()
-    .filter((i) => i && i.family === 'IPv4' && !i.internal).map((i) => i.address);
-  for (const address of [...lan, '127.0.0.2']) {
-    const srv = http.createServer(app);
-    try { return { srv, address, port: await listen(srv, address) }; } catch { /* next */ }
-  }
-  return null;
+  const address = await otherInterfaceAddress();
+  if (!address) { return null; }
+  const srv = http.createServer(app);
+  return { srv, address, port: await listen(srv, address) };
 }
 
 const stub = (req, res) => { res.statusCode = 503; res.end('mStream is restarting'); };
@@ -110,6 +107,20 @@ describe('bridge listener (real sockets)', () => {
     ws.close();
     wss.close();
     assert.equal(msg, 'hello /?code=abc');
+  });
+
+  test('an upgrade nothing can take gets the stub\'s 503, not a dropped socket', async () => {
+    const upgrade = [
+      'GET /?code=abc HTTP/1.1', 'Host: bridge', 'Upgrade: websocket', 'Connection: Upgrade',
+      'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version: 13', '', '',
+    ].join('\r\n');
+    const pub = track(http.createServer(pingApp()));
+    const bridge = track(await listenBridge({ publicServer: () => pub, onConnection: () => {}, whileDown: stub }));
+    const port = bridge.address().port;
+    assert.match(await rawRequest(port, upgrade), /^HTTP\/1\.1 503 /, 'public listener not listening');
+    await listen(pub, '127.0.0.1');
+    // As between remoteApi.stop() and its restart: no ws server attached.
+    assert.match(await rawRequest(port, upgrade), /^HTTP\/1\.1 503 /, 'nothing attached for upgrades');
   });
 
   test('it serves what the public listener serves now: the stub, a swapped app, a replaced listener', async () => {

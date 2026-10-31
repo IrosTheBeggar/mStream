@@ -311,6 +311,17 @@ const ADMINDATA = (() => {
     module.federationParamsUpdated.ts = Date.now();
   }
 
+  // An endpoint probes its bridge a moment after it starts, and longer when
+  // the probe retries, so a status fetched right after a start says neither
+  // way yet: fetch it again until it does.
+  module.untilBridgeChecked = async (fetchStatus, params) => {
+    for (const ms of [1000, 2000, 4000, 8000, 16000]) {
+      if (!(params.running && params.bridgeOk === null)) { return; }
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      await fetchStatus();
+    }
+  }
+
   module.getFederationKeys = async () => {
     try {
       const res = await API.axios({
@@ -3938,7 +3949,7 @@ const federationView = Vue.component('federation-view', {
   },
   methods: {
     refresh() {
-      ADMINDATA.getFederation();
+      ADMINDATA.getFederation().then(() => ADMINDATA.untilBridgeChecked(ADMINDATA.getFederation, this.fed));
       ADMINDATA.getFederationKeys();
       ADMINDATA.getFederationPeers();
       ADMINDATA.getFederationRequests();
@@ -3949,6 +3960,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation`, data: { enabled: !this.fed.enabled } });
         await ADMINDATA.getFederation();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getFederation, this.fed);
         await ADMINDATA.getFederationKeys(); // tickets appear/disappear with the endpoint
         if (this.fed.enabled && this.fed.available === false) {
           iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the federation endpoint could not start.' });
@@ -8850,6 +8862,7 @@ const irohView = Vue.component('iroh-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh`, data: { enabled: !this.iroh.enabled } });
         await ADMINDATA.getIroh();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh);
         if (this.iroh.enabled && this.iroh.available === false) {
           iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the tunnel could not start.' });
         }
@@ -8863,6 +8876,7 @@ const irohView = Vue.component('iroh-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh/rotate-secret`, data: {} });
         await ADMINDATA.getIroh();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh);
         iziToast.success({ title: 'Rotated', message: 'New secret in effect — previously-shared QR codes no longer work.' });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to rotate secret.' });
@@ -8870,7 +8884,7 @@ const irohView = Vue.component('iroh-view', {
       this.rotatePending = false;
     },
   },
-  mounted() { ADMINDATA.getIroh(); },
+  mounted() { ADMINDATA.getIroh().then(() => ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh)); },
   template: `
     <div v-if="irohTS.ts === 0" class="row">
       <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>

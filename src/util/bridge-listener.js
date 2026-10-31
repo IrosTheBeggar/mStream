@@ -13,6 +13,9 @@
 import http from 'node:http';
 import winston from 'winston';
 
+// What whileDown says (the reboot stub), for an upgrade's raw socket.
+const DOWN_RESPONSE = 'HTTP/1.1 503 Service Unavailable\r\nRetry-After: 1\r\nConnection: close\r\nContent-Length: 0\r\n\r\n';
+
 // Listen on 127.0.0.1:<ephemeral>. `publicServer()` returns the current
 // public listener, `onConnection(socket)` sees every accepted socket, and
 // `whileDown(req, res)` answers while the public listener is not listening
@@ -27,9 +30,11 @@ export function listenBridge({ publicServer, onConnection, whileDown }) {
   });
   srv.on('upgrade', (req, socket, head) => {
     const pub = publicServer();
-    // emit() is false when nothing there takes upgrades: drop the socket,
-    // as a server without an 'upgrade' listener does.
-    if (!(pub && pub.listening && pub.emit('upgrade', req, socket, head))) { socket.destroy(); }
+    // emit() is false when nothing there takes upgrades: only between
+    // remoteApi.stop() and its restart in a reboot, when the public listener
+    // hands such a request to the reboot stub. Say what the stub says, as
+    // whileDown does while it is not listening.
+    if (!(pub && pub.listening && pub.emit('upgrade', req, socket, head))) { socket.end(DOWN_RESPONSE); }
   });
   return new Promise((resolve, reject) => {
     srv.once('error', reject);

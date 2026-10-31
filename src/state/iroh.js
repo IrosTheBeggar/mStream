@@ -193,7 +193,7 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
     try { await stopping; } catch (_err) { /* stop() is best-effort */ }
   }
   if (endpoint) { return { endpointId: endpointIdStr }; }
-  const target = targetPort ? { targetHost, targetPort } : getBridgeTarget();
+  const target = targetPort ? { targetHost, targetPort } : await getBridgeTarget();
   if (!target) { throw new Error('iroh.start: targetPort is required (no bridge target registered)'); }
   if (!connectSecret) { throw new Error('iroh.start: connectSecret is required'); }
 

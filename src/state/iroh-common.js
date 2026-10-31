@@ -272,38 +272,57 @@ function warnConnectFailed(where, err) {
 // The bridge target (mStream#1101)
 // ---------------------------------------------------------------------------
 
-// Where accepted streams go when start() is not given a target: the loopback
-// bridge listener server.js opens for them. Not the public listener, which
-// may be bound to another interface or speak TLS.
+// Where accepted streams go when start() is not given a target: server.js
+// registers a function resolving to { targetHost, targetPort } of the
+// loopback bridge listener, which it opens on first use. Not the public
+// listener, which may be bound to another interface or speak TLS.
 let bridgeTarget = null;
-export function setBridgeTarget(targetHost, targetPort) { bridgeTarget = { targetHost, targetPort }; }
-export function getBridgeTarget() { return bridgeTarget; }
+export function setBridgeTarget(resolve) { bridgeTarget = resolve; }
+export function getBridgeTarget() { return bridgeTarget ? bridgeTarget() : Promise.resolve(null); }
 
 // One HEAD / to a bridge target, bounded: any HTTP answer means bridged
 // streams reach the web server there; a refusal, a reset or silence is what
 // a tunnel client gets instead. `/` sits in front of the auth wall, so the
-// probe needs no token and logs no rejection.
+// probe needs no token and logs no rejection. Never rejects.
 export function probeBackend({ targetHost, targetPort }, timeoutMs = 5000) {
   return new Promise((resolve) => {
-    const req = http.request({ host: targetHost, port: targetPort, method: 'HEAD', path: '/', agent: false, timeout: timeoutMs }, (res) => {
-      res.resume();
-      resolve({ ok: true, error: null });
-    });
+    const failed = (why) => resolve({ ok: false, error: `${why} (${targetHost}:${targetPort})` });
+    let req;
+    try {
+      req = http.request({ host: targetHost, port: targetPort, method: 'HEAD', path: '/', agent: false, timeout: timeoutMs }, (res) => {
+        res.resume();
+        resolve({ ok: true, error: null });
+      });
+    } catch (err) {
+      failed(err.message); // a bad port throws before any socket exists
+      return;
+    }
     req.on('timeout', () => req.destroy(new Error(`no answer within ${timeoutMs / 1000}s`)));
     req.on('error', (err) => {
-      // HPE_*: the parser choked on the reply, which is what TLS answering
-      // plain HTTP looks like. A failed connect's message names the address.
-      const why = String(err.code).startsWith('HPE_') ? 'the reply was not HTTP (TLS on that port?)' : err.message;
-      resolve({ ok: false, error: err.syscall === 'connect' ? why : `${why} (${targetHost}:${targetPort})` });
+      // TLS answering plain HTTP: an alert the parser chokes on (HPE_*) or
+      // a bare hang-up (ECONNRESET), depending on the OpenSSL build. A
+      // failed connect's message names the address already.
+      if (err.code === 'ECONNRESET' || String(err.code).startsWith('HPE_')) {
+        failed('no plain-HTTP answer (TLS on that port?)');
+      } else if (err.syscall === 'connect') {
+        resolve({ ok: false, error: err.message });
+      } else {
+        failed(err.message);
+      }
     });
     req.end();
   });
 }
 
+// A failed probe is tried again after each of these waits: an event loop
+// stalled past the probe's timeout right after start() (a slow box at boot)
+// must not report a working bridge as broken.
+const PROBE_RETRY_MS = [1000, 2000];
+
 // An endpoint's view of its bridge, for its admin status route: run() probes
 // after a start, clear() forgets on stop, get() reads { bridgeOk, bridgeError }
-// (both null until the probe answers). A probe that lands after a newer
-// run() or a clear() is dropped.
+// (both null until the probe answers, retries included). A probe that lands
+// after a newer run() or a clear() is dropped.
 export function createBridgeCheck(tag) {
   let result = null;
   let runs = 0;
@@ -311,11 +330,16 @@ export function createBridgeCheck(tag) {
     run(target) {
       const mine = ++runs;
       result = null;
-      probeBackend(target).then((r) => {
+      const attempt = (retries) => probeBackend(target).then((r) => {
         if (mine !== runs) { return; }
+        if (!r.ok && retries.length > 0) {
+          setTimeout(() => { if (mine === runs) { attempt(retries.slice(1)); } }, retries[0]).unref();
+          return;
+        }
         result = r;
         if (!r.ok) { winston.warn(`${tag} is up but cannot reach the web server: ${r.error}`); }
       });
+      attempt(PROBE_RETRY_MS);
     },
     clear() { runs += 1; result = null; },
     get() { return { bridgeOk: result ? result.ok : null, bridgeError: result ? result.error : null }; },
