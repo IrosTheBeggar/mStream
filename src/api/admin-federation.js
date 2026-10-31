@@ -89,12 +89,14 @@ export function register(mstream) {
     let available = true;
     let endpointId = null;
     let relayUrl = null;
+    let bridge = { bridgeOk: null, bridgeError: null };
     try {
       const federation = await import('../state/federation.js');
       endpointId = federation.getEndpointId();
       if (endpointId) {
         const addr = federation.getEndpointAddr();
         relayUrl = addr ? addr.relayUrl() : null;
+        bridge = federation.getBridgeCheck();
       }
     } catch (_err) {
       available = false; // native binary not present on this platform
@@ -102,6 +104,9 @@ export function register(mstream) {
     res.json({
       enabled, available, running: endpointId !== null, endpointId,
       online: relayUrl !== null, relayUrl,
+      // Whether the web server answered the endpoint's probe of its bridge
+      // target (null until it has) — peers' requests take that hop.
+      ...bridge,
       // What the mint dialog pre-fills; per-key values live on the key rows.
       limitDefaults: config.program.federation.limits,
       // The federation-requests inbox (V67): whether discovery peers may
@@ -125,7 +130,6 @@ export function register(mstream) {
       const federation = await import('../state/federation.js');
       if (enabled) {
         await federation.start({
-          targetPort: config.program.port,
           secretKey: config.program.federation.secretKey,
         });
       } else {

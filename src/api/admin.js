@@ -143,6 +143,8 @@ export function setup(mstream) {
   // composite QR ticket, which carries the connect secret — hence admin-only.
   // The tunnel is independent of the HTTP server, so enable/disable and secret
   // rotation take effect LIVE (start/stop the endpoint) without a reboot.
+  // bridgeOk/bridgeError: whether the web server answered the tunnel's own
+  // probe of its bridge target (null until it has).
 
   mstream.get('/api/v1/admin/iroh', async (req, res) => {
     const enabled = config.program.iroh.enabled === true;
@@ -150,6 +152,7 @@ export function setup(mstream) {
     let endpointId = null;
     let relayUrl = null;
     let qr = null;
+    let bridge = { bridgeOk: null, bridgeError: null };
     try {
       const iroh = await import('../state/iroh.js');
       endpointId = iroh.getEndpointId();
@@ -157,11 +160,12 @@ export function setup(mstream) {
         qr = iroh.getTicket();
         const addr = iroh.getEndpointAddr();
         relayUrl = addr ? addr.relayUrl() : null;
+        bridge = iroh.getBridgeCheck();
       }
     } catch (_err) {
       available = false; // native binary not present on this platform
     }
-    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr });
+    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr, ...bridge });
   });
 
   mstream.post('/api/v1/admin/iroh', async (req, res) => {
@@ -179,7 +183,6 @@ export function setup(mstream) {
       const iroh = await import('../state/iroh.js');
       if (enabled) {
         await iroh.start({
-          targetPort: config.program.port,
           secretKey: config.program.iroh.secretKey,
           connectSecret: config.program.iroh.connectSecret,
         });
@@ -208,7 +211,6 @@ export function setup(mstream) {
       if (config.program.iroh.enabled) {
         await iroh.stop();
         await iroh.start({
-          targetPort: config.program.port,
           secretKey: config.program.iroh.secretKey,
           connectSecret: config.program.iroh.connectSecret,
         });
@@ -958,7 +960,6 @@ export function setup(mstream) {
 
         const federation = await import('../state/federation.js');
         await federation.start({
-          targetPort: config.program.port,
           secretKey: config.program.federation.secretKey,
         });
         const engine = await import('../state/federation-requests.js');

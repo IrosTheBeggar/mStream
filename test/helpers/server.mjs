@@ -395,7 +395,10 @@ export async function startServer(opts = {}) {
   const procClosed = new Promise(r => proc.once('close', r));
   const flushStderr = () => Promise.race([procClosed, sleep(250)]);
 
-  const baseUrl = `http://127.0.0.1:${port}`;
+  // Where the server answers: a test may bind it to one other interface
+  // (extraConfig.address); the wildcard binds answer on loopback too.
+  const host = ['::', '0.0.0.0'].includes(config.address) ? '127.0.0.1' : config.address;
+  const baseUrl = `http://${host.includes(':') ? `[${host}]` : host}:${port}`;
   let exitedEarly = null;
   proc.once('exit', code => {
     if (!exitedEarly) { exitedEarly = `server exited with code ${code}`; }

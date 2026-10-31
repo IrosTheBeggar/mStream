@@ -7,7 +7,9 @@
 // Shape ("iroh as a transport tunnel"): we DON'T touch mStream's existing
 // HTTP/DLNA stack. We bind an Iroh endpoint that accepts QUIC
 // connections on a custom ALPN and proxies each bi-directional stream to the
-// local mStream HTTP server on 127.0.0.1:<port>. One QUIC stream per client TCP
+// loopback bridge listener server.js opens for it: plain HTTP on 127.0.0.1,
+// whatever address and TLS setting the public listener has
+// (util/bridge-listener.js, mStream#1101). One QUIC stream per client TCP
 // connection, so full HTTP semantics (keep-alive, range/seek, parallel
 // requests) are preserved — a plain TCP-over-QUIC tunnel.
 //
@@ -41,7 +43,8 @@ import {
   delay,
   bridgeStreamToBackend,
   buildEnvelope,
-  parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
+  parseEnvelope, describeAddr, handshakeTrace, ticketAddr,
+  getBridgeTarget, createBridgeCheck } from './iroh-common.js';
 
 // Shared plumbing re-exported for existing consumers.
 export {
@@ -69,6 +72,7 @@ let connectSecretBuf = null; // Buffer the handshake compares against
 // still-closing endpoint, returned as a no-op, and the tunnel stayed dead
 // until the next process restart (same shape discovery-p2p-stack.js fixed).
 let stopping = null;
+const bridgeCheck = createBridgeCheck('[iroh] tunnel');
 
 // ---------------------------------------------------------------------------
 // Composite ticket (what the QR encodes): EndpointTicket + connectSecret.
@@ -177,8 +181,9 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
 }
 
 // Start the tunnel.
-//   targetPort    (required) local port to proxy accepted streams to (mStream).
-//   targetHost    backend host, default loopback.
+//   targetPort    local port to proxy accepted streams to; default: the bridge
+//                 target server.js registers (iroh-common setBridgeTarget).
+//   targetHost    backend host for targetPort, default loopback.
 //   secretKey     32-byte endpoint identity (Buffer/array or base64 string).
 //   connectSecret shared pipe secret (Buffer or base64 string) the client must present.
 //   awaitOnline   wait (bounded) for a home relay so the ticket has relay info (default true).
@@ -188,7 +193,8 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
     try { await stopping; } catch (_err) { /* stop() is best-effort */ }
   }
   if (endpoint) { return { endpointId: endpointIdStr }; }
-  if (!targetPort) { throw new Error('iroh.start: targetPort is required'); }
+  const target = targetPort ? { targetHost, targetPort } : getBridgeTarget();
+  if (!target) { throw new Error('iroh.start: targetPort is required (no bridge target registered)'); }
   if (!connectSecret) { throw new Error('iroh.start: connectSecret is required'); }
 
   irohMod = await loadIroh();
@@ -211,13 +217,17 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, c
   // nothing to serve, and the reboot's own start() brings the tunnel back.
   if (endpoint !== ep) { return { endpointId: null }; }
 
-  runAcceptLoop(ep, targetHost, targetPort); // detached; ends when the endpoint closes
-  winston.info(`[iroh] tunnel up — endpointId=${endpointIdStr} -> ${targetHost}:${targetPort}`);
+  runAcceptLoop(ep, target.targetHost, target.targetPort); // detached; ends when the endpoint closes
+  winston.info(`[iroh] tunnel up — endpointId=${endpointIdStr} -> ${target.targetHost}:${target.targetPort}`);
+  bridgeCheck.run(target);
   return { endpointId: endpointIdStr };
 }
 
 // The base32 EndpointId string, or null if not started.
 export function getEndpointId() { return endpointIdStr; }
+
+// { bridgeOk, bridgeError } of the probe start() ran against its target.
+export function getBridgeCheck() { return bridgeCheck.get(); }
 
 // The EndpointAddr (id + relay + direct addresses), or null if not started.
 export function getEndpointAddr() {
@@ -244,6 +254,7 @@ export async function stop() {
   endpoint = null;
   endpointIdStr = null;
   connectSecretBuf = null;
+  bridgeCheck.clear();
   stopping = (async () => {
     try { await ep.close(); } catch (_err) { /* best effort */ }
   })();
