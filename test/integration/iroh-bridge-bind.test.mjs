@@ -142,6 +142,25 @@ function scenario(execPath, { extraConfig, precondition }) {
     }
   });
 
+  // The phone app's loopback proxy (the Rust shim from mstream-iroh-tunnel)
+  // adds `__lt=<token>` to every request URL and forwards the bytes as they
+  // are. This route's query schema rejects unknown keys, so through the
+  // tunnel it answered 400 ("__lt" is not allowed) until the bridge listener
+  // dropped the parameter.
+  test("a request carrying the tunnel client's __lt parameter is answered by a route with a strict query schema", { timeout: 60_000 }, async () => {
+    const { qr } = await tunnelStatus();
+    const { client, conn } = await iroh.connectTunnel(qr, { awaitOnline: false });
+    try {
+      const bi = await conn.openBi();
+      await bi.send.writeAll(Array.from(Buffer.from('GET /api/v1/discovery/plugin-jobs?__lt=x HTTP/1.0\r\n\r\n')));
+      const resp = await readResponse(bi.recv);
+      assert.match(resp, /^HTTP\/1\.1 200 /);
+      assert.match(resp, /"jobs":\[/);
+    } finally {
+      await client.close();
+    }
+  });
+
   test('a WebSocket upgrade through the tunnel reaches the /remote socket', { timeout: 60_000 }, async () => {
     const { qr } = await tunnelStatus();
     const { client, conn } = await iroh.connectTunnel(qr, { awaitOnline: false });
