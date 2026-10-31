@@ -358,7 +358,7 @@ const MSTREAMPLAYER = (() => {
     if (autodjLoaded
         && AUTODJ.state.djMoodEnabled
         && MSTREAMAPI.currentServer.moodFilters === true) {
-      const moods = AUTODJ.cleanMoods(AUTODJ.state.djMoods);
+      const moods = AUTODJ.cleanMoods(AUTODJ.state.djMoods, AUTODJ.state.djMoodLevel);
       if (moods) { body.moods = moods; }
     }
 

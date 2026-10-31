@@ -70,7 +70,7 @@ const RENDERERS = ['escapeHtml', 'renderAlbum', 'renderArtist', 'renderGenre',
   'renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderPlaylist'];
 
-const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodFilterBody', 'showMoodFilters', 'syncMoodStrict', 'songListMoods', 'strongFirst', 'closeMatchesDivider',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'showMoodFilters', 'songListMoods', 'moodSorted',
   'getFileExplorerPath', 'printdir',
   'getAllGenres', 'getGenreSongs', 'getAllAlbums', 'getArtistsAlbums',
   'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
@@ -154,6 +154,7 @@ function makeSandbox(api) {
       setPeerContext(p) { peerContext = p; },
       html: () => __els.get('filelist').innerHTML,
       filter: (value) => { runLocalSearch({ value }); return __els.get('filelist').innerHTML; },
+      sortBy(list, by) { MOODS.sort[list] = by; },
     };
   `;
 
@@ -444,24 +445,31 @@ describe('runLocalSearch — on a federated peer', () => {
 });
 
 describe('runLocalSearch — a mood-filtered song list', () => {
-  // As the server answers a filtered Rated: rating order, each song's fit.
-  const FITTED = [
-    { filepath: 'music/Return.flac', metadata: { title: 'Return', artist: 'Icarus', rating: 9 }, moodFit: 'close' },
-    { filepath: 'music/Static.flac', metadata: { title: 'Static', artist: 'Vosto', rating: 8 }, moodFit: 'strong' },
-    { filepath: 'music/Neon.flac', metadata: { title: 'Neon', artist: 'Vosto', rating: 7 }, moodFit: 'close' },
+  // As the server answers a filtered Rated: rating order, each song's match.
+  const MATCHED = [
+    { filepath: 'music/Return.flac', metadata: { title: 'Return', artist: 'Icarus', rating: 9 }, moodMatch: 0.6 },
+    { filepath: 'music/Static.flac', metadata: { title: 'Static', artist: 'Vosto', rating: 8 }, moodMatch: 0.8 },
+    { filepath: 'music/Neon.flac', metadata: { title: 'Neon', artist: 'Vosto', rating: 7 }, moodMatch: 0.55 },
   ];
   // Each row's song (its path, escaped, appears on the row and its
-  // buttons: one per row), and '—' for the divider.
+  // buttons: one per row).
   const drawn = (html) => html.split(/(?=<li )/)
-    .map((row) => (/mood-fit-divider/.test(row) ? '—' : (row.match(/(Return|Static|Neon)\.flac/) ?? [])[1]))
+    .map((row) => (row.match(/(Return|Static|Neon)\.flac/) ?? [])[1])
     .filter(Boolean);
 
-  test('the close matches keep their divider, under the strong fits the filter kept', async () => {
-    const S = makeSandbox({ getRated: canned(FITTED) });
+  test('its own order by default, and the search keeps it', async () => {
+    const S = makeSandbox({ getRated: canned(MATCHED) });
     await S.getRatedSongs();
-    assert.deepEqual(drawn(S.html()), ['Static', '—', 'Return', 'Neon']);
-    assert.deepEqual(drawn(S.filter('vosto')), ['Static', '—', 'Neon']);
-    assert.deepEqual(drawn(S.filter('icarus')), ['—', 'Return'], 'no strong fit kept: the divider leads');
-    assert.deepEqual(drawn(S.filter('static')), ['Static']);
+    assert.deepEqual(drawn(S.html()), ['Return', 'Static', 'Neon']);
+    assert.deepEqual(drawn(S.filter('vosto')), ['Static', 'Neon']);
+  });
+
+  test('Sort by match: best match first, and the search keeps that order', async () => {
+    const S = makeSandbox({ getRated: canned(MATCHED) });
+    S.sortBy('rated', 'match');
+    await S.getRatedSongs();
+    assert.deepEqual(drawn(S.html()), ['Static', 'Return', 'Neon']);
+    assert.deepEqual(drawn(S.filter('vosto')), ['Static', 'Neon']);
+    assert.deepEqual(drawn(S.filter('icarus')), ['Return']);
   });
 });

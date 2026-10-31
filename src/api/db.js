@@ -9,7 +9,7 @@ import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
-import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodFits } from './mood-filter.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -229,18 +229,19 @@ export function libraryFilter(user, ignoreVPaths) {
 // filter by; a client shows its filters on that key. The song lists
 // (rated, recent/added) take the same filter but answer bare arrays, with
 // no room for the echo: clients show theirs on server-info's `moodFilters`.
-// A filtered song list's songs each carry their fit (withMoodFits).
+// A filtered song list's songs each carry their match (withMoodMatches).
 function browseMoods(req) {
   return applicableMoods(parseMoods(req.body?.moods));
 }
 
-// A filtered song list's songs, each with `moodFit` — 'strong' or 'close'
-// (mood-filter.js moodFits) — in the list's own order: the client groups
-// them. `songs[i]` renders `ids[i]`. Unfiltered, the songs as they are.
-function withMoodFits(moods, ids, songs) {
+// A filtered song list's songs, each with `moodMatch` — 0..1, how surely
+// it fits the filter (mood-filter.js moodMatches) — in the list's own
+// order: a client's Sort by match reorders them. `songs[i]` renders
+// `ids[i]`. Unfiltered, the songs as they are.
+function withMoodMatches(moods, ids, songs) {
   if (!moods) { return songs; }
-  const fit = moodFits(db.getDB(), moods, ids);
-  return songs.map((song, i) => ({ ...song, moodFit: fit(ids[i]) }));
+  const match = moodMatches(db.getDB(), moods, ids);
+  return songs.map((song, i) => ({ ...song, moodMatch: match.get(ids[i]) ?? null }));
 }
 
 // Base query: tracks joined with artists, albums, library, optionally
@@ -1240,7 +1241,7 @@ export function setup(mstream) {
     const rendered = renderMetadataByIds(ids, user);
     // A row that vanished since the query is dropped, its id with it.
     const kept = ids.filter((id) => rendered.has(id));
-    return withMoodFits(moods, kept, kept.map((id) => rendered.get(id)));
+    return withMoodMatches(moods, kept, kept.map((id) => rendered.get(id)));
   }
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
@@ -1325,7 +1326,7 @@ export function setup(mstream) {
       LIMIT ?
     `).all(...allParams, req.body.limit);
 
-    res.json(withMoodFits(moods, rows.map((r) => r.id), enrichRows(d(), rows).map(renderMetadataObj)));
+    res.json(withMoodMatches(moods, rows.map((r) => r.id), enrichRows(d(), rows).map(renderMetadataObj)));
   });
 
   // ── Recently Played ─────────────────────────────────────────────────────

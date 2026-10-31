@@ -7,7 +7,7 @@
  *   - the random-songs body carries `moods` only while the panel's toggle
  *     is on, something is set, and the ping says this server can filter —
  *     the route's schema is strict, so any other server would 400 every
- *     pick;
+ *     pick — with Strict's or Loose's `threshold` beside it;
  *   - a cross-server pick drops an answer that came back without the
  *     filter's echo (a server with no mood scores picked unfiltered), even
  *     when its song is the closest match — and keeps it when nothing was
@@ -122,6 +122,18 @@ describe('Auto DJ: the mood filter on the wire', () => {
 
     AUTODJ.setState({ djMoodEnabled: true, djMoods: {} });
     assert.equal('moods' in (await P.build()).body, false, 'nothing set');
+  });
+
+  test("Strict and Loose ride along as the filter's threshold; Standard sends none", async () => {
+    const { P } = makePlayer();
+    AUTODJ.setState({ djMoodEnabled: true, djMoods: relaxed, djMoodLevel: 'strict' });
+    assert.deepEqual((await P.build()).body.moods, { energy: 'relaxed', threshold: 0.7 });
+    AUTODJ.setState({ djMoodLevel: 'loose' });
+    assert.deepEqual((await P.build()).body.moods, { energy: 'relaxed', threshold: 0.3 });
+    AUTODJ.setState({ djMoodLevel: 'standard' });
+    assert.deepEqual((await P.build()).body.moods, { energy: 'relaxed' });
+    AUTODJ.setState({ djMoods: {}, djMoodLevel: 'strict' });
+    assert.equal('moods' in (await P.build()).body, false, 'a level alone filters nothing');
   });
 });
 

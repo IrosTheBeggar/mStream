@@ -2003,61 +2003,27 @@ select {
 }
 .mood-clear:focus { background-color: transparent; }
 .mood-clear:hover { color: #dfe3ea; }
-/* Strict (m.js syncMoodStrict, discoveryHeadHtml): beside the Filters
-   button while a filter is set, orange while pressed. */
-.mood-strict-btn {
-  flex-shrink: 0;
-  align-self: center;
-  height: 30px;
-  margin: 0 4px;
-  padding: 0 13px;
-  border: 1px solid #444c56;
-  border-radius: 15px;
-  background: transparent;
-  color: #d0d3da;
+/* A song list's Sort (m.js moodSortHtml): its label, then the segments;
+   Match rests, greyed, while no mood is set. Scoped: Auto DJ's row
+   disables its pressed segments too, and those keep their colours. */
+.mood-sort .mood-seg-btn:disabled { color: #5c636e; cursor: default; }
+.mood-sort .mood-seg-btn:disabled:hover { background-color: transparent; }
+.mood-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.mood-sort-label {
+  color: #8a919e;
   font-size: 13px;
-  line-height: 1;
-  white-space: nowrap;
-  cursor: pointer;
 }
-.mood-strict-btn:focus { background-color: transparent; }
-.mood-strict-btn:hover:not([aria-pressed="true"]) { background-color: #2a2f37; }
-.mood-strict-btn[aria-pressed="true"], .mood-strict-btn[aria-pressed="true"]:focus {
-  background-color: #fa832b;
-  border-color: #fa832b;
-  color: #111;
-  font-weight: 600;
-}
-.dpage-bar-r .mood-strict-btn { margin: 0; }
-.mood-filter-btn:focus-visible, .mood-seg-btn:focus-visible, .mood-chip:focus-visible, .mood-clear:focus-visible,
-.mood-strict-btn:focus-visible {
+.mood-filter-btn:focus-visible, .mood-seg-btn:focus-visible, .mood-chip:focus-visible, .mood-clear:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: -2px;
 }
 @media (pointer: coarse) {
   .mood-filter-btn { width: 44px; height: 44px; }
   .mood-seg-btn, .mood-chip, .mood-clear { height: 44px; }
-  .mood-strict-btn { height: 44px; border-radius: 22px; }
-}
-/* Over a filtered song list's close matches (m.js closeMatchesDivider);
-   the strong fits run above it. */
-.mood-fit-divider {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 10px 8px;
-  color: #8a919e;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 1.2px;
-  text-transform: uppercase;
-  list-style: none;
-}
-.mood-fit-divider::after {
-  content: '';
-  flex: 1 1 auto;
-  height: 1px;
-  background: #444c56;
 }
 /* Auto DJ's Mood row: the same segments and chips, laid out in the row
    like its other filters' controls; off while the row's toggle is. */

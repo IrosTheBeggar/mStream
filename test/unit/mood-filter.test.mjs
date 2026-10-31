@@ -11,7 +11,7 @@ import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 import { DatabaseSync } from 'node:sqlite';
 import {
-  MOOD_THRESHOLD, moodFits, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
+  MOOD_THRESHOLD, moodMatches, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
 } from '../../src/api/mood-filter.js';
 import { EMBEDDING_MODELS } from '../../src/db/discovery-features-lib.js';
 import { mergePeerAnswers } from '../../src/api/discovery-federation.js';
@@ -82,19 +82,19 @@ describe('mood filter: what a song matches', () => {
     assert.deepEqual(match({}), Object.keys(SONGS).sort());
   });
 
-  describe('strict', () => {
+  describe('threshold', () => {
     // mild is neutral, neutral and vocals — none of them strongly.
-    const { match: strict } = songsDb({ ...SONGS, mild: [0.4, 0.2, 0.4, 0.2, 0.4, 0.0, 0.0, 0.0] });
-    const both = (moods) => [strict(moods), strict({ ...moods, strict: true })];
+    const { match: at } = songsDb({ ...SONGS, mild: [0.4, 0.2, 0.4, 0.2, 0.4, 0.0, 0.0, 0.0] });
+    const both = (moods) => [at(moods), at({ ...moods, threshold: 0.7 })];
 
-    test('a head that must hold holds at 0.7', () => {
+    test('a head that must hold holds at the threshold — 0.7, a client\'s Strict', () => {
       assert.deepEqual(both({ energy: 'relaxed' }), [['blue', 'calm', 'gap', 'tie'], ['blue', 'calm', 'gap']]);
       assert.deepEqual(both({ valence: 'happy' }), [['bright', 'tie'], ['bright']]);
       assert.deepEqual(both({ voice: 'instrumental' }), [['blue', 'calm', 'gap', 'tie'], ['blue', 'calm', 'gap']]);
       assert.deepEqual(both({ tags: ['acoustic'] }), [['blue', 'torn'], ['blue']]);
     });
 
-    test('one that must not hold, at 0.3 or less', () => {
+    test('one that must not hold stays under its mirror — 0.3', () => {
       assert.deepEqual(both({ valence: 'neutral' }), [['calm', 'flat', 'mild'], ['calm', 'flat']]);
       assert.deepEqual(both({ energy: 'neutral' }), [['flat', 'mild'], ['flat']]);
       assert.deepEqual(both({ voice: 'vocals' }), [['bright', 'flat', 'mild', 'torn'], ['bright', 'torn']]);
@@ -104,18 +104,49 @@ describe('mood filter: what a song matches', () => {
       assert.deepEqual(both({ valence: 'sad' }), [['blue', 'torn'], ['torn']]);
       // Both over 0.7: strongly sad, never happy.
       const { match: rival } = songsDb({ rival: [0.8, 0.9, 0.1, 0.1, 0.1, 0.0, 0.0, 0.0] });
-      assert.deepEqual(rival({ valence: 'sad', strict: true }), ['rival']);
-      assert.deepEqual(rival({ valence: 'happy', strict: true }), []);
+      assert.deepEqual(rival({ valence: 'sad', threshold: 0.7 }), ['rival']);
+      assert.deepEqual(rival({ valence: 'happy', threshold: 0.7 }), []);
+    });
+
+    test('0.3, a client\'s Loose, widens both sides', () => {
+      const loose = (moods) => at({ ...moods, threshold: 0.3 });
+      // flat's and mild's instrumental 0.4 holds; mild's happy 0.4 is under
+      // 0.7, so it is still neutral.
+      assert.deepEqual(loose({ voice: 'instrumental' }), ['blue', 'calm', 'flat', 'gap', 'mild', 'tie']);
+      assert.deepEqual(loose({ valence: 'neutral' }), ['blue', 'calm', 'flat', 'mild', 'tie']);
+      // The stronger head still wins a scale: torn stays aggressive.
+      assert.deepEqual(loose({ energy: 'relaxed' }), ['blue', 'calm', 'gap', 'mild', 'tie']);
+    });
+
+    test('the default, 0.5, is no threshold at all', () => {
+      for (const moods of [{ energy: 'relaxed' }, { valence: 'neutral' }, { voice: 'vocals' }, { tags: ['party'] }]) {
+        assert.deepEqual(at({ ...moods, threshold: 0.5 }), at(moods), JSON.stringify(moods));
+      }
+    });
+
+    test('a value no request can carry falls back to the default', () => {
+      // parseMoods refuses these; an internal caller's slip must not reach SQL.
+      for (const threshold of [0, 1, 'x', -1, Number.NaN]) {
+        assert.deepEqual(at({ energy: 'relaxed', threshold }), at({ energy: 'relaxed' }), String(threshold));
+      }
     });
   });
 
-  test("a song list's fits: strong when the strict filter keeps the song too", () => {
+  test("a song list's matches: each song's weakest group, to three places", () => {
     const { d, id } = songsDb();
     const relaxed = ['blue', 'calm', 'gap', 'tie'];
-    const fit = moodFits(d, { energy: 'relaxed' }, relaxed.map(id));
-    assert.deepEqual(relaxed.map((n) => fit(id(n))), ['strong', 'strong', 'strong', 'close']);
-    const tied = moodFits(d, { energy: 'relaxed', strict: true }, [id('blue')]);
-    assert.equal(tied(id('blue')), 'strong', 'every song of a strict list');
+    const m = moodMatches(d, { energy: 'relaxed' }, relaxed.map(id));
+    assert.deepEqual(relaxed.map((n) => m.get(id(n))), [0.7, 0.8, 0.8, 0.5]);
+    // calm: neutral (1 − 0.2, 1 − 0.1), relaxed 0.8, instrumental 0.9 → 0.8.
+    const calm = moodMatches(d, { valence: 'neutral', energy: 'relaxed', voice: 'instrumental' }, [id('calm')]);
+    assert.equal(calm.get(id('calm')), 0.8);
+    // vocals by 1 − instrumental: bright 0.9, torn 0.8.
+    const vocals = moodMatches(d, { voice: 'vocals' }, [id('bright'), id('torn')]);
+    assert.deepEqual([vocals.get(id('bright')), vocals.get(id('torn'))], [0.9, 0.8]);
+    // A tag counts by its score: calm relaxed 0.8, danceable 0.6 → 0.6; blue acoustic 0.7.
+    assert.equal(moodMatches(d, { energy: 'relaxed', tags: ['danceable'] }, [id('calm')]).get(id('calm')), 0.6);
+    assert.equal(moodMatches(d, { tags: ['acoustic'] }, [id('blue')]).get(id('blue')), 0.7);
+    assert.equal(moodMatches(d, {}, [id('calm')]).size, 0, 'no group: no match to tell');
   });
 
   test('the song lists\' clause: a song by id, never one without scores', () => {
@@ -145,9 +176,9 @@ describe('mood filter: request forms', () => {
   test('normalized: only the groups that filter, tags in a fixed order', () => {
     assert.deepEqual(normalizeMoods({ tags: ['danceable', 'acoustic'] }), { tags: ['acoustic', 'danceable'] });
     assert.deepEqual(normalizeMoods({ valence: 'happy', tags: [] }), { valence: 'happy' });
-    assert.deepEqual(normalizeMoods({ strict: true, energy: 'relaxed' }), { energy: 'relaxed', strict: true });
-    assert.deepEqual(normalizeMoods({ energy: 'relaxed', strict: false }), { energy: 'relaxed' });
-    assert.equal(normalizeMoods({ strict: true }), null, 'strict alone filters nothing');
+    assert.deepEqual(normalizeMoods({ threshold: 0.7, energy: 'relaxed' }), { energy: 'relaxed', threshold: 0.7 });
+    assert.deepEqual(normalizeMoods({ energy: 'relaxed', threshold: 0.5 }), { energy: 'relaxed' }, 'the default is left out');
+    assert.equal(normalizeMoods({ threshold: 0.3 }), null, 'a threshold alone filters nothing');
     assert.equal(normalizeMoods({ tags: [] }), null);
     assert.equal(normalizeMoods({}), null);
     assert.equal(normalizeMoods(null), null);
@@ -158,9 +189,11 @@ describe('mood filter: request forms', () => {
     assert.equal(parseMoods(null), null);
     assert.deepEqual(parseMoods({ energy: 'relaxed', voice: 'vocals', tags: ['party'] }),
       { energy: 'relaxed', voice: 'vocals', tags: ['party'] });
-    assert.deepEqual(parseMoods({ voice: 'vocals', strict: true }), { voice: 'vocals', strict: true });
+    assert.deepEqual(parseMoods({ voice: 'vocals', threshold: 0.3 }), { voice: 'vocals', threshold: 0.3 });
+    assert.deepEqual(parseMoods({ voice: 'vocals', threshold: 0.333 }), { voice: 'vocals', threshold: 0.33 }, 'two places');
     for (const bad of [{ valence: 'angry' }, { mood: 'happy' }, { tags: ['party', 'party'] }, { tags: ['sad'] }, 'relaxed', [],
-      { energy: 'relaxed', strict: 'yes' }]) {
+      { energy: 'relaxed', threshold: 'high' }, { energy: 'relaxed', threshold: 0.95 }, { energy: 'relaxed', threshold: 0.05 },
+      { energy: 'relaxed', strict: true }]) {
       assert.throws(() => parseMoods(bad), { name: 'ValidationError' }, JSON.stringify(bad));
     }
   });
@@ -168,7 +201,7 @@ describe('mood filter: request forms', () => {
   test('parseMoodsQuery: one JSON object in a string, else a 400', () => {
     assert.equal(parseMoodsQuery(undefined), null);
     assert.deepEqual(parseMoodsQuery('{"energy":"relaxed"}'), { energy: 'relaxed' });
-    assert.deepEqual(parseMoodsQuery('{"energy":"relaxed","strict":true}'), { energy: 'relaxed', strict: true });
+    assert.deepEqual(parseMoodsQuery('{"energy":"relaxed","threshold":0.7}'), { energy: 'relaxed', threshold: 0.7 });
     for (const bad of ['nope', ['{}'], 'x'.repeat(600)]) {
       assert.throws(() => parseMoodsQuery(bad), (err) => err.status === 400, String(bad).slice(0, 20));
     }

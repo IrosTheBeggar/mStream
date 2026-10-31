@@ -1100,17 +1100,19 @@ components:
       description: |
         A mood filter over the songs' mood scores (the discovery model's mood heads, in
         track_moods). A group left out does not filter; a song matches when every group
-        given holds for it. A score "holds" at 0.5 or more. The two scales pair opposite
-        heads, and each analysed song is exactly one of their values: `happy` when its
-        happy score holds and is at least its sad score, `sad` when sad holds and beats
-        happy, `neutral` when neither holds (`relaxed` / `aggressive` alike). `vocals` is an
-        instrumental score under 0.5. Every tag given must hold. Songs not analysed yet
-        match no filter. Unknown groups and values are a 400.
+        given holds for it. A score "holds" at the filter's `threshold` (0.5 when left
+        out) or more. The two scales pair opposite heads: `happy` when its happy score
+        holds and is at least its sad score, `sad` when sad holds and beats happy,
+        `neutral` when both stay under the threshold's mirror, 1 − `threshold`
+        (`relaxed` / `aggressive` alike). `vocals` is an instrumental score under that
+        mirror. Every tag given must hold. At the default each analysed song is exactly
+        one value per scale. Songs not analysed yet match no filter. Unknown groups and
+        values are a 400.
 
-        A score is the model's confidence, not an intensity. `strict: true` asks every
-        group to hold strongly: a score that must hold at 0.7 or more, one that must not
-        (`neutral`'s two, `vocals`' instrumental) at 0.3 or less. On its own, with no
-        group, it filters nothing.
+        A score is the model's confidence, not an intensity: `threshold` is how sure
+        every group must be, 0.1–0.9 to two places. Clients name the bars they offer —
+        the webapp's Loose is 0.3, its Strict 0.7. On its own, with no group, it filters
+        nothing.
       properties:
         valence: { type: string, enum: [happy, neutral, sad] }
         energy: { type: string, enum: [relaxed, neutral, aggressive] }
@@ -1119,22 +1121,24 @@ components:
           type: array
           uniqueItems: true
           items: { type: string, enum: [acoustic, party, danceable] }
-        strict: { type: boolean }
-      example: { energy: relaxed, voice: instrumental }
+        threshold: { type: number, minimum: 0.1, maximum: 0.9, default: 0.5 }
+      example: { energy: relaxed, voice: instrumental, threshold: 0.7 }
 
-    MoodFitSong:
+    MoodMatchSong:
       allOf:
         - { $ref: "#/components/schemas/Metadata" }
         - type: object
           properties:
-            moodFit:
-              type: string
-              enum: [strong, close]
+            moodMatch:
+              type: number
+              minimum: 0
+              maximum: 1
               description: |
-                How the song fits the list's mood filter: `strong` when the strict form of
-                the filter keeps it too (every song of a strict list), `close` when only the
-                filter asked for does. On every song of a filtered answer, which stays in the
-                list's own order — clients show the strong fits first. Absent unfiltered.
+                How surely the song fits the list's mood filter, to three places: its
+                weakest group — a score that must hold by that score, one that must not by
+                1 − the score. About the strictest `threshold` the song would still pass.
+                On every song of a filtered answer, which stays in the list's own order —
+                clients sort by it for "match". Absent unfiltered.
 
     MoodEcho:
       allOf:
@@ -1754,9 +1758,9 @@ paths:
                           schema is strict); the browse lists read the
                           `moods` key their own answers carry instead (a
                           connected server's included). A server that sends this key
-                          takes `moods` on all of those routes, `strict`
+                          takes `moods` on all of those routes, `threshold`
                           included, and its song lists tell each song's
-                          `moodFit`. Absent on older servers.
+                          `moodMatch`. Absent on older servers.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -4329,7 +4333,7 @@ paths:
       summary: Get tracks the user has rated
       description: >
         Tracks rated > 0, sorted highest first. POST takes an optional `moods` filter
-        (MoodFilter): only the rated songs that match it, each with its `moodFit`. The
+        (MoodFilter): only the rated songs that match it, each with its `moodMatch`. The
         answer is the bare array either way, so it carries no echo — show the filter on
         server-info's `moodFilters`. While that is false, a filter is validated but
         filters nothing.
@@ -4340,7 +4344,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/MoodFitSong" }
+                items: { $ref: "#/components/schemas/MoodMatchSong" }
         "401": { $ref: "#/components/responses/Unauthorized" }
     post:
       <<: *ratedOp
@@ -4394,7 +4398,7 @@ paths:
       summary: Recently added tracks
       description: >
         The `limit` newest tracks. With a `moods` filter (MoodFilter), the `limit` newest
-        tracks that match it, each with its `moodFit`. The answer is a bare array, so it
+        tracks that match it, each with its `moodMatch`. The answer is a bare array, so it
         carries no echo — show the filter on server-info's `moodFilters`. While that is
         false, a filter is validated but filters nothing.
       requestBody:
@@ -4416,7 +4420,7 @@ paths:
             application/json:
               schema:
                 type: array
-                items: { $ref: "#/components/schemas/MoodFitSong" }
+                items: { $ref: "#/components/schemas/MoodMatchSong" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /api/v1/db/stats/recently-played:

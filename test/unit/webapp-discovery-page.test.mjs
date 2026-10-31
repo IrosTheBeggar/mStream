@@ -206,11 +206,15 @@ describe('buildRequests: the mood filter', () => {
     assert.deepEqual(D.cleanMoods({ valence: 'neutral', voice: 'vocals', extra: 1 }), { valence: 'neutral', voice: 'vocals' });
   });
 
-  test('strict rides along beside a group, never alone', () => {
-    assert.deepEqual(D.buildRequests({ flags: MOODY, moods: { energy: 'relaxed', strict: true } }).main.moods,
-      { energy: 'relaxed', strict: true });
-    assert.deepEqual(D.cleanMoods({ energy: 'relaxed', strict: 'yes' }), { energy: 'relaxed' });
-    assert.equal(D.cleanMoods({ strict: true }), null);
+  test('a threshold rides along beside a group, never alone, and never the default', () => {
+    assert.deepEqual(D.buildRequests({ flags: MOODY, moods: { energy: 'relaxed', threshold: 0.7 } }).main.moods,
+      { energy: 'relaxed', threshold: 0.7 });
+    assert.deepEqual(D.cleanMoods({ energy: 'relaxed', threshold: 0.3 }), { energy: 'relaxed', threshold: 0.3 });
+    for (const threshold of [0.5, '0.7', 0.95, 0.05, null]) {
+      assert.deepEqual(D.cleanMoods({ energy: 'relaxed', threshold }), { energy: 'relaxed' }, String(threshold));
+    }
+    assert.deepEqual(D.cleanMoods({ energy: 'relaxed', strict: true }), { energy: 'relaxed' }, 'no `strict` any more');
+    assert.equal(D.cleanMoods({ threshold: 0.7 }), null);
   });
 });
 

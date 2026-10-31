@@ -238,7 +238,11 @@
     const tags = MOOD_TAGS.filter((tag) => arr(m.tags).indexOf(tag) !== -1);
     if (tags.length) { out.tags = tags; }
     if (!Object.keys(out).length) { return null; }
-    if (m.strict === true) { out.strict = true; }
+    // How sure every group must be (the route's 0.1–0.9); 0.5, the
+    // default, is left off.
+    if (typeof m.threshold === 'number' && m.threshold >= 0.1 && m.threshold <= 0.9 && m.threshold !== 0.5) {
+      out.threshold = m.threshold;
+    }
     return out;
   }
 

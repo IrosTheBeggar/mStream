@@ -1541,9 +1541,30 @@ describe('mood filter', () => {
     }
   });
 
-  test('off and empty by default', () => {
+  test("cleanMoods adds the level's threshold beside a group: Strict 0.7, Loose 0.3, Standard none", () => {
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, 'strict'), { energy: 'relaxed', threshold: 0.7 });
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, 'loose'), { energy: 'relaxed', threshold: 0.3 });
+    for (const level of ['standard', undefined, 'toString', 'sloppy']) {
+      assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, level), { energy: 'relaxed' }, String(level));
+    }
+    assert.equal(AUTODJ.cleanMoods({}, 'strict'), null, 'a level alone filters nothing');
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed', threshold: 0.7 }), { energy: 'relaxed' },
+      'a stored filter carries no threshold of its own');
+  });
+
+  test('off and empty by default, at Standard', () => {
     assert.equal(AUTODJ.state.djMoodEnabled, false);
     assert.deepEqual(AUTODJ.state.djMoods, {});
+    assert.equal(AUTODJ.state.djMoodLevel, 'standard');
+  });
+
+  test('the level hydrates from localStorage; anything unknown is Standard', () => {
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodLevel', JSON.stringify('loose'));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodLevel, 'loose');
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodLevel', JSON.stringify('toString'));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodLevel, 'standard');
   });
 
   test('hydrates from localStorage, cleaned — a junk value would 400 every pick', () => {
@@ -1559,10 +1580,11 @@ describe('mood filter', () => {
   });
 
   test('a preference: reset() keeps it', () => {
-    AUTODJ.setState({ djMoodEnabled: true, djMoods: { valence: 'sad' } });
+    AUTODJ.setState({ djMoodEnabled: true, djMoods: { valence: 'sad' }, djMoodLevel: 'strict' });
     AUTODJ.reset();
     assert.equal(AUTODJ.state.djMoodEnabled, true);
     assert.deepEqual(AUTODJ.state.djMoods, { valence: 'sad' });
+    assert.equal(AUTODJ.state.djMoodLevel, 'strict');
   });
 });
 

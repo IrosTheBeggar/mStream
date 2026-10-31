@@ -874,7 +874,7 @@ describe('discovery taste: public mode', () => {
 // album's analysed songs to. Scores go straight into track_moods for this
 // block only (the mood sync's table): Descent and Sketch 1 get none.
 //   aggressive: Be Somebody, Rise, Static   relaxed: Orbit, Return, Highway, Neon
-// Neon is relaxed at 0.6: not strongly (a strict filter's 0.7).
+// Neon is relaxed at 0.6: under a threshold of 0.7.
 describe('discovery taste: mood filter', () => {
   const RELAXED = new Set([P.orbit, P.ret, P.highway, P.neon]);
   const SCORES = [
@@ -926,10 +926,10 @@ describe('discovery taste: mood filter', () => {
     assert.deepEqual(paths(r.body.library.tracks), [P.orbit]);
   });
 
-  test('strict: only strong fits, in songs and album cards alike', async () => {
-    const r = await taste('moe', { sources: ['library'], moods: { energy: 'relaxed', strict: true } });
+  test('threshold 0.7: only the surer fits, in songs and album cards alike', async () => {
+    const r = await taste('moe', { sources: ['library'], moods: { energy: 'relaxed', threshold: 0.7 } });
     assert.equal(r.status, 200, JSON.stringify(r.body));
-    assert.deepEqual(r.body.moods, { energy: 'relaxed', strict: true });
+    assert.deepEqual(r.body.moods, { energy: 'relaxed', threshold: 0.7 });
     // Night Drive keeps Highway alone (1 of 3): no card, and Neon nowhere.
     assert.deepEqual(r.body.library.albums.map((a) => a.name), ['Later Works']);
     assert.deepEqual(pathSet(r.body.library.tracks), new Set([P.orbit, P.highway]));
