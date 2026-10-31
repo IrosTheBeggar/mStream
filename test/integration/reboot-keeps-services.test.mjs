@@ -141,6 +141,22 @@ describe(`soft reboot keeps Quick Connect (${label})`, { skip: irohAvailable ? f
     }
     assert.match(text, /Reboot: bind unchanged .* keeping the listening socket/);
     assert.match(text, /\[iroh\] tunnel up/);
+
+    // The restarted tunnel bridges to the bridge listener the first boot's
+    // start() opened (kept: the reboot logs no new one), and its probe is
+    // answered there (mStream#1101).
+    const { text: bootText } = await recentLogText(server, jwt);
+    const opened = [...bootText.matchAll(/\[iroh\] bridge listener 127\.0\.0\.1:(\d+)/g)].map((m) => Number(m[1]));
+    assert.equal(opened.length, 1, 'one bridge listener for the process lifetime');
+    assert.notEqual(opened[0], server.port);
+    assert.match(text, new RegExp(`\\[iroh\\] tunnel up — endpointId=\\S+ -> 127\\.0\\.0\\.1:${opened[0]}\\b`));
+    let bridged;
+    for (const deadline = Date.now() + 10_000; ; ) {
+      bridged = await irohStatus(server, jwt);
+      if (bridged.bridgeOk !== null || Date.now() > deadline) { break; }
+      await sleep(100);
+    }
+    assert.equal(bridged.bridgeOk, true, bridged.bridgeError);
   });
 });
 

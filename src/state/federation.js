@@ -4,8 +4,9 @@
 // pairing is ticket-swap only.
 //
 // Shape: same TCP-over-QUIC tunnel as state/iroh.js — accepted bi-streams
-// bridge to the local mStream HTTP server, so a paired peer speaks plain HTTP
-// (range requests, keep-alive) and authenticates every request with its
+// bridge to the same loopback bridge listener (plain HTTP on 127.0.0.1, see
+// util/bridge-listener.js), so a paired peer speaks plain HTTP (range
+// requests, keep-alive) and authenticates every request with its
 // x-federation-key header at the auth wall (api/federation-auth.js).
 //
 // The pipe gate differs from the tunnel's fixed shared secret: the FIRST
@@ -31,7 +32,8 @@ import {
   delay,
   bridgeStreamToBackend,
   buildEnvelope,
-  parseEnvelope, describeAddr, handshakeTrace, ticketAddr } from './iroh-common.js';
+  parseEnvelope, describeAddr, handshakeTrace, ticketAddr,
+  getBridgeTarget, createBridgeCheck } from './iroh-common.js';
 import * as fedDb from '../db/federation.js';
 import { verifyGuestToken } from './federation-guest.js';
 
@@ -62,6 +64,7 @@ let endpointIdStr = null;
 // calls start() while the previous endpoint is still closing; start() must
 // wait for that instead of no-oping on the closing endpoint.
 let stopping = null;
+const bridgeCheck = createBridgeCheck('[federation] endpoint');
 
 // Live authorized connections per key id, so revoking a key can sever its
 // open pipes instead of waiting for the peer to reconnect and fail.
@@ -364,8 +367,9 @@ async function runAcceptLoop(ep, targetHost, targetPort) {
 // ---------------------------------------------------------------------------
 
 // Start the federation endpoint.
-//   targetPort  (required) local mStream HTTP port accepted streams bridge to.
-//   targetHost  backend host, default loopback.
+//   targetPort  local port accepted streams bridge to; default: the bridge
+//               target server.js registers (iroh-common setBridgeTarget).
+//   targetHost  backend host for targetPort, default loopback.
 //   secretKey   32-byte endpoint identity (config.federation.secretKey).
 //   awaitOnline wait (bounded) for a home relay so issued tickets carry relay
 //               info (default true).
@@ -375,7 +379,8 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
     try { await stopping; } catch (_err) { /* stop() is best-effort */ }
   }
   if (endpoint) { return { endpointId: endpointIdStr }; }
-  if (!targetPort) { throw new Error('federation.start: targetPort is required'); }
+  const target = targetPort ? { targetHost, targetPort } : await getBridgeTarget();
+  if (!target) { throw new Error('federation.start: targetPort is required (no bridge target registered)'); }
 
   irohMod = await loadIroh();
   const { Endpoint } = irohMod;
@@ -395,12 +400,16 @@ export async function start({ targetPort, targetHost = '127.0.0.1', secretKey, a
   // closed and the state cleared — the reboot's own start() takes over.
   if (endpoint !== ep) { return { endpointId: null }; }
 
-  runAcceptLoop(ep, targetHost, targetPort); // detached; ends when the endpoint closes
-  winston.info(`[federation] endpoint up — endpointId=${endpointIdStr} -> ${targetHost}:${targetPort}`);
+  runAcceptLoop(ep, target.targetHost, target.targetPort); // detached; ends when the endpoint closes
+  winston.info(`[federation] endpoint up — endpointId=${endpointIdStr} -> ${target.targetHost}:${target.targetPort}`);
+  bridgeCheck.run(target);
   return { endpointId: endpointIdStr };
 }
 
 export function getEndpointId() { return endpointIdStr; }
+
+// { bridgeOk, bridgeError } of the probe start() ran against its target.
+export function getBridgeCheck() { return bridgeCheck.get(); }
 
 // The EndpointId (base32 public key) inside an endpoint ticket string, or
 // null when the native module is not loaded or the ticket does not parse. A
@@ -440,6 +449,7 @@ export async function stop() {
   endpointIdStr = null;
   liveConns.clear();
   failedHandshakes.clear();
+  bridgeCheck.clear();
   stopping = (async () => {
     try { await ep.close(); } catch (_err) { /* best effort */ }
   })();

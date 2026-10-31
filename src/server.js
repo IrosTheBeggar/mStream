@@ -70,6 +70,8 @@ import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
+import { listenBridge } from './util/bridge-listener.js';
+import { setBridgeTarget } from './state/iroh-common.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
@@ -87,7 +89,12 @@ let server;
 // never comes back. 'connection' fires on both runtimes, so this does. The set
 // lives as long as the listening socket does (it is NOT per serveIt(): a
 // same-bind reboot keeps the socket and swaps only the app — see below).
+// Connections to the bridge listener join it too: a phone streaming over
+// Quick Connect is as busy as one on the LAN.
 let liveSockets = new Set();
+// The loopback listener Quick Connect and federation bridge to, as a promise
+// (see bridgeTarget): null until either first starts.
+let bridgeListening = null;
 // Identity of the CURRENT listener: { port, address, ssl, fingerprint }. Set
 // once a listen succeeds; reboot() hands it to the re-serve as `relisten` so
 // serveIt() can tell "same socket, keep it" from "bind changed, recycle it".
@@ -147,6 +154,34 @@ function rebootStub(req, res) {
   res.setHeader('Retry-After', '1');
   res.setHeader('Connection', 'close');
   res.end('mStream is restarting');
+}
+
+function trackBridgeSocket(socket) {
+  const set = liveSockets;
+  set.add(socket);
+  socket.on('close', () => set.delete(socket));
+}
+
+// The iroh endpoints' bridge target (iroh-common setBridgeTarget). The first
+// start() of either opens the bridge listener (util/bridge-listener.js): a
+// server using neither never listens on loopback for them, and the public
+// listener has its port by then, so the ephemeral one cannot take it first.
+// It stays for the process, forwarding to whatever `server` is, so reboots
+// keep it. If it cannot listen, the endpoints fall back to the public port,
+// which only a plain-HTTP server listening on loopback answers, and the next
+// start() tries again.
+function bridgeTarget() {
+  if (!bridgeListening) {
+    bridgeListening = listenBridge({ publicServer: () => server, onConnection: trackBridgeSocket, whileDown: rebootStub }).then((srv) => {
+      winston.info(`[iroh] bridge listener 127.0.0.1:${srv.address().port}`);
+      return srv;
+    }, (err) => {
+      bridgeListening = null;
+      winston.error(`[iroh] bridge listener could not start (${err.code || err.message}) — Quick Connect and federation fall back to port ${config.program.port}`);
+      return null;
+    });
+  }
+  return bridgeListening.then((srv) => ({ targetHost: '127.0.0.1', targetPort: srv ? srv.address().port : config.program.port }));
 }
 
 // Put a rejected bind change back: the previous port/address into the config
@@ -730,6 +765,10 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     res.status(500).json({ error: 'Server Error' });
   });
 
+  // Before either path below serves the app: the admin toggles start the
+  // iroh endpoints from inside it.
+  setBridgeTarget(bridgeTarget);
+
   // Start the server!
   const protocol = bind.ssl ? 'https' : 'http';
   const onListening = async () => {
@@ -821,13 +860,12 @@ export async function serveIt(configFile, { relisten = null } = {}) {
     // Iroh P2P remote-access tunnel (opt-in; default off). Lazy-loaded so a
     // platform without a prebuilt @number0/iroh binary still boots — a load or
     // start failure just logs and leaves the feature off. The tunnel proxies to
-    // the local HTTP port; it assumes mStream is reachable as plain HTTP there
-    // (the QUIC transport already encrypts end-to-end).
+    // the loopback bridge listener (see bridgeTarget), never TLS (the QUIC
+    // transport already encrypts end-to-end).
     if (config.program.iroh.enabled) {
       try {
         const iroh = await import('./state/iroh.js');
         await iroh.start({
-          targetPort: config.program.port,
           secretKey: config.program.iroh.secretKey,
           connectSecret: config.program.iroh.connectSecret,
         });
@@ -844,7 +882,6 @@ export async function serveIt(configFile, { relisten = null } = {}) {
       try {
         const federation = await import('./state/federation.js');
         await federation.start({
-          targetPort: config.program.port,
           secretKey: config.program.federation.secretKey,
         });
       } catch (err) {

@@ -104,9 +104,10 @@ Same for every pairing-code version:
    - `"NO"` or the stream/connection closing → rejected (wrong/rotated secret).
    The server compares the secret in constant time.
 4. **Tunnel:** thereafter, **one bi-stream == one TCP connection** to the server's
-   local HTTP port. Plain HTTP rides the pipe (range/seek, keep-alive, parallel
-   requests all work). Clients typically run a local TCP listener and open a fresh
-   bi-stream per inbound connection.
+   loopback bridge listener (plain HTTP on `127.0.0.1`, whatever address and SSL
+   setting the server's own web port has). Plain HTTP rides the pipe (range/seek,
+   keep-alive, parallel requests all work). Clients typically run a local TCP
+   listener and open a fresh bi-stream per inbound connection.
 5. **(v2 only, proposed)** Over the tunnel, exchange `c` for a real session token —
    `POST /api/v1/auth/pair { code: c }` → returns the standard mStream JWT — then
    the server marks `c` used. From then on the client authenticates like any other
