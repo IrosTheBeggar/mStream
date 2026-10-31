@@ -2688,6 +2688,17 @@ paths:
                         `track_genres` rows are BLOCKED. `blacklist`
                         skips tracks with any matching genre; tracks
                         with no `track_genres` rows are ALLOWED.
+                    genreSource:
+                      type: string
+                      enum: [tag, model]
+                      description: |
+                        Which genre links `genres` matches (V79
+                        `track_genres.source`): `tag`, the files' own
+                        genres; `model`, the discovery model's. Omitted,
+                        both — the same choice `/db/genres` and
+                        `/db/genre-songs` take. Under `blacklist` it
+                        narrows what is skipped. No effect without
+                        `genres`.
                     minDuration:
                       type: number
                       minimum: 0

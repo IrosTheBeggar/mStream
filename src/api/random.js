@@ -190,6 +190,12 @@ export function buildBpmKeyFilter(opts) {
 // every waterfall step without per-step plumbing. The filter is
 // "always on" — the waterfall never relaxes it.
 //
+// `source` ('tag' | 'model', V79 track_genres.source) narrows which links
+// count: only the files' own tags, or only the discovery model's genres
+// (src/db/genre-sync.js) — the same choice /db/genres and /db/genre-songs
+// take. Omitted, every link counts, as before. Under blacklist it narrows
+// what is skipped: skipping the model's "Rock" keeps a song tagged Rock.
+//
 // Empty / missing `genres` → no-op regardless of mode.
 export function buildGenreFilter(opts) {
   const clauses = [];
@@ -208,9 +214,10 @@ export function buildGenreFilter(opts) {
     clauses.push(`${operator} (
       SELECT 1 FROM track_genres tg
        JOIN genres g ON g.id = tg.genre_id
-       WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${ph})
+       WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${ph})${opts.source ? ' AND tg.source = ?' : ''}
     )`);
     params.push(...opts.genres);
+    if (opts.source) params.push(opts.source);
   }
 
   return { clauses, params };
@@ -828,7 +835,7 @@ export function runRandomSongs(req, body) {
   // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
   // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
   // Empty `genres` array → no-op regardless of mode.
-  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode });
+  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode, source: body.genreSource });
   if (genre.clauses.length > 0) {
     baseConditions.push(...genre.clauses);
     baseParams.push(...genre.params);
@@ -1335,6 +1342,9 @@ export function setup(mstream) {
       // selects a small subset.
       genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
       genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
+      // Which genre links the list matches (V79 track_genres.source): 'tag'
+      // (the files' own) or 'model' (the discovery model's). Omitted, both.
+      genreSource: Joi.string().valid('tag', 'model').optional(),
       // Track-length window, in SECONDS (the units of tracks.duration and
       // of the `duration` field on the wire). Both bounds are independent
       // and optional; 0 means "no bound on this side" so a client can send
