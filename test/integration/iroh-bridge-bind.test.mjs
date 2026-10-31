@@ -17,7 +17,7 @@ import net from 'node:net';
 import os from 'node:os';
 import * as iroh from '../../src/state/iroh.js';
 import { startServer } from '../helpers/server.mjs';
-import { BUN_BIN, noBun } from '../helpers/bun.mjs';
+import { BUN_BIN, noBun, bunVersion } from '../helpers/bun.mjs';
 
 let available = true;
 try { await import('@number0/iroh'); } catch { available = false; }
@@ -33,8 +33,22 @@ const connectOutcome = (host, port) => new Promise((resolve) => {
   s.once('error', (err) => resolve(err.code));
 });
 
+// Bun before 1.4.4 ignores Connection: close (and HTTP/1.0) when a response
+// ends a tick after its request, as every mStream response does: the
+// connection stays open, so a bridged stream never ends. 1.3.14 does this;
+// 1.4.4, which CI and the bundles run, closes like Node.
+const bunKeepsConnectionsOpen = !noBun && olderThan(bunVersion, [1, 4, 4]);
+
+function olderThan(version, than) {
+  const parts = String(version).split('.').map((p) => parseInt(p, 10));
+  for (let i = 0; i < than.length; i++) {
+    if (parts[i] !== than[i]) { return parts[i] < than[i]; }
+  }
+  return false;
+}
+
 // One HTTP response off a tunnel stream: the head, then Content-Length bytes
-// of body. Not until EOF: a Bun server's bridged stream stays open after it.
+// of body. Not until EOF, which an old Bun never sends (see above).
 async function readResponse(recv) {
   let buf = Buffer.alloc(0);
   for (;;) {
@@ -109,6 +123,28 @@ function scenario(execPath) {
         head += Buffer.from(chunk).toString('latin1');
       }
       assert.match(head, /^HTTP\/1\.1 101 /);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('the stream ends when the web server closes the connection', {
+    timeout: 60_000,
+    skip: execPath === BUN_BIN && bunKeepsConnectionsOpen && `Bun ${bunVersion} keeps the connection open (fixed by 1.4.4)`,
+  }, async () => {
+    const { qr } = await tunnelStatus();
+    const { client, conn } = await iroh.connectTunnel(qr, { awaitOnline: false });
+    try {
+      const bi = await conn.openBi();
+      await bi.send.writeAll(Array.from(Buffer.from('GET /api/v1/ping HTTP/1.1\r\nHost: tunnel\r\nConnection: close\r\n\r\n')));
+      let resp = '';
+      for (;;) {
+        const chunk = await bi.recv.read(65536);
+        if (chunk.length === 0) { break; }
+        resp += Buffer.from(chunk).toString('utf8');
+      }
+      assert.match(resp, /^HTTP\/1\.1 200 /);
+      assert.match(resp, /\r\nConnection: close\r\n/i);
     } finally {
       await client.close();
     }
