@@ -41,12 +41,12 @@
 // `limit` (default 1, capped at PICK_LIMIT_MAX) asks for a batch instead
 // of a single pick. A batch is served from the same bounded pool a pick
 // is: distinct rows, best tier first, fresh (not in the cooldown) before
-// repeats, and every song served advances the ignoreList. It can fall
-// short of `limit` — when fewer candidates are in scope, or when the
-// waterfall step that wins holds fewer matches. The chain deliberately
-// does NOT cascade into a more relaxed step to fill the remainder: the
-// tail of the batch would then break the constraint its head satisfied,
-// and the caller couldn't tell which songs are which.
+// repeats, repeats oldest first, and every song served advances the
+// ignoreList. It can fall short of `limit` — when fewer candidates are in
+// scope, or when the waterfall step that wins holds fewer matches. The
+// chain deliberately does NOT cascade into a more relaxed step to fill the
+// remainder: the tail of the batch would then break the constraint its
+// head satisfied, and the caller couldn't tell which songs are which.
 //
 // This is step B of the Auto-DJ velvet port. Similar-artists support
 // (the `artists` / `ignoreArtists` filters) is step D and lands in a
@@ -457,8 +457,9 @@ export function classifyRow(row, opts) {
 // so a batch is handed out from the front of this ranking — in-range
 // rows before unknown-tag rows before known-wrong rows — and a single
 // pick takes the best row present, exactly as the old best-tier-only
-// filter did. Input order carries the fresh-before-cooled priority (see
-// finalisePick), which the stable sort preserves within a tier.
+// filter did. Input order carries the fresh-before-cooled, oldest-repeat-
+// first priority (see finalisePick), which the stable sort preserves
+// within a tier.
 export function rankByTier(rows, opts) {
   const haveBpm = Array.isArray(opts.bpmRanges) && opts.bpmRanges.length > 0;
   const haveKey = Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0;
@@ -1143,18 +1144,25 @@ export function runRandomSongs(req, body) {
 // served unknown-tag row. Within a tier, rows not served recently come
 // first; when the cooldown covers the whole candidate set (tiny library /
 // narrow filters / long session) the repeats fill in — they beat stalling
-// the session. Simple mode already excluded the cooled ids in SQL, so its
-// fresh partition only matters after a repeat top-up; the waterfall passes
-// `tierOpts` so its relaxed steps still serve in-range rows first. Every
-// query behind `rows` ends in RANDOM(), so the front of the ordering is a
-// uniform sample and a single pick is as random as it ever was.
+// the session — oldest first, by their place in the ignoreList. The song
+// served longest ago comes back first and the one just served comes last,
+// so a fully cooled pool cycles through itself instead of drawing at
+// random, which could serve the same song twice running. Simple mode
+// already excluded the cooled ids in SQL, so its fresh partition only
+// matters after a repeat top-up; the waterfall passes `tierOpts` so its
+// relaxed steps still serve in-range rows first. Every query behind `rows`
+// ends in RANDOM(), so while fresh rows remain the front of the ordering
+// is a uniform sample and a single pick is as random as it ever was.
 function finalisePick(req, rows, body, sonic, tierOpts = null) {
   const limit = pickLimitFrom(body);
   const sent = ignoreIdsFrom(body);
-  const ignoreSet = new Set(sent);
+  // Each cooled id's place in the list, newest last (a duplicate keeps
+  // its newest place).
+  const servedAt = new Map(sent.map((id, i) => [id, i]));
   let ordered = [
-    ...rows.filter((r) => !ignoreSet.has(r.id)),
-    ...rows.filter((r) => ignoreSet.has(r.id)),
+    ...rows.filter((r) => !servedAt.has(r.id)),
+    ...rows.filter((r) => servedAt.has(r.id))
+      .sort((a, b) => servedAt.get(a.id) - servedAt.get(b.id)),
   ];
   if (tierOpts) { ordered = rankByTier(ordered, tierOpts); }
   const picked = ordered.slice(0, limit);
