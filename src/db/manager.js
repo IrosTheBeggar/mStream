@@ -378,6 +378,10 @@ export function optimizeFts() {
 // ── Shared playlist cleanup ─────────────────────────────────────────────────
 
 function startSharedCleanup() {
+  // initDB() re-runs on every soft reboot: replace the previous interval
+  // rather than stack another. Stacked, each reboot leaked one (still firing
+  // against the reopened connection) and close() cleared only the last.
+  stopSharedCleanup();
   const intervalHours = config.program.db?.clearSharedInterval;
   if (!intervalHours) { return; }
 
