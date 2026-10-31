@@ -345,6 +345,20 @@ describe('buildGenreFilter', () => {
     assert.match(clauses[0], /\bEXISTS\b/);
     assert.doesNotMatch(clauses[0], /\bNOT EXISTS\b/);
   });
+
+  test('a source narrows the links inside the subquery, its ? after the names', () => {
+    for (const mode of ['whitelist', 'blacklist']) {
+      const { clauses, params } = buildGenreFilter({ genres: ['Jazz', 'Funk'], mode, source: 'model' });
+      assert.equal(clauses.length, 1);
+      assert.match(clauses[0], /IN \(\?,\?\) AND tg\.source = \?\s*\)$/);
+      assert.deepEqual(params, ['Jazz', 'Funk', 'model']);
+    }
+  });
+
+  test('no source → every link counts; a source without genres → no clause', () => {
+    assert.doesNotMatch(buildGenreFilter({ genres: ['Jazz'] }).clauses[0], /tg\.source/);
+    assert.deepEqual(buildGenreFilter({ genres: [], source: 'tag' }), { clauses: [], params: [] });
+  });
 });
 
 describe('buildDurationFilter', () => {
