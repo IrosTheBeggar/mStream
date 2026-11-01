@@ -10,8 +10,14 @@ on:
   push:
     branches: [master]
     # This file too, so a change to how the binaries are built or STAMPED
-    # re-lands the set (and its provenance stamp) right away.
-    paths: ['rust-parser/**', '.github/workflows/build-rust-parser.yml']
+    # re-lands the set (and its provenance stamp) right away — and the zig
+    # toolchain pins + the floor checker, which decide what the Linux gnu
+    # legs link against.
+    paths:
+      - 'rust-parser/**'
+      - '.github/workflows/build-rust-parser.yml'
+      - '.github/actions/setup-zigbuild/**'
+      - 'scripts/check-glibc-floor.sh'
 
 # Serialize runs of THIS workflow per ref: the commit job lands binaries on
 # the master tip, and two interleaved runs of the same family would race to
@@ -23,6 +29,21 @@ concurrency:
   group: build-rust-parser-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # The Linux gnu binaries' glibc floor. cargo-zigbuild links them against
+  # exactly this glibc ABI (`--target <triple>.<version>`), whatever libc
+  # the runner image carries: built natively on ubuntu-latest, the x64
+  # scanner needed GLIBC_2.34 and could not even start on Debian 11 /
+  # Ubuntu 20.04 / RHEL 8 hosts (the server itself runs on 2.17), so every
+  # scan there fell back. Asserted on each built binary below and again on
+  # the bundles by build-bun.yml, whose GLIBC_FLOOR must be the same number;
+  # docs/install.md states it to users.
+  GLIBC_FLOOR: '2.28'
+  # glibc 2.28 exactly: where the Linux gnu self-tests run. Pinned by digest
+  # (a smoke input, never a build input); amd64, arm64v8 and armv7 variants,
+  # so every leg's binary runs on the floor it claims.
+  FLOOR_IMAGE: debian:10-slim@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc
+
 jobs:
   build:
     name: Build ${{ matrix.binary_name }}
@@ -31,44 +52,48 @@ jobs:
       fail-fast: false
       matrix:
         # self_test: run the freshly built binary before committing it (see the
-        # "Self-test" step). Enabled on every leg whose binary can execute on
-        # its build host — natively (windows-x64, darwin-arm64, linux-x64) or
-        # via Rosetta 2 (darwin-x64 on the arm64 runner). The cross-built ARM
-        # Linux binaries can't run on the x64 host, so they're left unverified.
+        # "Self-test" step) — natively (windows-x64, darwin-arm64) or via
+        # Rosetta 2 (darwin-x64 on the arm64 runner). The Linux gnu legs
+        # (zig: true, linked against GLIBC_FLOOR) run theirs inside the
+        # FLOOR_IMAGE container on test_platform — x64 directly, the two ARM
+        # ones under QEMU — so a binary that needs a newer glibc than it
+        # claims, or that cannot run on its CPU at all, never lands.
         include:
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             binary_name: rust-parser-win32-x64.exe
-            use_cross: false
             self_test: true
 
           - target: x86_64-apple-darwin
             runner: macos-latest
             binary_name: rust-parser-darwin-x64
-            use_cross: false
             self_test: true
 
           - target: aarch64-apple-darwin
             runner: macos-latest
             binary_name: rust-parser-darwin-arm64
-            use_cross: false
             self_test: true
 
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             binary_name: rust-parser-linux-x64
-            use_cross: false
+            zig: true
             self_test: true
+            test_platform: linux/amd64
 
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             binary_name: rust-parser-linux-arm64
-            use_cross: true
+            zig: true
+            self_test: true
+            test_platform: linux/arm64
 
           - target: armv7-unknown-linux-gnueabihf
             runner: ubuntu-latest
             binary_name: rust-parser-linux-arm
-            use_cross: true
+            zig: true
+            self_test: true
+            test_platform: linux/arm/v7
 
     steps:
       - uses: actions/checkout@v6
@@ -82,23 +107,18 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: rust-parser
-          key: ${{ matrix.target }}
+          # -zig: objects compiled and linked through zig never share a
+          # cache with a native build's.
+          key: ${{ matrix.target }}${{ matrix.zig && '-zig' || '' }}
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: |
-          # Pinned + hashed: `releases/latest` piped straight into ~/.cargo/bin
-          # meant a new (or hijacked) cross release ran on the next master push
-          # and produced the shipped ARM/musl binaries. Bump the version and
-          # the sha256 together (sha256sum of the release asset).
-          curl -fsSL -o cross.tar.gz "https://github.com/cross-rs/cross/releases/download/v0.2.5/cross-x86_64-unknown-linux-gnu.tar.gz"
-          echo "642375d1bcf3bd88272c32ba90e999f3d983050adf45e66bd2d3887e8e838bad  cross.tar.gz" | sha256sum -c -
-          tar xzf cross.tar.gz -C "$HOME/.cargo/bin" && rm cross.tar.gz
+      - name: Set up cargo-zigbuild (Linux gnu legs)
+        if: matrix.zig
+        uses: ./.github/actions/setup-zigbuild
 
       - name: Build
         run: |
-          if [ "${{ matrix.use_cross }}" = "true" ]; then
-            cross build --release --locked --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
+          if [ "${{ matrix.zig }}" = "true" ]; then
+            cargo zigbuild --release --locked --target "${{ matrix.target }}.$GLIBC_FLOOR" --manifest-path rust-parser/Cargo.toml
           else
             cargo build --release --locked --target ${{ matrix.target }} --manifest-path rust-parser/Cargo.toml
           fi
@@ -114,28 +134,52 @@ jobs:
           cp "$src" "staging/${{ matrix.binary_name }}"
         shell: bash
 
+      # The floor is a build input, so a binary above it can only mean the
+      # toolchain changed under us — refuse it here, before a self-test on
+      # the (newer) runner could pass it.
+      - name: Assert the glibc floor (Linux gnu legs)
+        if: matrix.zig
+        run: scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "staging/${{ matrix.binary_name }}"
+
+      # binfmt handlers so the x64 host runs the ARM legs' containers under
+      # qemu-user — the musl workflow's mechanism for its static ARM
+      # binaries; here the container supplies the glibc a gnu binary needs.
+      - name: Set up QEMU (ARM self-tests)
+        if: matrix.test_platform && matrix.test_platform != 'linux/amd64'
+        uses: docker/setup-qemu-action@v3
+
       # Gate the commit on the freshly built binary actually executing. A
-      # binary that can't launch (bad arch / unsigned / dyld or SDK mismatch)
-      # prints nothing — which is exactly how a broken darwin-arm64 binary once
-      # shipped silently. The file content is irrelevant: a zero-filled blob is
-      # enough for the binary to launch, read it, MD5 it, and emit JSON, which
-      # proves the executable is sound. If this fails, the leg fails and
-      # commit-binaries (needs: build) is skipped, so the bad binary never lands.
+      # binary that can't launch (bad arch / unsigned / dyld or SDK mismatch /
+      # a glibc symbol newer than the host's) prints nothing — which is
+      # exactly how a broken darwin-arm64 binary once shipped silently. The
+      # file content is irrelevant: a zero-filled blob is enough for the
+      # binary to launch, read it, MD5 it, and emit JSON, which proves the
+      # executable is sound. If this fails, the leg fails and commit-binaries
+      # (needs: build) is skipped, so the bad binary never lands.
       - name: Self-test the freshly built binary
         if: matrix.self_test
         shell: bash
         run: |
           bin="staging/${{ matrix.binary_name }}"
-          echo "self-testing: $bin"
-          head -c 100000 /dev/zero > sample.mp3
-          out="$("$bin" --audio-hash sample.mp3)"
+          head -c 100000 /dev/zero > staging/sample.mp3
+          if [ -n "${{ matrix.test_platform }}" ]; then
+            echo "self-testing: $bin in $FLOOR_IMAGE (${{ matrix.test_platform }})"
+            run() { docker run --rm --platform "${{ matrix.test_platform }}" -v "$PWD/staging:/s:ro" "$FLOOR_IMAGE" "/s/${{ matrix.binary_name }}" "$@"; }
+            sample=/s/sample.mp3
+          else
+            echo "self-testing: $bin"
+            run() { "$bin" "$@"; }
+            sample=staging/sample.mp3
+          fi
+          out="$(run --audio-hash "$sample")"
           echo "  --audio-hash: $out"
           echo "$out" | grep -q '"fileHash":"' \
             || { echo "::error::self-test: --audio-hash produced no/invalid output"; exit 1; }
-          wf="$("$bin" --waveform sample.mp3)"
+          wf="$(run --waveform "$sample")"
           echo "  --waveform: ${wf:0:60}"
           echo "$wf" | grep -q '"bars":' \
             || { echo "::error::self-test: --waveform produced no/invalid output"; exit 1; }
+          rm -f staging/sample.mp3
           echo "self-test passed: ${{ matrix.binary_name }}"
 
       - name: Upload binary

@@ -134,8 +134,9 @@ let bootRescanFailed = false;
 // ── Rust parser binary detection ────────────────────────────────────────────
 
 const ext = process.platform === 'win32' ? '.exe' : '';
-// Detect musl libc (Alpine, Void, distroless musl, etc.) — glibcVersionRuntime is undefined on musl
-const isMusl = process.platform === 'linux' && !process.report?.getReport()?.header?.glibcVersionRuntime;
+// This host's glibc version — null on musl (Alpine, Void, distroless) and off Linux.
+const hostGlibc = process.platform === 'linux' ? process.report?.getReport()?.header?.glibcVersionRuntime ?? null : null;
+const isMusl = process.platform === 'linux' && !hostGlibc;
 const libcSuffix = isMusl ? '-musl' : '';
 const rustParserDir = path.join(appRoot, 'rust-parser');
 const prebuiltBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}${libcSuffix}${ext}`);
@@ -168,11 +169,33 @@ export function probeJournalModeContract(binPath) {
   return probeIntFlag(binPath, '--journal-mode-contract');
 }
 
+// Why a candidate binary could not start at all, by path: the spawn error
+// or the dynamic loader's complaint, so the gate below reports that instead
+// of reading the silence as a pre-probe build. Exported for the tests.
+const execFailures = new Map();
+export function execFailure(binPath) { return execFailures.get(binPath) ?? null; }
+
+// The dynamic loader's complaint in a probe's stderr as one line — the glibc
+// symbol versions the binary needs beside this host's, or the shared library
+// it could not find — or null when the binary itself ran. Pure.
+export function loaderFailure(stderr, host = hostGlibc) {
+  const text = String(stderr ?? '');
+  const needs = [...new Set(text.match(/GLIBC_\d+(?:\.\d+)+/g) ?? [])];
+  if (needs.length) { return `needs ${needs.join(', ')}${host ? `, this host's glibc is ${host}` : ''}`; }
+  const lib = text.match(/error while loading shared libraries: ([^:]+)/);
+  return lib ? `cannot load ${lib[1]}` : null;
+}
+
 function probeIntFlag(binPath, flag) {
   try {
     const probe = child.spawnSync(binPath, [flag],
       { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
-    if (probe.status !== 0) { return null; }
+    if (probe.error) { execFailures.set(binPath, probe.error.message); return null; }
+    if (probe.status !== 0) {
+      const why = loaderFailure(probe.stderr);
+      if (why) { execFailures.set(binPath, why); }
+      return null;
+    }
     const n = parseInt((probe.stdout || '').toString().trim(), 10);
     return Number.isInteger(n) ? n : null;
   } catch (_) {
@@ -242,9 +265,12 @@ export function findRustParser() {
   const generationCurrent = (binPath, label) => {
     const gen = probes.hashGeneration(binPath);
     if (gen !== HASH_GENERATION) {
-      winston.warn(`${label} rust-parser at ${binPath} stamps hash generation `
-        + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
-        + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
+      const why = execFailure(binPath);
+      winston.warn(why
+        ? `${label} rust-parser at ${binPath} cannot run on this host (${why}) — trying the next candidate`
+        : `${label} rust-parser at ${binPath} stamps hash generation `
+          + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
+          + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
       return false;
     }
     // V71 schema-contract gate, same shape: a binary built before the
@@ -290,13 +316,15 @@ export function findRustParser() {
     return markReady(prebuiltBin);
   }
   // Old-glibc salvage: on hosts where the shipped glibc binary can't
-  // even exec (needs a newer GLIBC, so the probe itself fails), the
-  // fully-static musl sibling runs anywhere — try it through the same
-  // gate. Mirrors tryMuslRetry's conditions; probing here catches the
-  // exec failure up front instead of at scan time.
+  // even exec (its floor is glibc 2.28 — build-rust-parser.yml — so the
+  // probe itself fails below that), the fully-static musl sibling runs
+  // anywhere — try it through the same gate. Mirrors tryMuslRetry's
+  // conditions; probing here catches the exec failure up front instead
+  // of at scan time.
   if (process.platform === 'linux' && libcSuffix !== '-musl') {
     const muslBin = path.join(appRoot, `bin/rust-parser/rust-parser-${process.platform}-${process.arch}-musl${ext}`);
     if (fs.existsSync(muslBin) && generationCurrent(muslBin, 'Static-musl')) {
+      winston.info(`Scanning with the static musl rust-parser at ${muslBin}`);
       return markReady(muslBin);
     }
   }
@@ -337,12 +365,12 @@ export function _resetRustParserForTests({ probes: overrides = null } = {}) {
 }
 
 // One-shot per process: when the SHIPPED glibc rust-parser can't run on this
-// host (most often it's simply too new — it needs GLIBC_2.34 — but any exec
-// failure counts), retry the committed static-musl build instead of dropping
+// host (most often a glibc below its 2.28 floor, but any exec failure
+// counts), retry the committed static-musl build instead of dropping
 // straight to the ~16x-slower JS scanner. The -musl binary is fully static and
 // runs on ANY linux libc/version, so this salvages native-speed scanning AND
-// the post-scan waveform pass on older-glibc distros (RHEL/Rocky 8, Ubuntu
-// 20.04, Amazon Linux 2, Debian 11, ...). It swaps rustParserBin to the musl
+// the post-scan waveform pass on older-glibc distros (Ubuntu 18.04, Amazon
+// Linux 2, Debian 9, ...). It swaps rustParserBin to the musl
 // build (so every later Rust use — incl. waveforms — picks it up too) and
 // re-enters runScan. Returns true if a retry was launched (the caller must then
 // return), false to proceed with the JS fallback.
