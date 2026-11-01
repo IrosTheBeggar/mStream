@@ -52,6 +52,7 @@ import * as sim from '../db/discovery-similarity.js';
 import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
 import { moodFiltersReady } from './mood-filter.js';
+import { AUTO_DJ_GENERATION } from './random.js';
 
 // Server-wide capability facts — the `features` object. Everything here
 // is a config/capability fact (the rule above); nothing is caller-scoped.
@@ -113,6 +114,13 @@ export function buildFeatures() {
     // its `threshold` included, and its song lists carry each song's
     // `moodMatch`.
     moodFilters: moodFiltersReady(),
+    // The Auto DJ picker's generation (POST /api/v1/db/random-songs) — an
+    // integer like `stats` / `discoveryTaste`, a version fact. 1: the body
+    // takes `lessLike` / `lessLikeVectors` / `lessLikeModelId` (negative
+    // seeds — ignored, never refused, when unusable) and the answer echoes
+    // `lessLike`. The route's schema is strict, so a client sends them only
+    // from 1 on, and only while `discoveryReady` (they do nothing before).
+    autoDj: AUTO_DJ_GENERATION,
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.

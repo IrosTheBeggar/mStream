@@ -77,6 +77,24 @@ export function requireIndex() {
   return index;
 }
 
+// requireIndex's twin that never throws: null when the feature is off, when
+// the store is unavailable (logged, the way /federation/health reports it)
+// or when nothing has been embedded yet (dim === null). For callers that
+// treat the index as a soft input — the Auto-DJ picker's negative seeds are
+// ignored, never a 403, when there is no index to score them against.
+export function optionalIndex() {
+  if (config.program.scanOptions.collectDiscoveryData !== true) { return null; }
+  let index;
+  try {
+    index = sim.getIndex();
+  } catch (err) {
+    winston.warn(`discovery index unavailable: ${err.message}`);
+    return null;
+  }
+  if (!index || index.dim === null) { return null; }
+  return index;
+}
+
 // Resolve a client-supplied file path to the track row THIS user may see.
 // The vpath check throws on unknown/forbidden library names — surfaced as
 // a uniform 404 so probing can't map another user's library names. The
@@ -104,6 +122,22 @@ export function resolveSeedTrack(req, filePath, routeTag) {
   if (!seedRow) { throw new WebError('Track not found', 404); }
   Object.assign(seedRow, fetchGenresForTrack(d(), seedRow.id), fetchCreditsForTrack(d(), seedRow.id));
   return seedRow;
+}
+
+// The canonical hash behind a file path THIS user may see, or null — the
+// non-throwing, non-enriching sibling of resolveSeedTrack (the same lookup
+// as stats.js's hashForPath). An unknown or forbidden vpath is null without
+// a log line: the callers feed it paths from a client's stale skip queue,
+// where a vanished file is routine, not a probing signal. The lookup is one
+// UNIQUE(filepath, library_id) probe.
+export function seedHashForPath(req, filePath) {
+  let info;
+  try { info = getVPathInfo(filePath, req.user); } catch (_) { return null; }
+  const lib = db.getLibraryByName(info.vpath);
+  if (!lib) { return null; }
+  const row = prep('SELECT audio_hash, file_hash FROM tracks WHERE filepath = ? AND library_id = ?')
+    .get(info.relativePath, lib.id);
+  return row ? (row.audio_hash || row.file_hash || null) : null;
 }
 
 // Resolve a canonical hash to a track row THIS user may see. Returns null
