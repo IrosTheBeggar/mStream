@@ -1761,6 +1761,18 @@ paths:
                           takes `moods` on all of those routes, `threshold`
                           included, and its song lists tell each song's
                           `moodMatch`. Absent on older servers.
+                      autoDj:
+                        type: integer
+                        description: >
+                          The Auto DJ picker's generation
+                          (`POST /api/v1/db/random-songs`), an integer like
+                          `stats`: 1 = the body takes `lessLike` /
+                          `lessLikeVectors` / `lessLikeModelId` (negative
+                          seeds, ignored rather than refused when unusable)
+                          and the answer echoes `lessLike`. A version fact:
+                          send negatives on `autoDj >= 1 && discoveryReady`.
+                          Absent on older servers, which answer
+                          `400 "lessLike" is not allowed`.
                       discoveryOwned:
                         type: boolean
                         description: >
@@ -1850,6 +1862,7 @@ paths:
                   discoveryOwned: true
                   discoveryTaste: 2
                   moodFilters: true
+                  autoDj: 1
                   sync: true
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
@@ -1919,6 +1932,12 @@ paths:
                       Mood scores to filter by, right now — the same fact as
                       `features.moodFilters` on `GET /api`. Absent on older
                       servers.
+                  autoDj:
+                    type: integer
+                    description: >
+                      The Auto DJ picker's generation (negative seeds from
+                      1) — the same fact as `features.autoDj` on `GET /api`.
+                      Absent on older servers.
                   supportedAudioFiles:
                     type: object
                     additionalProperties: { type: boolean }
@@ -2580,13 +2599,61 @@ paths:
         `POST /api/v1/discovery/local/embeddings`. The response then
         carries a `sonic` block with the pick's actual similarity.
 
+        **Less like this** (`lessLike` and/or `lessLikeVectors` with
+        `lessLikeModelId`) steers the pick AWAY from songs the session
+        skipped: up to 8 negative seeds in total, as file paths and/or
+        raw vectors (the same forms as the sonic seed), with or without
+        a sonic seed. A candidate is "like a skip" when its cosine to ANY
+        single negative is at least the threshold `T` — the nearest
+        negative, not a centroid of them — where `T` is
+        `clamp(minSimilarity + 0.10, 0.80, 0.95)` while a sonic seed is
+        in play and `0.80` otherwise; the answer echoes it as
+        `lessLike.threshold`. Negatives are SOFT, unlike every other
+        filter here: like-a-skip songs are ordered LAST, never removed,
+        so the priority of a pick is the hard filters, then the BPM/key
+        tier, then not among the songs just served (the newest
+        `max(5 × limit, 8)` entries of the `ignoreList` — wide enough to
+        hold a client's queued-ahead songs and the picks it rejected and
+        retried, which the list counts too), then not like a skip, then
+        not in the `ignoreList`, then the oldest repeat — a repeat that
+        is not like a skip comes before a fresh song that is, unless it
+        was one of the songs just served (a skip never makes the DJ play
+        the song it just played again, nor a batch repeat the one before
+        it; among the just-served songs only age counts), and when
+        nothing else is left the like-a-skip songs still play. The
+        BPM/key waterfall is unchanged by negatives: its first non-empty
+        step wins, even when every song in it is like a skip and a more
+        relaxed step holds one that is not — the pick is then flagged
+        `avoided`, and like-a-skip songs only move to the back of the
+        step that won, so a batch never carries an off-range tail.
+        Negatives therefore never empty the pool, never cause a `400`
+        and never produce the sonic "similarity range" error. A negative
+        that cannot be used — a path that does not resolve in the
+        caller's libraries, a song not analysed yet, a vector of the
+        wrong size or from another model (`lessLikeModelId` differs from
+        this library's), discovery off, nothing embedded — is IGNORED
+        and counted (`lessLike.ignored`), with no `403`, `404` or `400`.
+        A `similarTo` seed that is also a negative is dropped from the
+        positive centroid; if that would leave no positive seed, or the
+        narrower centroid would leave nothing to play that the full one
+        did, the positives are kept and those negatives are ignored
+        instead. The
+        `lessLike` echo is present whenever negatives were sent, usable
+        or not. Gate on `features.autoDj >= 1` (`GET /api`) or `autoDj`
+        on `GET /api/v1/federation/health`: an older server answers
+        `400 "lessLike" is not allowed`. With discovery on, a pick with
+        negatives loads the similarity index even without a sonic seed,
+        so clients also wait for `features.discoveryReady`.
+
         On the federation read allowlist: a paired server may call this
         with its key (the webapp reaches a peer's copy through
         `POST /api/v1/federation/peers/{id}/api/api/v1/db/random-songs`).
         The pool is scoped to the key's granted libraries like every other
         `db/*` route, and `minRating` is ignored for such a caller — a
         key has no user rows to rate against, so the clause could only
-        empty the pool.
+        empty the pool. Path negatives resolve inside the key's grants
+        (anything else is ignored and counted); skips that live on
+        another server travel as `lessLikeVectors`.
       requestBody:
         content:
           application/json:
@@ -2802,6 +2869,42 @@ paths:
                         Cosine-similarity floor of the sonic pool (raw
                         cosine, 0..1). Required with either seed form and
                         rejected without one.
+                    lessLike:
+                      type: array
+                      items: { type: string }
+                      minItems: 1
+                      maxItems: 8
+                      description: |
+                        Negative seeds as file paths (the `similarTo`
+                        form): songs the session skipped. Songs within
+                        `lessLike.threshold` of any of them are ordered
+                        last, never removed (see **Less like this**
+                        above). A path that cannot be used — not in the
+                        caller's libraries, not analysed yet — is ignored
+                        and counted, never a `404`. May be combined with
+                        `lessLikeVectors`; at most 8 negatives in total.
+                    lessLikeVectors:
+                      type: array
+                      items: { type: string, format: byte }
+                      minItems: 1
+                      maxItems: 8
+                      description: |
+                        Negative seeds as raw vectors (the
+                        `similarToVector` form: base64 of `dim` × float32
+                        little-endian, re-normalized server-side), for
+                        skips that live on another server. Requires
+                        `lessLikeModelId`. A vector of the wrong size, a
+                        zero vector or one with non-finite values is
+                        ignored and counted. May be combined with
+                        `lessLike`; at most 8 negatives in total.
+                    lessLikeModelId:
+                      type: string
+                      description: |
+                        The embedding model `lessLikeVectors` came from.
+                        Unlike `similarToModelId`, a model other than this
+                        library's is not a `400`: the vectors are ignored
+                        and counted. Accepted on its own (it then does
+                        nothing).
                     moods:
                       allOf:
                         - { $ref: "#/components/schemas/MoodFilter" }
@@ -2853,6 +2956,26 @@ paths:
                       poolSize:
                         type: integer
                         description: Analyzed tracks at or above `minSimilarity`, before rating / genre / BPM / key filtering.
+                  lessLike:
+                    type: object
+                    description: |
+                      Present whenever negative seeds were sent (`lessLike`
+                      / `lessLikeVectors`), usable or not — with discovery
+                      off, `used` is 0 and `ignored` is the number sent.
+                    properties:
+                      used:
+                        type: integer
+                        description: Negatives that steered this pick.
+                      ignored:
+                        type: integer
+                        description: Negatives that could not be used (any reason — `used + ignored` is the number sent).
+                      threshold:
+                        type: number
+                        description: The cosine at or above which a song counted as like a skip (4 decimals).
+                      avoided:
+                        type: array
+                        items: { type: boolean }
+                        description: One flag per entry of `songs`, in the same order — `true` when that song is like a skip (served because nothing better was left).
         "400":
           description: |
             No songs match the criteria, even after the waterfall fully
@@ -2860,12 +2983,16 @@ paths:
             criteria" when a sonic seed is set). Also request validation
             (e.g. bpmRange min > max, `musicalKeys` with no recognised
             Camelot code, `minSimilarity` without a seed, both seed forms
-            at once), a seed track not analyzed yet, no tracks analyzed
-            yet, or `similarToModelId` naming a model other than the
-            library's.
+            at once, an empty `lessLike` / `lessLikeVectors`, more than 8
+            negatives in total, `lessLikeVectors` without
+            `lessLikeModelId`, a vector that is not base64), a seed track
+            not analyzed yet, no tracks analyzed yet, or
+            `similarToModelId` naming a model other than the library's.
+            Negative seeds never cause a 400 otherwise: unusable ones are
+            ignored and like-a-skip songs are ordered last, not removed.
         "401": { $ref: "#/components/responses/Unauthorized" }
-        "403": { description: "A sonic seed was given but discovery is disabled on this server (or nothing has been embedded yet)." }
-        "404": { description: "A `similarTo` path does not resolve in the caller's libraries (uniform, so library names can't be probed)." }
+        "403": { description: "A sonic seed was given but discovery is disabled on this server (or nothing has been embedded yet). Positive seeds only; negative seeds never 403." }
+        "404": { description: "A `similarTo` path does not resolve in the caller's libraries (uniform, so library names can't be probed). Positive seeds only; negative seeds never 404." }
 
   /api/v1/discovery/local/embeddings:
     post:
@@ -8419,6 +8546,15 @@ paths:
                   guestAccess:
                     type: boolean
                     description: This build mints guest tokens (`POST /api/v1/federation/guest`).
+                  autoDj:
+                    type: integer
+                    description: >
+                      The Auto DJ picker's generation — the same fact as
+                      `features.autoDj` on `GET /api`. From 1,
+                      `POST /api/v1/db/random-songs` takes negative seeds
+                      (`lessLike` / `lessLikeVectors`); a peer reads it
+                      here beside `discovery.modelId` before sending them.
+                      Absent on older servers.
 
   /api/v1/federation/guest:
     post:
