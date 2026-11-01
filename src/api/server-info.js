@@ -60,6 +60,7 @@ import * as transcode from './transcode.js';
 import { describeAllowance } from './federation-limits.js';
 import { describeProxy } from './federation-stream.js';
 import { moodFiltersReady } from './mood-filter.js';
+import { AUTO_DJ_GENERATION } from './random.js';
 
 // The server's stable id: the random UUID config.js generates on first boot
 // and persists (discovery.mdns.instanceId — the key's name predates this
@@ -145,6 +146,13 @@ export function buildFeatures() {
     // its `threshold` included, and its song lists carry each song's
     // `moodMatch`.
     moodFilters: moodFiltersReady(),
+    // The Auto DJ picker's generation (POST /api/v1/db/random-songs) — an
+    // integer like `stats` / `discoveryTaste`, a version fact. 1: the body
+    // takes `lessLike` / `lessLikeVectors` / `lessLikeModelId` (negative
+    // seeds — ignored, never refused, when unusable) and the answer echoes
+    // `lessLike`. The route's schema is strict, so a client sends them only
+    // from 1 on, and only while `discoveryReady` (they do nothing before).
+    autoDj: AUTO_DJ_GENERATION,
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.
