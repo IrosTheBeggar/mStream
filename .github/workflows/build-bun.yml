@@ -26,6 +26,10 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/build-bun.yml'
+      # The zig toolchain pins and the floor checker feed the Linux gnu
+      # legs' iroh binding build and their glibc-floor assertion.
+      - '.github/actions/setup-zigbuild/**'
+      - 'scripts/check-glibc-floor.sh'
       # Launcher source changes must run the integrated bundle smokes BEFORE
       # merge (the launcher step below builds them fresh for such PRs) — the
       # binary-commit workflow's own gate is only compile + --autostart=status.
@@ -46,6 +50,18 @@ on:
         description: 'Run the full notarize+staple round-trip (normally tag-only)'
         type: boolean
         default: false
+
+env:
+  # The Linux gnu bundles' glibc floor: what build-rust-parser.yml links
+  # the scanner against and what the iroh binding step below links the
+  # binding against (cargo-zigbuild `--target <triple>.<version>`); the
+  # server binary itself (Bun's baseline build) runs on 2.17. Asserted on
+  # the staged bundles, declared to deb/rpm, checked against install.sh's
+  # copy by the installer-contract job, stated in docs/install.md.
+  GLIBC_FLOOR: '2.28'
+  # glibc 2.28 exactly, where the linux-x64 bundle smoke runs (pinned by
+  # digest; the same image build-rust-parser.yml self-tests in).
+  FLOOR_IMAGE: debian:10-slim@sha256:bb3dc79fddbca7e8903248ab916bb775c96ec61014b3d02b4f06043b604726dc
 
 jobs:
   # ── The installers' contract with the manifest, checked on every PR. ─────
@@ -73,6 +89,10 @@ jobs:
         run: |
           set -euo pipefail
           sh -n install.sh
+          # One floor: install.sh refuses hosts below it, naming the number;
+          # the build legs assert the bundles honour the same one.
+          grep -q "^GLIBC_FLOOR=$GLIBC_FLOOR\$" install.sh \
+            || { echo "::error::install.sh's GLIBC_FLOOR is not $GLIBC_FLOOR (this workflow's) — move them together"; exit 1; }
           mkdir -p rel
           # A fake bundle: the folder shape the installers expect, with a
           # mstream-server that answers -V (the post-install proof) and a
@@ -132,6 +152,14 @@ jobs:
           export MSTREAM_RELEASE_BASE=http://127.0.0.1:8765
           export MSTREAM_INSTALL_DIR="$RUNNER_TEMP/app" MSTREAM_BIN_DIR="$RUNNER_TEMP/bin"
           export MSTREAM_NO_DESKTOP=1
+          # A host below the glibc floor (getconf stands in for an old libc)
+          # is refused BEFORE any download on a first install, with the floor
+          # in the message; nothing is installed.
+          mkdir -p "$RUNNER_TEMP/oldlibc"
+          printf '#!/bin/sh\necho "glibc 2.26"\n' > "$RUNNER_TEMP/oldlibc/getconf"; chmod +x "$RUNNER_TEMP/oldlibc/getconf"
+          if PATH="$RUNNER_TEMP/oldlibc:$PATH" sh install.sh > floor.log 2>&1; then echo "::error::installed on a host below the glibc floor"; cat floor.log; exit 1; fi
+          grep -q "glibc is 2.26, but the linux-x64 bundle needs glibc $GLIBC_FLOOR" floor.log
+          [ ! -e "$RUNNER_TEMP/app/current" ]
           sh install.sh | tee out.log
           grep -q "mstream-server 9.9.9 runs" out.log
           [ "$(readlink "$RUNNER_TEMP/app/current")" = "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64" ]
@@ -144,6 +172,12 @@ jobs:
           sh install.sh > rerun.log 2>&1
           grep -q "already installed" rerun.log
           [ -f "$RUNNER_TEMP/app/mStream-9.9.9-linux-x64/STATE" ]
+          # ...while an EXISTING install on such a host (the updater's
+          # scheduled re-run) goes ahead with a warning: the old server ran
+          # there, the new one will too.
+          PATH="$RUNNER_TEMP/oldlibc:$PATH" sh install.sh > floor2.log 2>&1
+          grep -q "warning: this machine's glibc is 2.26" floor2.log
+          grep -q "already installed" floor2.log
           # tampered manifest must refuse
           sed -i 's/"sha256": "[0-9a-f]*"/"sha256": "0000000000000000000000000000000000000000000000000000000000000000"/' rel/manifest.json
           if MSTREAM_FORCE=1 sh install.sh >/dev/null 2>&1; then echo "::error::installed despite bad hash"; exit 1; fi
@@ -674,46 +708,56 @@ jobs:
           # verifies their fetched bytes against sha256 pins per build.)
           [ "$fail" = 0 ]
 
-      # ── iroh native binding for darwin-x64 ───────────────────────────────
+      # ── iroh native binding built from source ────────────────────────────
       # @number0/iroh publishes no darwin-x64 platform package (upstream's
       # macOS CI is Apple-silicon only; x86_64-apple-darwin is not in its napi
       # target list), so stageIroh() in build-bun.mjs had nothing to fetch for
-      # this leg and every Intel-Mac bundle shipped with Quick Connect dead.
+      # that leg and every Intel-Mac bundle shipped with Quick Connect dead.
+      # The linux-x64 / linux-arm64 prebuilts exist but are linked on a glibc
+      # 2.34 image: on Debian 11, Ubuntu 20.04 or RHEL 8 hosts the .node
+      # fails to dlopen and Quick Connect was just as dead (mStream#1101's
+      # host), with napi-rs's generic "npm has a bug" error in the log.
       # Build the crate upstream publishes (iroh-js, at the tag pinned in
-      # bin/iroh/iroh-ffi-pin.json) for x86_64-apple-darwin right here — the
-      # arm64 runner cross-compiles it the way the launcher step above
-      # cross-builds the launcher — and pre-place it where stageIroh() looks
-      # first. The Rosetta smoke below then asserts the shipped x64 server
-      # dlopens it, and a darwin-x64 bundle without it is a bundler FATAL.
+      # bin/iroh/iroh-ffi-pin.json) right here — the arm64 Mac runner
+      # cross-compiles for x86_64-apple-darwin the way the launcher step
+      # above cross-builds the launcher; the Linux legs link with
+      # cargo-zigbuild against GLIBC_FLOOR — and pre-place it where
+      # stageIroh() looks first. The Rosetta smoke (darwin-x64) and the
+      # floor-container smoke (linux-x64) below assert the shipped server
+      # dlopens it; linux-arm64 cannot run here and gets the floor assert.
       #
       # Cache: non-tag runs restore the .node by pin-file hash (a cold build
-      # is ~5 min on this runner; the pin only moves with an @number0/iroh
-      # bump). Tag builds never touch the cache — the shipped binding is
-      # always compiled from the pinned commit on the release run itself.
-      - name: Restore cached iroh .node (darwin-x64, non-tag)
-        if: matrix.key == 'darwin-x64' && github.ref_type != 'tag'
+      # is ~5 min on a runner; the pin only moves with an @number0/iroh bump,
+      # the zig pins with a toolchain bump). Tag builds never touch the cache
+      # — the shipped binding is always compiled from the pinned commit on
+      # the release run itself.
+      - name: Set up cargo-zigbuild (Linux gnu legs)
+        if: matrix.key == 'linux-x64' || matrix.key == 'linux-arm64'
+        uses: ./.github/actions/setup-zigbuild
+
+      - name: Restore cached iroh .node (source-built legs, non-tag)
+        if: (matrix.key == 'darwin-x64' || matrix.key == 'linux-x64' || matrix.key == 'linux-arm64') && github.ref_type != 'tag'
         uses: actions/cache@v4
         with:
-          path: bin/iroh/iroh.darwin-x64.node
-          key: iroh-node-darwin-x64-${{ hashFiles('bin/iroh/iroh-ffi-pin.json') }}-v1
+          path: bin/iroh/*.node
+          key: iroh-node-${{ matrix.key }}-${{ hashFiles('bin/iroh/iroh-ffi-pin.json', '.github/actions/setup-zigbuild/requirements.txt') }}-v2
 
-      - name: Build iroh native binding from source (darwin-x64)
-        if: matrix.key == 'darwin-x64'
+      - name: Build iroh native binding from source (${{ matrix.key }})
+        if: matrix.key == 'darwin-x64' || matrix.key == 'linux-x64' || matrix.key == 'linux-arm64'
         shell: bash
         run: |
           set -euo pipefail
-          OUT=bin/iroh/iroh.darwin-x64.node
+          PIN=bin/iroh/iroh-ffi-pin.json
+          pin() { node -pe "require('./$PIN')$1"; }
+          KEY='${{ matrix.key }}'
+          NAPI=$(pin ".builds['$KEY'].napi")
+          TARGET=$(pin ".builds['$KEY'].target")
+          OUT="bin/iroh/iroh.$NAPI.node"
           if [ -f "$OUT" ]; then
             echo "restored from cache: $OUT ($(file -b "$OUT"))"
             exit 0
           fi
-          PIN=bin/iroh/iroh-ffi-pin.json
-          REPO=$(node -pe "require('./$PIN').repo")
-          TAG=$(node -pe "require('./$PIN').tag")
-          COMMIT=$(node -pe "require('./$PIN').commit")
-          CRATE=$(node -pe "require('./$PIN').crate")
-          TARGET=$(node -pe "require('./$PIN').builds['darwin-x64'].target")
-          MDT=$(node -pe "require('./$PIN').builds['darwin-x64'].macosxDeploymentTarget")
+          REPO=$(pin .repo); TAG=$(pin .tag); COMMIT=$(pin .commit); CRATE=$(pin .crate)
           # The JS half (index.js, from the lockfile) and the native half
           # built here must be one release.
           LOCKVER=$(node -pe "require('./package-lock.json').packages['node_modules/@number0/iroh'].version")
@@ -724,18 +768,81 @@ jobs:
           HAVE=$(git -C "$SRC" rev-parse HEAD)
           [ "$HAVE" = "$COMMIT" ] || { echo "::error::$REPO tag $TAG is commit $HAVE but $PIN pins $COMMIT — the tag moved; re-verify upstream before re-pinning"; exit 1; }
           rustup target add "$TARGET"
-          # --locked: upstream's own Cargo.lock decides every transitive crate.
-          MACOSX_DEPLOYMENT_TARGET="$MDT" cargo build --release --locked \
-            --target "$TARGET" -p "$CRATE" --manifest-path "$SRC/Cargo.toml"
-          DYLIB="$SRC/target/$TARGET/release/lib${CRATE}.dylib"
-          strip -x "$DYLIB"
           mkdir -p bin/iroh
-          cp "$DYLIB" "$OUT"
-          file -b "$OUT" | grep -q 'x86_64' || { echo "::error::$OUT is not an x86_64 Mach-O: $(file -b "$OUT")"; exit 1; }
+          # --locked: upstream's own Cargo.lock decides every transitive crate.
+          case "$KEY" in
+            darwin-*)
+              MDT=$(pin ".builds['$KEY'].macosxDeploymentTarget")
+              MACOSX_DEPLOYMENT_TARGET="$MDT" cargo build --release --locked \
+                --target "$TARGET" -p "$CRATE" --manifest-path "$SRC/Cargo.toml"
+              LIB="$SRC/target/$TARGET/release/lib${CRATE}.dylib"
+              strip -x "$LIB"
+              cp "$LIB" "$OUT"
+              file -b "$OUT" | grep -q 'x86_64' || { echo "::error::$OUT is not an x86_64 Mach-O: $(file -b "$OUT")"; exit 1; }
+              ;;
+            linux-*)
+              # Linked against glibc $GLIBC_FLOOR whatever this runner has;
+              # stripped through cargo (binutils' strip can't do arm64 here).
+              CARGO_PROFILE_RELEASE_STRIP=symbols cargo zigbuild --release --locked \
+                --target "$TARGET.$GLIBC_FLOOR" -p "$CRATE" --manifest-path "$SRC/Cargo.toml"
+              cp "$SRC/target/$TARGET/release/lib${CRATE}.so" "$OUT"
+              scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$OUT"
+              ;;
+          esac
           echo "built $OUT from $REPO@$TAG ($COMMIT): $(file -b "$OUT")"
 
       - name: Build + bundle (${{ matrix.key }})
         run: bun scripts/build-bun.mjs --target=${{ matrix.key }} --bundle
+
+      # ── glibc floor of the Linux gnu bundles ─────────────────────────────
+      # What this repo links — the server (Bun's baseline build, 2.17), the
+      # scanner (build-rust-parser.yml) and the iroh binding (above) — must
+      # sit at or under GLIBC_FLOOR, or a host between the floor and the
+      # binary's need gets exactly the silent degrade this guards against: a
+      # scanner that cannot exec and a Quick Connect that never loads. The
+      # sidecars other repos build (p2p-sidecar, mstream-player) and the GTK
+      # launcher are reported, not gated — docs/install.md carries theirs.
+      - name: Assert the glibc floor (Linux gnu bundle)
+        if: matrix.key == 'linux-x64' || matrix.key == 'linux-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          A=${{ matrix.key == 'linux-x64' && 'x64' || 'arm64' }}
+          scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$D/mstream-server" "$D/bin/iroh/iroh.linux-$A-gnu.node"
+          # The scanner is CI-committed from master (build-rust-parser.yml),
+          # so a PR leg stages whatever master carries: gated on tags — a
+          # release must not ship one above the floor — and a warning before
+          # that; the workflow relinks the set on its next master push.
+          if ! scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$D/bin/rust-parser/rust-parser-linux-$A"; then
+            [ "${{ github.ref_type }}" != "tag" ] || exit 1
+            echo "::warning::the committed rust-parser-linux-$A is above the glibc floor — build-rust-parser.yml relinks it on the next master push; a tag build fails here"
+          fi
+          echo "not gated (other repos / desktop only):"
+          scripts/check-glibc-floor.sh --report "$D"/bin/p2p-sidecar/p2p-sidecar-* "$D"/bin/mstream-player/mstream-player-* "$D/mstream-desktop" || true
+
+      # The bundle on the floor itself: debian:10 is glibc 2.28, the runner
+      # is far newer and proves nothing about it. The server must run, dlopen
+      # the binding (IROH_OK) and the scanner must answer its probe there.
+      - name: Smoke the bundle on the floor glibc (linux-x64)
+        if: matrix.key == 'linux-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          D=$(ls -d dist/stage/mStream-*-linux-x64)
+          run() { docker run --rm -v "$PWD/$D:/b:ro" "$FLOOR_IMAGE" "$@"; }
+          echo "server $(run /b/mstream-server -V) in $FLOOR_IMAGE"
+          OUT=$(run /b/mstream-server --mstream-worker=iroh-selftest '{}' 2>&1) || { echo "$OUT"; echo "::error::the linux-x64 server did not run the iroh self-test on glibc $GLIBC_FLOOR"; exit 1; }
+          echo "$OUT" | grep -q IROH_OK || { echo "$OUT"; echo "::error::the linux-x64 server did not load bin/iroh/iroh.linux-x64-gnu.node on glibc $GLIBC_FLOOR — Quick Connect would ship dead on Debian 10 / Ubuntu 20.04 / RHEL 8 hosts"; exit 1; }
+          echo "OK: the iroh binding loaded on glibc $GLIBC_FLOOR"
+          # The committed scanner: gated on tags, a warning on PRs (see the
+          # floor assert above for why).
+          if GEN=$(run /b/bin/rust-parser/rust-parser-linux-x64 --hash-generation 2>/dev/null); then
+            echo "OK: the scanner answered --hash-generation $GEN on glibc $GLIBC_FLOOR"
+          else
+            [ "${{ github.ref_type }}" != "tag" ] || { echo "::error::the linux-x64 rust-parser cannot run on glibc $GLIBC_FLOOR"; exit 1; }
+            echo "::warning::the committed rust-parser-linux-x64 does not run on glibc $GLIBC_FLOOR (it predates the floor; see the floor assert above)"
+          fi
 
       # ── Windows VersionInfo contract (win-x64) ──────────────────────────
       # Every PE the zip ships must carry the same ProductName / version /
@@ -2288,10 +2395,10 @@ jobs:
             compression: xz
           overrides:
             deb:
-              depends: [libc6]
+              depends: ["libc6 (>= $GLIBC_FLOOR)"]
               recommends: [libgtk-3-0, libayatana-appindicator3-1, libasound2]
             rpm:
-              depends: [glibc]
+              depends: ["glibc >= $GLIBC_FLOOR"]
               recommends: [gtk3, libayatana-appindicator-gtk3, alsa-lib]
           EOF
 
@@ -2320,10 +2427,10 @@ jobs:
             compression: xz
           overrides:
             deb:
-              depends: [libc6]
+              depends: ["libc6 (>= $GLIBC_FLOOR)"]
               recommends: [libasound2]
             rpm:
-              depends: [glibc]
+              depends: ["glibc >= $GLIBC_FLOOR"]
               recommends: [alsa-lib]
           EOF
 

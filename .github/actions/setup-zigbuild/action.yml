@@ -1,0 +1,24 @@
+name: Set up cargo-zigbuild
+description: >-
+  cargo-zigbuild and zig from pinned, hash-checked PyPI wheels. Zig links a
+  Rust build against an exact glibc ABI version on any build host
+  (`cargo zigbuild --target <triple>.<glibc>`), so the glibc floor of the
+  Linux gnu sidecars — the rust-parser scanner and the iroh binding — is a
+  build input, not whatever libc the runner image happens to carry
+  (build-rust-parser.yml, build-bun.yml).
+runs:
+  using: composite
+  steps:
+    - name: Install cargo-zigbuild + zig (pinned wheels)
+      shell: bash
+      run: |
+        set -euo pipefail
+        venv="$RUNNER_TEMP/zigbuild-venv"
+        python3 -m venv "$venv"
+        "$venv/bin/pip" install --quiet --disable-pip-version-check --require-hashes --no-deps \
+          -r "$GITHUB_ACTION_PATH/requirements.txt"
+        # cargo-zigbuild finds zig on PATH; the ziglang wheel keeps the
+        # binary inside its package directory.
+        echo "$venv/bin" >> "$GITHUB_PATH"
+        "$venv/bin/python" -c 'import os, ziglang; print(os.path.dirname(ziglang.__file__))' >> "$GITHUB_PATH"
+        echo "$("$venv/bin/cargo-zigbuild" -V), zig $("$venv/bin/python" -m ziglang version)"

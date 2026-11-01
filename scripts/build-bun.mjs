@@ -211,9 +211,10 @@ if (launcherSrc) {
 // bundle stages the glibc variants AND additionally the static -musl rust-parser
 // as a universal fallback — it's fully static and runs on ANY libc, and the
 // scanner self-heals to it when the shipped glibc parser is too new for an older
-// host glibc (needs GLIBC_2.34; see tryMuslRetry() in src/db/task-queue.js),
-// keeping native-speed scanning on older-glibc distros (RHEL/Rocky 8, Ubuntu
-// 20.04, Amazon Linux 2, Debian 11) instead of the ~16x-slower JS fallback.
+// host glibc (the parser is linked against glibc 2.28 — build-rust-parser.yml —
+// see findRustParser()/tryMuslRetry() in src/db/task-queue.js), keeping
+// native-speed scanning on older-glibc distros (Ubuntu 18.04, Amazon Linux 2,
+// Debian 9) instead of the ~16x-slower JS fallback.
 // Each entry is skipped gracefully if not committed. (mstream-player — the
 // server-audio engine — is not in this list: like the p2p sidecar it left
 // git and is fetched from its pinned release below.)
@@ -765,13 +766,16 @@ function stageIroh(target, dest) {
   const destDir = join(dest, 'bin', 'iroh');
 
   // 0) A binding pre-placed in bin/iroh/ (gitignored) — how the darwin-x64
-  // bundle ships Quick Connect at all. Upstream publishes no darwin-x64
+  // bundle ships Quick Connect at all, and how the Linux glibc bundles ship
+  // one that loads on glibc 2.28 hosts. Upstream publishes no darwin-x64
   // platform package (x86_64-apple-darwin isn't in @number0/iroh's napi
-  // target list; its macOS CI is Apple-silicon only), so build-bun.yml
-  // cross-builds iroh-ffi's own iroh-js crate at the tag pinned in
-  // bin/iroh/iroh-ffi-pin.json and drops the result here before invoking this
-  // script. The same path serves a local cross-bundle, or a self-built
-  // binding for any triple (bin/iroh/README.md). Matched by the full triple
+  // target list; its macOS CI is Apple-silicon only), and its linux gnu
+  // prebuilts need glibc 2.34, so build-bun.yml builds iroh-ffi's own
+  // iroh-js crate at the tag pinned in bin/iroh/iroh-ffi-pin.json for those
+  // legs and drops the result here before invoking this script (its floor
+  // assert catches a leg that fell through to the npm rung). The same path
+  // serves a local cross-bundle, or a self-built binding for any triple
+  // (bin/iroh/README.md). Matched by the full triple
   // filename, so a darwin-x64 .node left behind by a local cross-bundle is
   // never staged into an arm64 one.
   const prePlaced = join(root, 'bin', 'iroh', file);
