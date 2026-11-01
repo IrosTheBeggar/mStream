@@ -378,6 +378,14 @@ export function computeFileChecksum(filePath) {
 
 // ── Extraction ──────────────────────────────────────────────────────────────
 
+// tar hands a .tar.xz to the xz tool, which minimal images lack (Debian 11
+// slim: "xz: Cannot exec"): name the fix instead of the symptom. Pure.
+export function tarFailureHint(stderr) {
+  return /\bxz\b[^\n]*(Cannot exec|not found|No such file)/i.test(String(stderr))
+    ? ' — unpacking .tar.xz needs the xz tool (debian/ubuntu: apt install xz-utils; fedora/rhel: dnf install xz; alpine: apk add xz)'
+    : '';
+}
+
 // BtbN archives unpack into a directory named after the asset (sans
 // .tar.xz) — for the dated builds and the rolling `latest` ones alike
 // (ffmpeg-n9.0-latest-linux64-gpl-9.0/bin/ffmpeg, checked 2026-09-04).
@@ -390,7 +398,7 @@ function extractTarXz(tarPath, destDir, asset) {
     ], { stdio: ['ignore', 'ignore', 'pipe'] });
     let err = '';
     proc.stderr.on('data', d => { err += d; });
-    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`tar failed (${code}): ${err.slice(-300)}`)));
+    proc.on('close', code => code === 0 ? resolve() : reject(new Error(`tar failed (${code}): ${err.slice(-300)}${tarFailureHint(err)}`)));
     proc.on('error', reject);
   });
 }

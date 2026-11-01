@@ -242,6 +242,40 @@ if [ -n "${MSTREAM_UNINSTALL:-}" ]; then
     exit 0
 fi
 
+# The glibc bundles' floor. The server binary runs on glibc 2.17, but the
+# library scanner and the Quick Connect binding staged beside it are linked
+# against 2.28 (build-rust-parser.yml and build-bun.yml build and assert
+# that), so a first install on an older host is refused up front, before
+# the download, with the floor spelled out - rather than shipping a server
+# whose scanner falls back and whose Quick Connect is dead. An upgrade of a
+# working install, or an explicit MSTREAM_KEY, goes ahead with a warning.
+# Keep in step with GLIBC_FLOOR in build-bun.yml (its installer-contract
+# job checks). getconf is glibc's own; `ldd --version` is the fallback.
+GLIBC_FLOOR=2.28
+glibc_version() {
+    v=$(getconf GNU_LIBC_VERSION 2>/dev/null | awk '{print $2}')
+    [ -n "$v" ] || v=$(ldd --version 2>/dev/null | sed -n '1s/.* \([0-9][0-9]*\.[0-9][0-9]*\)$/\1/p')
+    echo "$v"
+}
+version_below() {   # version_below A B: A sorts below B as dotted numbers
+    [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -t. -k1,1n -k2,2n | head -1)" = "$1" ]
+}
+case "$key" in
+    linux-x64|linux-arm64)
+        have=$(glibc_version)
+        if [ -n "$have" ] && version_below "$have" "$GLIBC_FLOOR"; then
+            if [ -n "${MSTREAM_KEY:-}" ] || [ -e "$ROOT/current" ]; then
+                echo "warning: this machine's glibc is $have, but the $key bundle needs glibc $GLIBC_FLOOR or newer - its library scanner and Quick Connect will not run here" >&2
+            else
+                echo "this machine's glibc is $have, but the $key bundle needs glibc $GLIBC_FLOOR or newer" >&2
+                echo "  (Debian 10, Ubuntu 20.04, RHEL/Rocky/Alma 8 or later). On an older OS run mStream from source with" >&2
+                echo "  Node (https://github.com/$REPO/blob/master/docs/install.md), or MSTREAM_KEY=$key to install anyway." >&2
+                exit 1
+            fi
+        fi
+        ;;
+esac
+
 if [ -n "${MSTREAM_RELEASE_BASE:-}" ]; then
     base="${MSTREAM_RELEASE_BASE%/}"
 elif [ "$VERSION" = latest ]; then

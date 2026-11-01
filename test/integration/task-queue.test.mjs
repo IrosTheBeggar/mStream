@@ -643,6 +643,36 @@ describe('task-queue: probeHashGeneration', () => {
       path.join(os.tmpdir(), 'no-such-rust-parser.exe')), null);
   });
 
+  // The glibc-floor case (mStream#1101's host): a prebuilt linked against a
+  // newer glibc than the host's never runs — ld.so prints the versions it
+  // misses and exits — and the gate must say THAT, not "pre-probe build".
+  test('a binary the dynamic loader refuses probes as null and says why', (t) => {
+    if (process.platform === 'win32') { t.skip('a sh script stands in for the binary'); return; }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-probe-'));
+    const fake = path.join(dir, 'rust-parser-too-new');
+    fs.writeFileSync(fake, '#!/bin/sh\n'
+      + 'echo "$0: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.33\' not found (required by $0)" >&2\n'
+      + 'echo "$0: /lib/x86_64-linux-gnu/libc.so.6: version \\`GLIBC_2.34\' not found (required by $0)" >&2\n'
+      + 'exit 1\n', { mode: 0o755 });
+    try {
+      assert.equal(taskQueue.probeHashGeneration(fake), null);
+      assert.match(taskQueue.execFailure(fake), /^needs GLIBC_2\.33, GLIBC_2\.34/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loaderFailure reads the loader's complaint, and nothing else", () => {
+    const ld = (v) => `./rust-parser-linux-x64: /lib/x86_64-linux-gnu/libc.so.6: version \`${v}' not found (required by ./rust-parser-linux-x64)\n`;
+    assert.equal(taskQueue.loaderFailure(ld('GLIBC_2.32') + ld('GLIBC_2.33') + ld('GLIBC_2.34'), '2.31'),
+      "needs GLIBC_2.32, GLIBC_2.33, GLIBC_2.34, this host's glibc is 2.31");
+    assert.equal(taskQueue.loaderFailure(ld('GLIBC_2.34'), null), 'needs GLIBC_2.34');
+    assert.equal(taskQueue.loaderFailure('./mstream-desktop: error while loading shared libraries: libgdk-3.so.0: cannot open shared object file: No such file or directory\n', '2.31'),
+      'cannot load libgdk-3.so.0');
+    assert.equal(taskQueue.loaderFailure('', '2.31'), null);
+    assert.equal(taskQueue.loaderFailure("error: unexpected argument '--hash-generation'", '2.31'), null);
+  });
+
   test('the real binary answers with the current generation', async (t) => {
     const { findRustParser } = await import('../helpers/scanner-runner.mjs');
     const { HASH_GENERATION } = await import('../../src/db/audio-hash.js');
