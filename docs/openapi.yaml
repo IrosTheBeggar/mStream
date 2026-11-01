@@ -755,6 +755,222 @@ components:
           properties:
             endpointId: { type: string }
             name: { type: string, nullable: true }
+            label:
+              type: string
+              description: >
+                Taste route leads only (`network.results`, `discoveryTaste >=
+                3`): the peer's display label, the same string
+                `GET /api/v1/discovery/p2p/peers` gives for it
+                (`DiscoveryP2pPeer.label`), so the strip and a lead agree.
+                Draw it verbatim. Absent on `POST /api/v1/discovery/p2p/similar`.
+        tile:
+          type: object
+          description: >
+            Taste route leads only (`discoveryTaste >= 3`; absent on
+            `POST /api/v1/discovery/p2p/similar`): the generated cover a lead
+            is drawn with — leads carry no art. Server-stamped so every client
+            draws the same: clients take the colours from `hue` and never
+            compute the key or the hue themselves. `nameKey` below is the
+            artist index's name key (whitespace runs collapsed, trimmed,
+            quote and dash variants folded to ASCII, lower-cased; diacritics
+            kept).
+          properties:
+            key:
+              type: string
+              description: >
+                `nameKey(artist)|nameKey(album)` when both are non-empty, else
+                whichever one is, else `nameKey(title)` (`""` when all three
+                are empty). Rows with one key are one album's: what a client
+                spreads a preview's earned artwork by.
+            hue:
+              type: integer
+              minimum: 0
+              maximum: 359
+              description: "FNV-1a-32 over the key's UTF-8 bytes (basis `0x811c9dc5`, prime `0x01000193`), `% 360`."
+            letter:
+              type: string
+              description: >
+                The first letter or digit (`\p{L}`, `\p{N}`) of the trimmed
+                artist, else of the title, else `""`; upper-cased only when
+                that is still one character (`ß` stays `ß`).
+          example: { key: "paper lantern|night ferry", hue: 39, letter: P }
+    DiscoveryP2pAddState:
+      type: object
+      description: >
+        One peer's Add state (`POST /api/v1/admin/discovery/p2p/peer-dbs/add`,
+        and the admin panel's `…/peer-dbs/fetch` while it runs), held in
+        memory for at most 200 peers and never stored: nothing survives a
+        restart, after which the peer is plain addable again (`add: null`).
+        `done` lingers 5 minutes and `failed` 30 (checked on read). Every
+        `failed` state, `no-room` included, is dropped on any change to the
+        shelf or its pins — an Add or fetch landing, a removal, a rotation
+        swap, a block, a pin or an unpin — so "No room" clears itself as soon
+        as an admin unpins something. A `no-room` also clears when any other
+        download (an Add, the admin panel's fetch, the auto-fetch) ends
+        without landing, since the room it held is free again. A `done`
+        state goes as soon as its snapshot leaves the shelf again (the row is
+        then plain addable). Every stop of the discovery network drops every
+        state — switching it off, a failed switch-on rolled back, and the
+        soft reboot that any reboot-requiring admin save triggers — and an
+        Add still downloading then writes nothing to the shelf. Clients show
+        `no-room` as "No room" (inert) and every other failed code as "Try
+        again"; the server's own messages go to the log only. Null where a
+        peer has no state (the peers route's `add`).
+      nullable: true
+      required: [state, code, at]
+      properties:
+        state:
+          type: string
+          enum: [adding, done, failed]
+          description: "`adding` covers a download that is running or queued; `done` = the snapshot landed on the shelf."
+        code:
+          type: string
+          nullable: true
+          enum: [no-room, no-disk, offline, bad-snapshot, gone, failed, null]
+          description: >
+            Null unless `failed`. `no-room`: the snapshot cannot fit under the
+            storage cap even after swapping out every unpinned snapshot —
+            planned on its announced size before the download, and planned
+            again when the bytes received did not fit the shelf as it stood
+            by then; only a page Add stores it. `no-disk`: the volume has less
+            free space than the snapshot plus a 500 MB floor. `offline`:
+            nothing to fetch from (the peer is not online and no one seeds
+            its snapshot, or the discovery network is not running), or the
+            download could not reach a source (a timeout or dial failure).
+            `bad-snapshot`: the peer announces no snapshot size (refused
+            before any download: no room can be planned for it), sent more
+            than it announced, or sent no usable snapshot. `gone`: the peer
+            was not in the catalog when its download was to start (a queued
+            Add's turn, or the retry after a refusal for room); a peer
+            forgotten while its download runs still lands. `failed`: anything
+            else — the admin panel's fetch stores a cap refusal of its own as
+            this, never as `no-room`.
+        at: { type: string, format: date-time, description: "When the peer entered this state." }
+    DiscoveryP2pPeer:
+      type: object
+      description: >
+        One peer on the Peer Recommendations strip: a snapshot on the shelf
+        (`onShelf: true`), or, for a caller with `canAdd`, a catalog peer it
+        could add. Clients key every state on `endpointId`, never on `label`:
+        a label can change between polls (a newly announced peer with the same
+        name suffixes both).
+      properties:
+        endpointId: { type: string, description: "The peer's discovery-network id, 64 hex — what `networkPeers` and the Add route take." }
+        name:
+          type: string
+          description: "The peer's latest announced name, else its name when its snapshot was fetched, else `\"\"`. Raw: clients draw `label`."
+        label:
+          type: string
+          description: >
+            The peer's display label, drawn verbatim; the taste route's leads
+            carry the same string (`peer.label`). The base is `name` trimmed,
+            or `mStream` when that is empty. It gains ` · ` and the first 4
+            hex of `endpointId` when the base is the default `mStream` (any
+            case), or when two or more peers this server knows (catalog and
+            shelf, blocked ones left out) share the base (case-insensitive,
+            after NFKC) — so a member may see `Kitchen Radio · 1a2b` while the
+            twin is not listed for them. A suffixed label that still collides
+            with another label takes 6 hex.
+        monogram:
+          type: string
+          description: >
+            Up to two characters for the strip's circle, drawn verbatim. From
+            `label` without a trailing ` · ` and 4–6 hex (trimmed; `mStream`
+            when that leaves nothing), split into words on whitespace, each
+            word reduced to its letters and digits (`\p{L}`, `\p{N}`) and
+            dropped when none is left. Two words or more: the first character
+            of each of the first two, each upper-cased when that is still one
+            character. One word: its first two characters as written (a
+            one-character word is upper-cased). None: `""`. `Basement Hi-Fi`
+            → `BH`, `mStream · 3f9a` → `mS`, `Björk` → `Bj`, `坂本` → `坂本`,
+            `x` → `X`, `⚡` → `""`.
+        hue:
+          type: integer
+          minimum: 0
+          maximum: 359
+          description: "`parseInt(endpointId.slice(0, 6), 16) % 360` — the circle's hue."
+        online:
+          type: boolean
+          description: >
+            An announcement from the peer was heard in the last 90 s
+            (announcers re-broadcast every ~15 s) — the window the admin
+            catalog and the shelf's rotation use too. Every peer reads offline
+            after a reboot until it is heard again; a held snapshot's leads
+            work either way.
+        onShelf: { type: boolean, description: "A snapshot of the peer is on the shelf (the taste route's network walk reads it)." }
+        pinned: { type: boolean, description: "Rotation-immune (the admin panel's Pin). False on an addable row." }
+        rowCount: { type: integer, description: "Tracks in the held snapshot, or in the announced one for an addable row. Not for display." }
+        add:
+          description: "The peer's Add state, or null. Always null for a caller without `canAdd`."
+          type: object
+          nullable: true
+          allOf:
+            - { $ref: "#/components/schemas/DiscoveryP2pAddState" }
+    DiscoveryP2pPeersResponse:
+      type: object
+      properties:
+        canAdd:
+          type: boolean
+          description: >
+            This caller may add peers (`POST /api/v1/admin/discovery/p2p/peer-dbs/add`):
+            an admin, on an unlocked admin API, from an allowed network — the
+            admin routes' own three gates. Clients read this, never
+            `user.admin`. Addable rows and Add states show only when it is true.
+        shelf:
+          type: object
+          properties:
+            held: { type: integer, description: "Snapshots on the shelf, blocked peers left out, in any model space." }
+            searchable:
+              type: integer
+              description: >
+                Of those, the ones in this server's embedding model space —
+                the shelf rows listed. 0 = no peers to recommend from yet;
+                `held > 0` with 0 here = the shelf holds only other models'
+                snapshots.
+            running:
+              type: boolean
+              description: >
+                The discovery-network stack is running now (the `discoveryP2p`
+                feature flag is the config switch). Lets an admin tell a
+                network that is down apart; the shelf is searched either way.
+        peers:
+          type: array
+          description: Shelf rows, then addable rows, in the order the route describes. "All" is the client's own item, never a row.
+          items: { $ref: "#/components/schemas/DiscoveryP2pPeer" }
+      example:
+        canAdd: true
+        shelf: { held: 2, searchable: 2, running: true }
+        peers:
+          - endpointId: 77cc524df932733ad0dd56fcbd2c3b71b89194dd28380f854eeaf10526ad44af
+            name: Basement Hi-Fi
+            label: Basement Hi-Fi
+            monogram: BH
+            hue: 210
+            online: true
+            onShelf: true
+            pinned: false
+            rowCount: 18234
+            add: null
+          - endpointId: 3f9a1c110530206e69ae8e732c2d8b2314e7e8a6bdf1c4c4e06ec7a9d47d181f
+            name: mStream
+            label: mStream · 3f9a
+            monogram: mS
+            hue: 140
+            online: false
+            onShelf: true
+            pinned: false
+            rowCount: 5120
+            add: null
+          - endpointId: 07e1da5e586e9dcdfa498e8750f46ad346f8da857f80270b2922a0af94cc6218
+            name: Static Garden
+            label: Static Garden
+            monogram: SG
+            hue: 330
+            online: true
+            onShelf: false
+            pinned: false
+            rowCount: 7000
+            add: { state: adding, code: null, at: "2026-10-27T10:00:00.000Z" }
     DiscoveryFederationLead:
       type: object
       description: >
@@ -888,6 +1104,31 @@ components:
             their side; one that cannot is dropped (`moodsUnsupported`). The network section
             is null on a filtered call. Not applied, and not echoed, while this server has
             no mood scores.
+        networkPeers:
+          type: array
+          minItems: 1
+          maxItems: 50
+          uniqueItems: true
+          items: { type: string, pattern: "^[0-9a-fA-F]{64}$" }
+          description: >
+            `discoveryTaste >= 3`. Walk only these shelf peers' snapshots
+            (`endpointId`s from `GET /api/v1/discovery/p2p/peers`; any case,
+            compared lower-case) — a Peer Recommendations peer tab, so each
+            peer gets its own top `limit.network`. Absent = the whole shelf;
+            `[]` answers 400. Unknown, blocked and unheld ids are ignored;
+            when none of them is on the shelf the section is empty with
+            `reason: not-on-shelf`. Validated, and ignored, when `sources`
+            leaves out `network`.
+        networkOnRandomSeed:
+          type: boolean
+          default: false
+          description: >
+            `discoveryTaste >= 3`. Walk the network on a random seed too
+            (`seedSource: random`, nothing counted for the caller): the one
+            random pick seeds it, so every lead's `seedHash` is that pick. The
+            walk is over the shelf on this machine, so nothing leaves it.
+            Peers (federation) stay off on a random seed either way. The
+            Discover page never sends it; Peer Recommendations always does.
     TasteSeed:
       type: object
       properties:
@@ -1016,9 +1257,12 @@ components:
           nullable: true
           description: >
             Null when not asked for, when `discoveryP2p` is off, with a
-            random seed, or on a call with a `moods` filter. Asked for and
-            empty (`results: []`) otherwise — including while no seed is
-            analyzed yet (`notAnalyzed`).
+            random seed unless the body sent `networkOnRandomSeed: true`
+            (`discoveryTaste >= 3`), or on a call with a `moods` filter.
+            Asked for and empty (`results: []`) otherwise — including while
+            no seed is analyzed yet (`notAnalyzed`) — and then `reason` says
+            why. Asked for, it is null on an unfiltered answer whose seed is
+            not random only when the network is switched off.
           properties:
             results:
               type: array
@@ -1028,12 +1272,25 @@ components:
                   - type: object
                     properties:
                       source: { type: string, enum: [p2p] }
-                      seedHash: { type: string, nullable: true, description: "The seed this lead sits closest to." }
+                      seedHash: { type: string, nullable: true, description: "The seed this lead sits closest to (on a random seed, the random pick)." }
             searched:
               type: object
               properties:
                 peers: { type: integer }
                 tracks: { type: integer }
+            reason:
+              type: string
+              nullable: true
+              enum: [empty-shelf, not-on-shelf, no-compatible, nothing-new, scan-pending, error, null]
+              description: >
+                `discoveryTaste >= 3`: why `results` is empty; null when there
+                are results, or when `limit.network` is 0. `scan-pending`: no
+                seed is analyzed yet (`notAnalyzed`). `error`: the walk failed
+                (the next call walks again). `not-on-shelf`: none of
+                `networkPeers` is on the shelf. `empty-shelf`: no snapshot is.
+                `no-compatible`: snapshots are held, but none in the seeds'
+                model space. `nothing-new`: the walk found nothing new to this
+                library.
         peers:
           type: object
           nullable: true
@@ -1728,7 +1985,11 @@ paths:
                         description: Sonic-similarity collection is enabled.
                       discoveryP2p:
                         type: boolean
-                        description: The discovery network feature is enabled.
+                        description: >
+                          The discovery network feature is enabled — the
+                          config switch, not whether the network is running
+                          now (`GET /api/v1/discovery/p2p/peers` says that,
+                          `shelf.running`).
                       discoveryPlugins:
                         type: boolean
                         description: >
@@ -1742,10 +2003,25 @@ paths:
                           The Discover page generation: this server answers
                           `POST /api/v1/discovery/taste` and
                           `POST /api/v1/discovery/plugin-jobs/lookup/batch`.
-                          An integer like `stats`: 2 = the body takes
-                          `moods` (a MoodFilter). A version fact: show the
-                          page on `discovery === true && discoveryTaste >= 1`;
-                          absent on older servers.
+                          An integer like `stats`, gated on `>= n`: 2 = the
+                          body takes `moods` (a MoodFilter); 3 adds the
+                          `networkPeers` and `networkOnRandomSeed` body keys
+                          (the strict schema answers them 400 before 3),
+                          `network.reason`, and `peer.label` and `tile` on
+                          network leads. A version fact: show the page on
+                          `discovery === true && discoveryTaste >= 1`; absent
+                          on older servers.
+                      discoveryP2pPeers:
+                        type: integer
+                        description: >
+                          The Peer Recommendations generation: this server
+                          answers `GET /api/v1/discovery/p2p/peers` and
+                          `POST /api/v1/admin/discovery/p2p/peer-dbs/add`. An
+                          integer like `discoveryTaste`. A version fact: show
+                          the page on `discovery === true && discoveryP2p ===
+                          true && discoveryTaste >= 3 && discoveryP2pPeers >=
+                          1`, and no entry point at all otherwise; absent on
+                          older servers.
                       moodFilters:
                         type: boolean
                         description: >
@@ -1848,7 +2124,8 @@ paths:
                   discoveryP2p: false
                   discoveryPlugins: true
                   discoveryOwned: true
-                  discoveryTaste: 2
+                  discoveryTaste: 3
+                  discoveryP2pPeers: 1
                   moodFilters: true
                   sync: true
                   transcode: false
@@ -1912,6 +2189,12 @@ paths:
                     description: >
                       The Discover page generation — the same fact as
                       `features.discoveryTaste` on `GET /api`. Absent on
+                      older servers.
+                  discoveryP2pPeers:
+                    type: integer
+                    description: >
+                      The Peer Recommendations generation — the same fact as
+                      `features.discoveryP2pPeers` on `GET /api`. Absent on
                       older servers.
                   moodFilters:
                     type: boolean
@@ -3177,6 +3460,253 @@ paths:
         "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`)." }
         "404": { description: "The seed does not resolve, has no embedding yet, or discovery data was never collected." }
 
+  /api/v1/discovery/p2p/peer-dbs:
+    get:
+      operationId: getDiscoveryP2pPeerDbs
+      tags: [Discovery]
+      summary: The shelf — the fetched peer snapshots the network routes search
+      description: |
+        Every snapshot on this server's shelf: the local copies of peer
+        servers' discovery snapshots that `POST /api/v1/discovery/p2p/similar`
+        and the taste route's network section walk, in any model space.
+        Read-only and metadata-only, so any signed-in user may read it (a
+        player uses it to explain where a lead came from). For a strip to
+        draw, with labels, online state and Add states, use
+        `GET /api/v1/discovery/p2p/peers`. Feature flag: `discoveryP2p`.
+      responses:
+        "200":
+          description: The shelf.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  peerDbs:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        endpointId: { type: string }
+                        name: { type: string, description: "The peer's announced name when the snapshot was fetched." }
+                        rowCount: { type: integer }
+                        modelId: { type: string, description: "The embedding model the snapshot's vectors come from." }
+                        sizeBytes: { type: integer }
+                        fetchedAt: { type: string, format: date-time, description: "The latest download (a refresh replaces the bytes)." }
+                        firstFetchedAt: { type: string, format: date-time, description: "When the peer joined the shelf — rotation's aging clock, kept across refreshes." }
+                        pinned: { type: boolean, description: "Rotation-immune." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`)." }
+
+  /api/v1/discovery/p2p/peers:
+    get:
+      operationId: getDiscoveryP2pPeers
+      tags: [Discovery]
+      summary: The peers Peer Recommendations narrows to (and, for an admin, can add)
+      description: |
+        The Peer Recommendations page's peer strip: the peers on this
+        server's shelf of fetched snapshots, and, for a caller who may add
+        one (`canAdd`), catalog peers it could add. Answered from memory, so
+        it is cheap to poll: clients ask on open, then every 15 s, or every
+        3 s while a row they show is `adding` or their own Add POST is out;
+        paused while the page is hidden or covered (one poll on return),
+        stopped when it is left. Sent with `Cache-Control: no-store`.
+
+        **Rows.** Shelf rows (`onShelf: true`): every held snapshot that is
+        not blocked and is in this server's embedding model space (a
+        snapshot in another space gives no leads, so it is not listed; the
+        admin panel's catalog still shows it). Addable rows (`onShelf:
+        false`), only when `canAdd`: catalog peers not held, not blocked, in
+        a compatible model space, and online or carrying an Add state (so a
+        row being added does not vanish when its peer drops) — at most 24,
+        after sorting, the ones carrying a state kept first when the cap
+        bites. Any other caller gets the shelf rows alone, each with
+        `add: null`. Blocked and incompatible peers are hidden from everyone.
+
+        **Order** (stable: an Add state never moves a row): shelf rows,
+        online ones first, then by `label` (`localeCompare`, base
+        sensitivity), then by `endpointId`; then addable rows by live
+        seeders (most first), then `rowCount` (largest first), then
+        `endpointId`. A row that lands moves to the shelf group. "All" is
+        drawn by each client; it is not a row.
+
+        **Online**, **label**, **monogram** and **hue** are the server's (the
+        rules are on `DiscoveryP2pPeer`), so every client draws the same
+        strip. The same labels stamp the taste route's network leads
+        (`peer.label`).
+
+        Feature flag: `discoveryP2pPeers >= 1` (with `discoveryP2p`). Works
+        while a scan runs. Refused to federation keys, guest tokens and
+        jukebox sessions; public-access mode works.
+      responses:
+        "200":
+          description: The strip.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryP2pPeersResponse" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`); a federation key or guest token (`Forbidden`); a jukebox session." }
+
+  /api/v1/admin/discovery/p2p/peer-dbs/fetch:
+    post:
+      operationId: fetchDiscoveryP2pPeerDb
+      tags: [Discovery]
+      summary: Fetch a catalog peer's snapshot onto the shelf now, pinned (synchronous)
+      description: |
+        The admin panel's download: fetches one catalog peer's current
+        snapshot and answers once it is on the shelf, or refused — the
+        request stays open for the whole download. The entry is **pinned**
+        (rotation-immune: an admin's explicit choice must not be rotated
+        away; `POST /api/v1/admin/discovery/p2p/peer-dbs/pin` undoes it), and
+        a pin is sticky: a refresh never unpins. It makes no room of its
+        own: a fetch that would pass the storage cap (`maxPeerDbStorageMb`)
+        is refused, as are a blocked peer, too little free disk (the
+        snapshot plus a 500 MB floor) and a peer that sends more than it
+        announced. A snapshot in another model space is fetched all the
+        same.
+
+        A peer already being fetched (a page Add, or the shelf's own
+        auto-fetch) is not downloaded twice: the call joins that download
+        and pins what lands. Joining a page Add means joining its swap too:
+        the unpinned snapshots that Add planned to evict leave the shelf
+        when it lands, before this call answers. While it runs the peer's
+        Add state on
+        `GET /api/v1/discovery/p2p/peers` reads `adding`, then `done` or
+        `failed` — a cap refusal stored as code `failed`, never `no-room`
+        (only `POST /api/v1/admin/discovery/p2p/peer-dbs/add` stores that). A
+        failure is logged in the discovery Activity feed. Admin-only; 403
+        while the discovery network is disabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpointId]
+              properties:
+                endpointId: { type: string, pattern: "^[0-9a-fA-F]{64}$", description: "A catalog peer's id." }
+      responses:
+        "200":
+          description: The shelf entry, pinned.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  endpointId: { type: string }
+                  hash: { type: string, description: "The snapshot blob's content hash." }
+                  path: { type: string, description: "Where the snapshot file sits on this server." }
+                  snapshotSeq: { type: integer }
+                  modelId: { type: string }
+                  modelVersion: { type: string, nullable: true }
+                  rowCount: { type: integer }
+                  sizeBytes: { type: integer, description: "The bytes on disk." }
+                  name: { type: string, description: "The peer's announced name." }
+                  fetchedAt: { type: string, format: date-time }
+                  firstFetchedAt: { type: string, format: date-time, description: "When the peer joined the shelf; kept across refreshes." }
+                  pinned: { type: boolean, example: true }
+        "400": { description: "Request validation failed (`endpointId` is not 64 hex)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`); not an admin; or outside the allowed admin network." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+        "500": { description: "`fetch failed: <reason>` — not in the catalog, blocked, over the storage cap, too little free disk, the download failed, or the peer sent an over-announced or invalid snapshot." }
+
+  /api/v1/admin/discovery/p2p/peer-dbs/add:
+    post:
+      operationId: addDiscoveryP2pPeerDb
+      tags: [Discovery]
+      summary: Add a catalog peer's snapshot to the shelf, making room (async)
+      description: |
+        The Peer Recommendations page's "+": starts fetching one catalog
+        peer's current snapshot onto the shelf and answers at once. Follow it
+        on `GET /api/v1/discovery/p2p/peers` (the row's `add`, then
+        `onShelf`). A POST for a peer whose Add failed tries again.
+
+        | status | body | when |
+        |---|---|---|
+        | 202 | `{ endpointId, state: adding, code: null, at }` | started, queued, or already in flight (deduped) |
+        | 200 | `{ endpointId, state: done, code: null, at }` | already on the shelf |
+        | 200 | `{ endpointId, state: failed, code: no-room \| offline \| bad-snapshot, at }` | a check before the download failed (the state is stored, so every client's strip shows it) |
+        | 404 | `{ error: not-in-catalog }` | no announcement heard from the peer |
+        | 409 | `{ error: blocked }` / `{ error: incompatible }` | the peer is blocked — checked before the catalog, so a blocked peer the block route also forgot answers 409, not 404 — or its snapshot is in another model space |
+
+        The failure codes, their lifetimes and the clearing rule are on
+        `DiscoveryP2pAddState`; clients show `no-room` as "No room" (inert)
+        and any other failed code as "Try again".
+
+        **Does not pin.** The snapshot joins the shelf unpinned, so rotation
+        may swap it out later like any other; the admin panel's Pin keeps it.
+        (The panel's own `…/peer-dbs/fetch` pins.)
+
+        **Making room.** On a full shelf the Add swaps out as many unpinned
+        snapshots as the incoming one needs, in rotation's eviction order
+        (offline peers first, the longest silent first; then the
+        longest-standing member; a tie goes to one other peers also hold),
+        with no age gate, and never a pinned one; `no-room`
+        only when it cannot fit even after evicting every unpinned snapshot.
+        It **fetches first, then evicts**, so a failed or slow Add costs no
+        peer: the evictions land in the same step as the new entry, so the
+        shelf is never over its cap at rest, but during the download the
+        storage overshoots the cap by at most the incoming snapshot's size
+        (the free-disk floor, the snapshot plus 500 MB, still applies). Each
+        swap is logged in the discovery Activity feed.
+
+        At most 2 Adds download at once; later ones queue in order and read
+        `adding` meanwhile, and the room plan is re-run when one starts. A
+        peer already being fetched (another Add, the panel's fetch, or the
+        shelf's auto-fetch) is not downloaded twice.
+
+        **Nothing survives a restart**: an Add in flight dies with the
+        process, and after a reboot the row is plain addable again (`add:
+        null`), so a re-POST starts afresh. The same holds for every stop of
+        the discovery network inside one process (switching it off, a failed
+        switch-on rolled back, the soft reboot after a reboot-requiring
+        admin save): the Add states go, and the downloads still running are
+        abandoned and land nothing. Admin-only; 403 while the discovery
+        network is disabled.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [endpointId]
+              properties:
+                endpointId: { type: string, pattern: "^[0-9a-fA-F]{64}$", description: "A catalog peer's id (`DiscoveryP2pPeer.endpointId`); any case, compared lower-case." }
+      responses:
+        "202":
+          description: Started, queued, or already in flight — `adding`.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      endpointId: { type: string }
+                  - { $ref: "#/components/schemas/DiscoveryP2pAddState" }
+              example: { endpointId: 07e1da5e586e9dcdfa498e8750f46ad346f8da857f80270b2922a0af94cc6218, state: adding, code: null, at: "2026-10-27T10:00:00.000Z" }
+        "200":
+          description: >
+            Nothing started: `done` (already on the shelf), or `failed` with
+            `no-room` (it cannot fit even after evicting every unpinned
+            snapshot), `offline` (the peer is not online and no one seeds
+            its snapshot, or the discovery network is not running) or
+            `bad-snapshot` (the peer announces no snapshot size).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - type: object
+                    properties:
+                      endpointId: { type: string }
+                  - { $ref: "#/components/schemas/DiscoveryP2pAddState" }
+              example: { endpointId: 07e1da5e586e9dcdfa498e8750f46ad346f8da857f80270b2922a0af94cc6218, state: failed, code: no-room, at: "2026-10-27T10:00:00.000Z" }
+        "400": { description: "Request validation failed (`endpointId` is not 64 hex)." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "The discovery network is disabled (`discoveryP2p.enabled`); not an admin; or outside the allowed admin network." }
+        "404": { description: "`not-in-catalog`: no announcement heard from the peer." }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+        "409": { description: "`blocked` (checked first: a blocked peer answers this even when it is not in the catalog) or `incompatible` (its snapshot is in another model space)." }
+
   /api/v1/discovery/federation/similar:
     post:
       tags: [Discovery]
@@ -3282,7 +3812,11 @@ paths:
           left out of `tracks`. Each row says which seed it is "because of"
           (`seedHash`). At most 6 history seeds plus the pins are ranked.
         * **network** — discovery-network leads (`source: p2p`), as
-          `POST /api/v1/discovery/p2p/similar` finds them.
+          `POST /api/v1/discovery/p2p/similar` finds them. Since
+          `discoveryTaste` 3 the walk can be narrowed to some shelf peers
+          (`networkPeers`) and run on a random seed (`networkOnRandomSeed`),
+          an empty section says why (`reason`), and every lead carries its
+          peer's `label` and a generated `tile`.
         * **peers** — songs on paired servers, grouped per server
           (`source: federation`), as
           `POST /api/v1/discovery/federation/similar` finds them; a peer
@@ -3305,12 +3839,44 @@ paths:
         discovery on the centroid of the seeds — a random batch of up to 12
         songs the caller finished in the chosen window (all time with
         `window: 0`), plus pins — one averaged vector, never names, paths or
-        hashes, but derived from what this user listens to.
+        hashes, but derived from what this user listens to. The network walk
+        sends nothing anywhere: the shelf is local, a random seed's walk
+        included.
+
+        **Peer Recommendations** (`discoveryTaste >= 3 &&
+        discoveryP2pPeers >= 1`) is a second page built from the network
+        section alone, with the peers of `GET /api/v1/discovery/p2p/peers`
+        as tabs. Its clients ask by one rule set:
+
+        * **Open** — `{ sources: [network], window, pin?, exclude?,
+          newArtistsOnly: false, limit: { seeds: 12, network: 32 },
+          networkOnRandomSeed: true, networkPeers? }`, `networkPeers` left out
+          for All; the open pins now playing, as Discover does.
+        * **A tab** (a peer, or All) — the same body pinned to the batch on
+          screen: `pin` = every `seeds[].filepath` of the batch's first answer
+          (at most 12, deduped, a random pick included), `limit.seeds` =
+          their count, and `networkPeers: [endpointId]` (left out for All),
+          so each peer gets its own top 32. A pinned walk over an unchanged
+          shelf gives the same rows, so a client may answer a tab again from
+          its own cache for the batch.
+        * **New seeds, a window change, seed edits** — a new batch, keeping
+          the selected tab's `networkPeers`; on a random answer the pick shown
+          goes into `exclude` (Discover's "another pick").
+        * **An Add landed** — a peer this client added
+          (`POST /api/v1/admin/discovery/p2p/peer-dbs/add`) is now `onShelf`
+          (or its `add.state` is `done`), or `shelf.searchable` went from 0 to
+          more while the page shows no peers: re-ask the current tab pinned to
+          the batch (after a playing preview ends). Adds by other clients and
+          rotation only redraw the tabs.
+        * **`reason: not-on-shelf`**, or the selected peer gone from the
+          shelf in a poll — select All and re-ask it pinned to the batch (or
+          answer from the cached All).
 
         Every call computes its answer (no result cache). Clients fetch on
         open or on a tap and never poll. Feature flag: `discovery === true &&
-        discoveryTaste >= 1`. Refused to federation keys, guest tokens and
-        jukebox sessions; public-access mode works.
+        discoveryTaste >= 1`; `moods` needs `discoveryTaste >= 2`, the
+        Peer Recommendations keys `discoveryTaste >= 3`. Refused to federation keys, guest tokens and jukebox sessions;
+        public-access mode works.
       requestBody:
         required: false
         content:
@@ -3322,7 +3888,7 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/TasteResponse" }
-        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 12 pins or 200 exclusions)." }
+        "400": { description: "Request validation failed (an unknown key, a value out of range, more than 12 pins or 200 exclusions, a `networkPeers` that is empty, longer than 50, repeats an id or holds one that is not 64 hex)." }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "`Discovery is disabled` (collection off or the index unavailable); a federation key or guest token (`Forbidden`); a jukebox session." }
 

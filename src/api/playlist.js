@@ -37,6 +37,9 @@ export function setup(mstream) {
       // fact /api/ carries under features; ping lists keys by hand, so a
       // new capability must be added here too (the drift-lock test checks).
       discoveryTaste: features.discoveryTaste,
+      // The Peer Recommendations peer strip + async Add — same generation
+      // /api/ carries under features.
+      discoveryP2pPeers: features.discoveryP2pPeers,
       // Mood scores to filter by, right now (api/mood-filter.js) — the
       // Discover page's and the song lists' filters gate on it; same flag
       // on /api/.

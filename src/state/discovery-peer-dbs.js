@@ -22,6 +22,14 @@
 // Swap-only, one per pass, `pinned` entries immune (manual admin downloads
 // pin themselves). Decision logic is pure — discovery-peer-rotation.js.
 //
+// An admin's Add (the Peer Recommendations page) may swap out several
+// unpinned snapshots to make room for one chosen peer (planRoom). It always
+// fetches first: the evictees ride in as fetchPeer's `discount` and leave
+// the shelf in the same synchronous block that shelves the newcomer. Every
+// download is deduped per peer (a second caller joins the one in flight) and
+// reserves its announced bytes until it lands, so reconcile, rotation, an
+// Add and the admin panel's fetch never spend the same headroom twice.
+//
 // Every snapshot is validated before it's accepted onto the shelf — a peer
 // hands us an arbitrary SQLite file, so we check the snapshot format marker
 // and schema shape before ever querying it, and open it with a fresh
@@ -35,7 +43,9 @@ import * as config from './config.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import * as discoveryP2p from './discovery-p2p.js';
 import * as discoveryCatalog from './discovery-catalog.js';
-import { candidateOrder, modelCompatible, planRotation } from './discovery-peer-rotation.js';
+import {
+  candidateOrder, modelCompatible, planRoom, planRotation, ONLINE_WINDOW_MS,
+} from './discovery-peer-rotation.js';
 
 const REGISTRY_FILE = 'peer-dbs.json';
 const SNAPSHOT_FORMAT_VERSION = 1; // must match discovery-export.js
@@ -60,6 +70,29 @@ const ROTATION_LEDGER_MAX = 200;
 // installs should never set it.
 const DISK_FREE_FLOOR_BYTES =
   Number(process.env.MSTREAM_TEST_DISCOVERY_DISK_FLOOR_BYTES) || 500 * 1024 * 1024;
+// Three more switches let the Peer Recommendations integration suite and
+// stage (test/stage/peer-recs-stage.mjs) drive a real shelf with no sidecar.
+// Like the overrides above, each does nothing unless set, and production
+// installs should never set one:
+//
+//   MSTREAM_TEST_DISCOVERY_ONLINE_WINDOW_MS   widens the "online" window
+//       (onlineWindowMs below) so fixture catalogs with fixed timestamps
+//       read online or offline for a whole run.
+//   MSTREAM_TEST_P2P_FAKE_FETCH_DIR           discovery-p2p.js fetch() copies
+//       <dir>/<hash>.db into the shelf directory instead of dialing; a
+//       <hash>.fail file makes it reject, after <hash>.delay-ms if present.
+//   MSTREAM_TEST_P2P_NO_SIDECAR=1             discovery-p2p.js
+//       resolveSidecarBinary() answers null, so a stage run from a checkout
+//       that holds a sidecar binary can never join the real network.
+//
+// The online window is the one value behind every "is this peer online"
+// here (eviction and candidate order, rotation's reachability gate) and in
+// the routes that show it (the peers route, the admin catalog). Read per
+// call, not at import, so a unit test can set it late.
+export function onlineWindowMs() {
+  return Number(process.env.MSTREAM_TEST_DISCOVERY_ONLINE_WINDOW_MS) || ONLINE_WINDOW_MS;
+}
+
 // Cache of parsed embedding matrices — sized to the peer set, evicted LRU.
 //
 // The old shape (fixed cap of 4, FIFO eviction, no touch-on-read) sat BELOW
@@ -95,12 +128,39 @@ let reconcileInFlight = false;
 let rotateInFlight = false;
 let wired = false;
 
+// endpointId -> { promise, reservedBytes, discount, epoch }: the downloads
+// running right now, one per peer. reservedBytes is the peer's announced
+// size; discount is the Set of snapshots it will swap out when it lands.
+// Until it settles, the reservation — net of what landing frees — counts
+// against the cap for everyone else (reservedOthers).
+const inFlight = new Map();
+// Bumped by stopAutoFetch. A download that started under an older epoch
+// belongs to a network that has since stopped: it must not land.
+let shelfEpoch = 0;
+const shelfListeners = new Set();
+const stopListeners = new Set();
+
+// The sidecar download. Swappable only for the in-flight unit tests
+// (test/unit/discovery-peer-dbs-inflight.test.mjs), which hold a fake
+// download open to watch two callers, reconcile and rotation around it;
+// nothing in the server calls the setter.
+const sidecarFetch = (...args) => discoveryP2p.fetch(...args);
+let fetchSnapshot = sidecarFetch;
+export function setFetchForTests(fn) { fetchSnapshot = fn || sidecarFetch; }
+
 // endpointId -> evictedAt ISO: who rotation dropped and when, so candidate
 // selection can prefer never-held peers. Lazily loaded; null = not yet.
 let rotationLedger = null;
 
 export function peerDbDir() {
   return path.join(config.program.storage.dbDirectory, 'discovery-peers');
+}
+
+// Where the raw admin route (POST /api/v1/admin/discovery/p2p/fetch) exports
+// a pulled snapshot: a file for the admin, not a shelf member, so it stays
+// out of the directory the boot sweep tidies.
+export function rawFetchDir() {
+  return path.join(config.program.storage.dbDirectory, 'discovery-fetched');
 }
 
 function registryPath() {
@@ -124,7 +184,41 @@ function ensureLoaded() {
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
+      // No sweep below: an unreadable registry proves nothing about the
+      // files it would have named.
       winston.warn(`discovery peer-db registry unreadable (${err.message}) — starting empty`);
+      return;
+    }
+  }
+  sweepOrphans();
+}
+
+// A *.db in the shelf directory that no registry entry names is a download
+// that never made it onto the shelf: the sidecar exported the file, then the
+// process died before the registry write (a kill mid-Add or mid-rotation).
+// Nothing would ever read or remove it, so it goes now, once per process.
+// Matched by file name, not full path, so a symlinked dbDirectory can never
+// make a held snapshot look orphaned. Only shelf downloads land here: the
+// raw admin p2p/fetch route exports into a directory of its own
+// (rawFetchDir), whose files are the route's deliverable.
+function sweepOrphans() {
+  const named = new Set([...registry.values()].map((e) => path.basename(e.path)));
+  let files;
+  try {
+    files = fs.readdirSync(peerDbDir());
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      winston.warn(`[discovery-peer-dbs] orphan sweep skipped: ${err.message}`);
+    }
+    return;
+  }
+  for (const file of files) {
+    if (!file.endsWith('.db') || named.has(file)) { continue; }
+    try {
+      fs.rmSync(path.join(peerDbDir(), file), { force: true });
+      winston.info(`[discovery-peer-dbs] removed ${file}: no shelf entry names it (an interrupted download)`);
+    } catch (err) {
+      winston.warn(`[discovery-peer-dbs] could not remove orphaned ${file}: ${err.message}`);
     }
   }
 }
@@ -171,8 +265,80 @@ async function diskFreeBytes() {
   }
 }
 
-function isBlocked(endpointId) {
+export function isBlocked(endpointId) {
   return config.program.discoveryP2p.blockedPeers.includes(endpointId);
+}
+
+// Every fetchPeer failure carries a `code` for the Add state machine and the
+// routes; the message stays the human-readable one the admin panel shows.
+//   gone          the peer is not (or no longer) in the catalog
+//   blocked       the peer is (or became) blocked
+//   no-room       over the storage cap, at admission or on the bytes on disk
+//   no-disk       under the free-disk floor
+//   offline       the sidecar could not reach any provider
+//   bad-snapshot  over-announced, or not a valid discovery snapshot
+//   stopped       the p2p stack stopped during the download
+//   failed        anything else the sidecar reported
+function shelfError(code, message, options) {
+  return Object.assign(new Error(message, options), { code });
+}
+
+// A sidecar rejection that means "no provider answered", as opposed to a
+// sidecar or protocol fault.
+const OFFLINE_RE = /timed? ?out|dial|connect|unreachable|no provider/i;
+
+// Bytes the `discount` snapshots free when `endpointId` lands: held, not
+// pinned (a pin set during the download wins over the plan), and never the
+// incoming peer's own entry.
+function discountBytes(discount, endpointId) {
+  let bytes = 0;
+  for (const id of discount) {
+    const e = registry.get(id);
+    if (id !== endpointId && e && e.pinned !== true) { bytes += e.sizeBytes || 0; }
+  }
+  return bytes;
+}
+
+// What the downloads in flight (all but `exceptId`'s) will add to the shelf
+// once they land, net of what each frees as it lands: its own held entry
+// (replaced) and its discount. Each is floored at zero — a download can
+// fail, and the bytes it would free are only real once it lands — so a
+// big-for-small swap in flight lends nobody headroom early.
+function reservedOthers(exceptId) {
+  let bytes = 0;
+  for (const [id, f] of inFlight) {
+    if (id === exceptId) { continue; }
+    const freed = (registry.get(id)?.sizeBytes || 0) + discountBytes(f.discount, id);
+    bytes += Math.max(0, f.reservedBytes - freed);
+  }
+  return bytes;
+}
+
+function shelfChanged(endpointId, change) {
+  for (const fn of shelfListeners) {
+    try { fn({ endpointId, change }); } catch (err) {
+      winston.warn(`[discovery-peer-dbs] shelf-change listener failed: ${err.message}`);
+    }
+  }
+}
+
+// Subscribe to shelf membership and pin changes: `fn({ endpointId, change })`
+// with change 'landed' (a fetch put or refreshed a snapshot on the shelf),
+// 'removed' (removePeerDb, a rotation eviction, an Add's swap, the block
+// route), 'pinned' (pin or unpin) or 'released' (a download ended without
+// landing: the shelf is unchanged, but the room it reserved is free again).
+// Synchronous, after the registry write. Returns the unsubscribe. The Add
+// state machine's way in without an import cycle.
+export function onShelfChange(fn) {
+  shelfListeners.add(fn);
+  return () => shelfListeners.delete(fn);
+}
+
+// Subscribe to stopAutoFetch (the p2p stack stopping: a disable or a
+// reboot). Returns the unsubscribe.
+export function onStop(fn) {
+  stopListeners.add(fn);
+  return () => stopListeners.delete(fn);
 }
 
 // Validate + read identity facts from a freshly fetched snapshot. The file
@@ -213,36 +379,98 @@ function dropConnection(endpointId) {
 }
 
 // Download one peer's current snapshot (per its catalog announcement) and
-// put it on the shelf. Manual (admin route) and automatic (reconcile/
-// rotation) fetches both come through here — blocklist, storage cap, and
-// disk floor always apply. `pinned: true` (the manual route) marks the
-// entry rotation-immune: an admin's explicit download must not silently
+// put it on the shelf. Manual (admin route), automatic (reconcile/
+// rotation) and Add fetches all come through here — blocklist, storage
+// cap, and disk floor always apply. `pinned: true` (the manual route) marks
+// the entry rotation-immune: an admin's explicit download must not silently
 // vanish a week later. Pinning is sticky — a refresh or re-download never
 // UNpins; only the pin route does.
-export async function fetchPeer(endpointId, { pinned = false } = {}) {
+//
+// One download per peer: a call for a peer already downloading joins that
+// download (and still pins, when asked) instead of racing a second one into
+// the same file; the joiner's own `discount` is ignored, since the download
+// was admitted on its own terms. `discount` (an Add's planRoom evictIds)
+// names held snapshots to swap out: the cap checks count them as gone, and
+// they leave the shelf in the same synchronous block that shelves this one.
+// Failures reject with a coded error (shelfError).
+export async function fetchPeer(endpointId, { pinned = false, discount = [] } = {}) {
   ensureLoaded();
-  const entry = discoveryCatalog.get(endpointId);
-  if (!entry) { throw new Error('peer is not in the catalog (no announcement heard)'); }
-  if (isBlocked(endpointId)) { throw new Error('peer is blocked (config: discoveryP2p.blockedPeers)'); }
+  const running = inFlight.get(endpointId);
+  if (running && running.epoch === shelfEpoch) {
+    const record = await running.promise;
+    if (pinned === true && record.pinned !== true) { setPinned(endpointId, true); }
+    return registry.get(endpointId) || record;
+  }
+  if (running) {
+    // A download from before the last stop: it will land nowhere, and racing
+    // it into the same file is worse than waiting for it to give up.
+    await running.promise.catch(() => {});
+    return fetchPeer(endpointId, { pinned, discount });
+  }
+  const download = {
+    promise: null,
+    reservedBytes: discoveryCatalog.get(endpointId)?.payload.size || 0,
+    discount: new Set(discount),
+    epoch: shelfEpoch,
+  };
+  download.promise = fetchPeerNow(endpointId, pinned, download).finally(() => {
+    if (inFlight.get(endpointId) === download) { inFlight.delete(endpointId); }
+  });
+  // A download that ends without landing hands back what it held from
+  // everyone else's plans: its reserved bytes and its evictees. Registered
+  // before any caller awaits, so listeners hear it before the caller's own
+  // outcome is written.
+  download.promise.catch(() => shelfChanged(endpointId, 'released'));
+  inFlight.set(endpointId, download);
+  return download.promise;
+}
 
-  const existing = registry.get(endpointId);
+// Throw away a download that will not join the shelf: the exported file and
+// the blob root its hold:true fetch took in the sidecar store (without the
+// forget it would stay pinned forever). A same-blob refresh keeps both —
+// fetched.path IS the held file when the hash didn't change, and removing it
+// would orphan the live registry entry.
+function discardFetched(fetched, held, why) {
+  if (held && held.hash === fetched.hash) { return; }
+  try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+  discoveryP2p.forget(fetched.hash)
+    .catch((err) => winston.debug(`[discovery-peer-dbs] forget ${why} blob: ${err.message}`));
+}
+
+async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
+  const entry = discoveryCatalog.get(endpointId);
+  if (!entry) { throw shelfError('gone', 'peer is not in the catalog (no announcement heard)'); }
+  if (isBlocked(endpointId)) {
+    throw shelfError('blocked', 'peer is blocked (config: discoveryP2p.blockedPeers)');
+  }
+
+  // What the shelf holds at rest once this download lands, less the download
+  // itself: the copy it replaces and its discount gone, every other download
+  // in flight landed. Re-read at each check — the shelf moves while the
+  // bytes do.
+  const restingWithout = () => totalBytes() - (registry.get(endpointId)?.sizeBytes || 0)
+    - discountBytes(discount, endpointId) + reservedOthers(endpointId);
   const announcedSize = entry.payload.size || 0;
-  const projected = totalBytes() - (existing ? existing.sizeBytes : 0) + announcedSize;
+  const projected = restingWithout() + announcedSize;
   if (projected > storageCapBytes()) {
-    throw new Error(`fetch would exceed the peer-DB storage cap `
+    throw shelfError('no-room', `fetch would exceed the peer-DB storage cap `
       + `(${Math.round(projected / 1048576)}MB > ${config.program.discoveryP2p.maxPeerDbStorageMb}MB)`);
   }
 
   // The cap budgets what WE may use; this checks what the VOLUME can give.
-  // A replacement downloads before the old file is deleted, so the announced
-  // size is the true transient need either way. Best-effort: statfs support
-  // varies by platform/filesystem, and an unanswerable question must not
-  // block every fetch — only a confident "too little" refuses.
+  // A replacement (or an Add's swap) downloads before the old files are
+  // deleted, so the announced size is the true transient need either way.
+  // Best-effort: statfs support varies by platform/filesystem, and an
+  // unanswerable question must not block every fetch — only a confident
+  // "too little" refuses.
   const freeBytes = await diskFreeBytes();
   if (freeBytes !== null && freeBytes < announcedSize + DISK_FREE_FLOOR_BYTES) {
-    throw new Error(`not enough free disk for this snapshot `
+    throw shelfError('no-disk', `not enough free disk for this snapshot `
       + `(${Math.round(freeBytes / 1048576)}MB free, need `
       + `${Math.round((announcedSize + DISK_FREE_FLOOR_BYTES) / 1048576)}MB to keep headroom)`);
+  }
+  if (epoch !== shelfEpoch) {
+    throw shelfError('stopped', 'the discovery network stopped before the download began');
   }
 
   // Swarm fetch: any live holder of the hash is a valid source (content
@@ -265,27 +493,47 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
   // admitted under. Sidecars ≥ v1.0.4 abort the transfer at the ceiling;
   // v1.0.3 ignores the extra param, which is why the on-disk re-check
   // below stays load-bearing.
-  const maxFetchBytes = announcedSize > 0
-    ? announcedSize
-    : storageCapBytes() - (totalBytes() - (existing ? existing.sizeBytes : 0));
+  const maxFetchBytes = announcedSize > 0 ? announcedSize : storageCapBytes() - restingWithout();
+  // A size-less announcement on a shelf with no headroom left: a ceiling of
+  // zero is no ceiling to the sidecar (fetch() drops it), so refuse here.
+  if (maxFetchBytes <= 0) {
+    throw shelfError('no-room', 'no room left under the peer-DB storage cap for a snapshot of unannounced size');
+  }
   // hold: shelf snapshots are what the holds beacon advertises, so the
   // sidecar must keep the blob GC-rooted for as long as we claim to seed
-  // it. Every removal path (replace-on-update, removePeerDb, the reject
-  // below) releases it via forget().
-  const fetched = await discoveryP2p.fetch(
-    providers.length > 1
-      ? { hash: entry.payload.hash, providers }
-      : { hash: entry.payload.hash, provider: endpointId },
-    peerDbDir(),
-    { maxBytes: maxFetchBytes, hold: true },
-  );
+  // it. Every removal path (replace-on-update, removePeerDb, a swap, the
+  // rejects below) releases it via forget().
+  let fetched;
+  try {
+    fetched = await fetchSnapshot(
+      providers.length > 1
+        ? { hash: entry.payload.hash, providers }
+        : { hash: entry.payload.hash, provider: endpointId },
+      peerDbDir(),
+      { maxBytes: maxFetchBytes, hold: true },
+    );
+  } catch (err) {
+    const code = epoch !== shelfEpoch ? 'stopped' : (OFFLINE_RE.test(err.message) ? 'offline' : 'failed');
+    throw shelfError(code, err.message, { cause: err });
+  }
+
+  // The shelf may have moved during the download (a removal, a pin, a
+  // block), so everything below reads the live entry, not `existing`.
+  const current = registry.get(endpointId);
+  // Nothing lands for a network that stopped mid-download (the Add state
+  // machine has already forgotten it), nor for a peer blocked meanwhile
+  // (the block route removed what we held; the download must not undo it).
+  if (epoch !== shelfEpoch || isBlocked(endpointId)) {
+    discardFetched(fetched, current, 'abandoned');
+    throw epoch !== shelfEpoch
+      ? shelfError('stopped', 'the discovery network stopped during the download')
+      : shelfError('blocked', 'peer is blocked (config: discoveryP2p.blockedPeers)');
+  }
 
   // The bytes on disk are the only size that counts. Re-run the admission
   // checks against them: an over-announced blob (actual > claimed) is a
   // lying peer, and an actual total past the storage cap must not be kept
-  // no matter what the claim was. Same-blob refreshes are exempt from the
-  // delete (fetched.path IS the held file when the hash didn't change —
-  // removing it would orphan the live registry entry).
+  // no matter what the claim was.
   let actualBytes;
   try {
     actualBytes = fs.statSync(fetched.path).size;
@@ -293,44 +541,39 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
     actualBytes = Number(fetched.size) || 0;
   }
   const overAnnounced = announcedSize > 0 && actualBytes > announcedSize;
-  const projectedActual = totalBytes() - (existing ? existing.sizeBytes : 0) + actualBytes;
+  const projectedActual = restingWithout() + actualBytes;
   if (overAnnounced || projectedActual > storageCapBytes()) {
-    if (!(existing && existing.hash === fetched.hash)) {
-      try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
-      discoveryP2p.forget(fetched.hash)
-        .catch((err) => winston.debug(`[discovery-peer-dbs] forget oversized blob: ${err.message}`));
-    }
-    throw new Error(overAnnounced
-      ? `peer announced ${announcedSize} bytes but sent ${actualBytes} — rejecting the snapshot`
-      : `snapshot is ${actualBytes} bytes on disk — over the peer-DB storage cap; rejecting`);
+    discardFetched(fetched, current, 'oversized');
+    throw overAnnounced
+      ? shelfError('bad-snapshot', `peer announced ${announcedSize} bytes but sent ${actualBytes} — rejecting the snapshot`)
+      : shelfError('no-room', `snapshot is ${actualBytes} bytes on disk — over the peer-DB storage cap; rejecting`);
   }
 
   let inspected;
   try {
     inspected = inspectSnapshot(fetched.path);
   } catch (err) {
-    // Failed validation = not a snapshot we can use; don't leave it around
-    // — neither the exported file nor the held blob in the sidecar store
-    // (the fetch above rooted it with hold:true; without the forget it
-    // would stay pinned forever). Same-blob refreshes keep both: the file
-    // IS the held copy.
-    if (!(existing && existing.hash === fetched.hash)) {
-      try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
-      discoveryP2p.forget(fetched.hash)
-        .catch((fErr) => winston.debug(`[discovery-peer-dbs] forget invalid blob: ${fErr.message}`));
-    }
-    throw new Error(`peer sent an invalid snapshot: ${err.message}`, { cause: err });
+    // Failed validation = not a snapshot we can use; don't leave it around.
+    discardFetched(fetched, current, 'invalid');
+    throw shelfError('bad-snapshot', `peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
-  // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
-  // unpin the old blob so the sidecar store's GC reclaims it.
-  if (existing && existing.path !== fetched.path) {
-    dropConnection(endpointId);
-    try { fs.rmSync(existing.path, { force: true }); } catch (_err) { /* best effort */ }
-    if (existing.hash && existing.hash !== fetched.hash) {
-      discoveryP2p.forget(existing.hash)
-        .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
-    }
+  // From here to the end is one synchronous block: the replaced copy, the
+  // discount and the new record reach peer-dbs.json in a single write, so a
+  // kill can never leave the shelf over its cap at rest. That write comes
+  // BEFORE any old file is deleted: a kill before it leaves the shelf as it
+  // was, a kill after it leaves files the registry no longer names, and the
+  // next boot sweeps both kinds (sweepOrphans). Deleting first would lose
+  // the evictees and the newcomer together.
+  //
+  // The swap: every discount snapshot still held and still unpinned leaves
+  // now — exactly the bytes the checks above counted as gone.
+  const swappedOut = [];
+  for (const id of discount) {
+    const victim = registry.get(id);
+    if (id === endpointId || !victim || victim.pinned === true) { continue; }
+    registry.delete(id);
+    swappedOut.push(victim);
   }
 
   const record = {
@@ -347,11 +590,29 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
     // The MEMBERSHIP clock (rotation's aging signal) — carried over on a
     // refresh, because a refresh replaces the bytes, not the membership.
     // Resetting it here would make an actively-publishing peer immortal.
-    firstFetchedAt: existing?.firstFetchedAt || new Date().toISOString(),
-    pinned: existing?.pinned === true || pinned === true,
+    firstFetchedAt: current?.firstFetchedAt || new Date().toISOString(),
+    pinned: current?.pinned === true || pinned === true,
   };
   registry.set(endpointId, record);
   save();
+  // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
+  // unpin the old blob so the sidecar store's GC reclaims it.
+  if (current && current.path !== fetched.path) {
+    dropConnection(endpointId);
+    try { fs.rmSync(current.path, { force: true }); } catch (_err) { /* best effort */ }
+    if (current.hash && current.hash !== fetched.hash) {
+      discoveryP2p.forget(current.hash)
+        .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
+    }
+  }
+  // The evictees' files and blobs go the same way. The rotation ledger
+  // records each like a rotation eviction (a past member, so candidate order
+  // prefers never-held peers over it).
+  for (const victim of swappedOut) {
+    dropEntry(victim);
+    recordEviction(victim.endpointId);
+    winston.info(`[discovery-peer-dbs] add ${endpointId.slice(0, 12)}… swapped out ${victim.endpointId.slice(0, 12)}…`);
+  }
   const sizeLabel = record.sizeBytes >= 1048576
     ? `${Math.round(record.sizeBytes / 1048576)}MB` : `${Math.round(record.sizeBytes / 1024)}KB`;
   winston.info(`[discovery-peer-dbs] fetched ${endpointId.slice(0, 12)}… `
@@ -360,23 +621,66 @@ export async function fetchPeer(endpointId, { pinned = false } = {}) {
   clearFetchBackoff(endpointId);
   // We now hold (and therefore seed) this snapshot — tell the network.
   pushHolds();
+  for (const victim of swappedOut) { shelfChanged(victim.endpointId, 'removed'); }
+  shelfChanged(endpointId, 'landed');
   return record;
+}
+
+// planRoom for one catalog peer, against the shelf as it will stand once
+// the downloads already in flight land: what they are about to replace or
+// swap out cannot be planned away a second time, and what they will add is
+// reserved. The same arithmetic as fetchPeer's admission, so a fits:true
+// plan handed back as `discount` is admitted. null when the peer is not in
+// the catalog.
+export function planRoomFor(endpointId) {
+  ensureLoaded();
+  const entry = discoveryCatalog.get(endpointId);
+  if (!entry) { return null; }
+  const pending = new Set();
+  for (const [id, f] of inFlight) {
+    if (id === endpointId) { continue; }
+    pending.add(id);
+    for (const x of f.discount) { pending.add(x); }
+  }
+  pending.delete(endpointId);
+  const shelf = [];
+  let pendingBytes = 0;
+  for (const e of registry.values()) {
+    if (pending.has(e.endpointId)) { pendingBytes += e.sizeBytes || 0; } else { shelf.push(e); }
+  }
+  return planRoom({
+    shelf,
+    catalog: discoveryCatalog.list(),
+    incoming: { endpointId, size: entry.payload.size || 0 },
+    capBytes: storageCapBytes(),
+    reservedBytes: pendingBytes + reservedOthers(endpointId),
+    now: Date.now(),
+    seederCountOf: (hash) => discoveryCatalog.seederCount(hash),
+    onlineWindowMs: onlineWindowMs(),
+  });
+}
+
+// Take one snapshot off the shelf: its connection, file, registry row and
+// blob root (unpinned for GC). The caller saves and pushes holds.
+function dropEntry(entry) {
+  dropConnection(entry.endpointId);
+  try { fs.rmSync(entry.path, { force: true }); } catch (_err) { /* best effort */ }
+  registry.delete(entry.endpointId);
+  if (entry.hash) {
+    discoveryP2p.forget(entry.hash)
+      .catch((err) => winston.debug(`[discovery-peer-dbs] forget removed blob: ${err.message}`));
+  }
 }
 
 export function removePeerDb(endpointId) {
   ensureLoaded();
   const entry = registry.get(endpointId);
   if (!entry) { return false; }
-  dropConnection(endpointId);
-  try { fs.rmSync(entry.path, { force: true }); } catch (_err) { /* best effort */ }
-  registry.delete(endpointId);
+  dropEntry(entry);
   save();
-  // Unpin the blob for GC and stop advertising it as held.
-  if (entry.hash) {
-    discoveryP2p.forget(entry.hash)
-      .catch((err) => winston.debug(`[discovery-peer-dbs] forget removed blob: ${err.message}`));
-  }
+  // Stop advertising it as held.
   pushHolds();
+  shelfChanged(endpointId, 'removed');
   return true;
 }
 
@@ -388,6 +692,7 @@ export function setPinned(endpointId, pinned) {
   if (!entry) { return false; }
   entry.pinned = pinned === true;
   save();
+  shelfChanged(endpointId, 'pinned');
   return true;
 }
 
@@ -624,7 +929,9 @@ function inFetchBackoff(endpointId) {
 
 // One reconcile pass: refresh stale shelf entries, then top up to
 // autoFetchCount from the best-looking catalog peers. Serialized; failures
-// log and move on (an unreachable peer must not wedge the loop).
+// log and move on (an unreachable peer must not wedge the loop). A peer
+// already downloading (an Add, the admin panel's fetch) is left to that
+// download, and counts — slot and reserved bytes — as if it had landed.
 export async function reconcile() {
   if (!config.program.discoveryP2p.autoFetch || reconcileInFlight || rotateInFlight) { return; }
   reconcileInFlight = true;
@@ -634,6 +941,7 @@ export async function reconcile() {
 
     // Stale refresh: the announced monotonic seq moved past our copy.
     for (const held of registry.values()) {
+      if (inFlight.has(held.endpointId)) { continue; }
       const cat = discoveryCatalog.get(held.endpointId);
       if (cat && (cat.payload.snapshotSeq || 0) > (held.snapshotSeq || 0)) {
         targets.push(held.endpointId);
@@ -646,19 +954,20 @@ export async function reconcile() {
     // walking, because a smaller peer further down the list may still fit.
     // (fetchPeer re-checks the cap at download time; this pre-filter is
     // what keeps one oversized peer from eating a retry slot forever.)
-    const room = config.program.discoveryP2p.autoFetchCount - registry.size;
+    const arriving = [...inFlight.keys()].filter((id) => !registry.has(id)).length;
+    const room = config.program.discoveryP2p.autoFetchCount - registry.size - arriving;
     if (room > 0) {
       const localModel = discoveryDb.openDiscoveryDbIfExists()
         ? discoveryDb.getMeta('embedding_model_id') : null;
       const allowIncompat = config.program.discoveryP2p.autoFetchIncompatibleModels;
       const capBytes = storageCapBytes();
-      let projectedBytes = totalBytes();
+      let projectedBytes = totalBytes() + reservedOthers(null);
       let picked = 0;
       let skippedForSpace = 0;
       let skippedForModel = 0;
       for (const c of discoveryCatalog.list()
-        .filter((x) => !registry.has(x.from) && !isBlocked(x.from))
-        .sort(candidateOrder(localModel))) {
+        .filter((x) => !registry.has(x.from) && !inFlight.has(x.from) && !isBlocked(x.from))
+        .sort(candidateOrder(localModel, Date.now(), onlineWindowMs()))) {
         if (picked >= room) { break; }
         // Auto-fetch only, not a fetch failure: an incompatible snapshot is
         // unsearchable here, so skipping it burns no backoff and the manual
@@ -686,6 +995,9 @@ export async function reconcile() {
       try {
         await fetchPeer(endpointId); // success clears the backoff internally
       } catch (err) {
+        // The stack stopped under us: not this peer's failure, and nothing
+        // else in this pass can land either. The next start reconciles anew.
+        if (err.code === 'stopped') { break; }
         const delayMs = recordFetchFailure(endpointId);
         winston.warn(`[discovery-peer-dbs] auto-fetch of ${endpointId.slice(0, 12)}… failed `
           + `(retry in ~${Math.round(delayMs / 60000)}min): ${err.message}`);
@@ -729,7 +1041,9 @@ function ensureRotationLedger() {
   return rotationLedger;
 }
 
-function recordEviction(endpointId) {
+// Exported for the Add state machine's logs and tests; a swap inside
+// fetchPeer records its own evictions.
+export function recordEviction(endpointId) {
   const ledger = ensureRotationLedger();
   ledger[endpointId] = new Date().toISOString();
   // Cap by dropping the oldest evictions — recent history is what prevents
@@ -750,7 +1064,11 @@ function recordEviction(endpointId) {
 // One rotation pass: at most one swap, and only a swap — never an eviction
 // without a replacement in hand. Returns the executed plan (or null).
 // Serialized against itself AND against reconcile: both mutate the shelf,
-// and interleaved awaits would double-count storage headroom.
+// and interleaved awaits would double-count storage headroom. Downloads it
+// is not serialized against (an Add, the admin panel's fetch) shrink the cap
+// it plans under by their reservations, and are not candidates themselves —
+// rotation must not plan a fetch that would only join theirs and then evict
+// for it.
 export async function rotatePeerDbs() {
   if (rotateInFlight || reconcileInFlight) { return null; }
   rotateInFlight = true;
@@ -768,11 +1086,12 @@ export async function rotatePeerDbs() {
       rotationDays: cfg.rotationDays,
       autoFetch: cfg.autoFetch,
       autoFetchCount: cfg.autoFetchCount,
-      capBytes: storageCapBytes(),
+      capBytes: storageCapBytes() - reservedOthers(null),
       allowIncompatibleModels: cfg.autoFetchIncompatibleModels,
       isBlocked,
-      inBackoff: inFetchBackoff,
+      inBackoff: (id) => inFetchBackoff(id) || inFlight.has(id),
       seederCountOf: (hash) => discoveryCatalog.seederCount(hash),
+      onlineWindowMs: onlineWindowMs(),
     });
     if (!plan) { return null; }
 
@@ -787,7 +1106,7 @@ export async function rotatePeerDbs() {
       try {
         await fetchPeer(plan.fetchId);
       } catch (err) {
-        recordFetchFailure(plan.fetchId);
+        if (err.code !== 'stopped') { recordFetchFailure(plan.fetchId); }
         winston.warn(`[discovery-peer-dbs] rotation fetch of ${plan.fetchId.slice(0, 12)}… failed `
           + `after evicting ${plan.evictId.slice(0, 12)}… — shelf runs one short until the next pass: ${err.message}`);
         return plan;
@@ -797,7 +1116,7 @@ export async function rotatePeerDbs() {
       try {
         await fetchPeer(plan.fetchId);
       } catch (err) {
-        recordFetchFailure(plan.fetchId);
+        if (err.code !== 'stopped') { recordFetchFailure(plan.fetchId); }
         winston.warn(`[discovery-peer-dbs] rotation fetch of ${plan.fetchId.slice(0, 12)}… failed `
           + `— keeping ${plan.evictId.slice(0, 12)}… on the shelf: ${err.message}`);
         return null;
@@ -848,7 +1167,20 @@ export function startAutoFetch() {
 // re-touches the sidecar after the stack shuts it down. Fetched snapshots
 // stay on the shelf — the similar-songs surface keeps working offline, and
 // a re-enable resumes refreshing them.
+//
+// Downloads still in flight belong to the network that just stopped: none
+// of them may land (the epoch check in fetchPeerNow), and onStop listeners
+// (the Add state machine) forget them now. That half runs whether or not
+// auto-fetch was ever wired — a stack whose sidecar never came up still
+// stops, and the integration suite's fake downloads run in exactly that
+// state.
 export function stopAutoFetch() {
+  shelfEpoch += 1;
+  for (const fn of stopListeners) {
+    try { fn(); } catch (err) {
+      winston.warn(`[discovery-peer-dbs] stop listener failed: ${err.message}`);
+    }
+  }
   if (!wired) { return; }
   wired = false;
   discoveryP2p.events.removeListener('announcement', onAnnouncement);

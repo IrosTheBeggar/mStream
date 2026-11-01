@@ -42,6 +42,7 @@ import { spawn } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import crypto from 'node:crypto';
 import { startServer } from '../helpers/server.mjs';
+import { embeddingBlob, makeSnapshotFile } from '../helpers/p2p-shelf.mjs';
 import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 import { mergeSeedLists } from '../../src/state/discovery-seeds.js';
 import { signSeedList } from '../../src/state/discovery-seeds-verify.js';
@@ -49,68 +50,6 @@ import { searchSpaces, toQueryVector } from '../../src/api/discovery-p2p.js';
 import { isNovel } from '../../src/db/discovery-novelty.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
-
-// Serialize a unit vector as the little-endian float32 BLOB the schema stores.
-function embeddingBlob(vec) {
-  const f = new Float32Array(vec);
-  return Buffer.from(f.buffer, f.byteOffset, f.byteLength);
-}
-
-// Build a synthetic peer snapshot file with the exact P0 export format
-// (user_version marker, meta + tracks tables) — what fetchPeer() validates
-// and the similarity search reads. Lets the whole N4a query path be tested
-// without any network or sidecar.
-//
-// Default = the ORIGINAL layout (source schema v1/v2: no catalogue columns),
-// which is what every peer that has not upgraded still publishes; the
-// reader must keep accepting it. `catalogue: true` adds the V3 columns
-// (album / year / isrc / release_group_mbid) the way a current exporter
-// writes them — same format_version, appended columns.
-function makeSnapshotFile(filePath, { modelId = 'test-model', tracks = [], catalogue = false } = {}) {
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.rmSync(filePath, { force: true });
-  const db = new DatabaseSync(filePath);
-  db.exec(`
-    PRAGMA user_version = 1;
-    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE tracks (
-      export_id TEXT NOT NULL, recording_mbid TEXT, acoustid_id TEXT,
-      artist TEXT, title TEXT, duration REAL,
-      model_id TEXT, model_version TEXT, embedding BLOB,
-      bpm INTEGER, musical_key TEXT, danceability REAL,
-      genre_tags TEXT, mood_tags TEXT${catalogue
-    ? ', album TEXT, year INTEGER, isrc TEXT, release_group_mbid TEXT'
-    : ''}
-    );
-  `);
-  const meta = db.prepare('INSERT INTO meta (key, value) VALUES (?, ?)');
-  meta.run('format', 'mstream-discovery-snapshot');
-  meta.run('format_version', '1');
-  meta.run('source_schema_version', catalogue ? '3' : '2');
-  meta.run('embedding_model_id', modelId);
-  meta.run('embedding_model_version', '1');
-  meta.run('row_count', String(tracks.length));
-  const ins = catalogue
-    ? db.prepare(`
-        INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding,
-                            album, year, isrc, release_group_mbid)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    : db.prepare(`
-        INSERT INTO tracks (export_id, recording_mbid, artist, title, duration, model_id, model_version, embedding)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-  for (const t of tracks) {
-    const base = [t.exportId || `anon:${t.title}`, t.mbid || null, t.artist, t.title,
-      t.duration || 180, t.modelId || modelId, '1',
-      t.vec ? embeddingBlob(t.vec) : null];
-    if (catalogue) {
-      ins.run(...base, t.album ?? null, t.year ?? null, t.isrc ?? null, t.releaseGroupMbid ?? null);
-    } else {
-      ins.run(...base);
-    }
-  }
-  db.close();
-  return filePath;
-}
 
 async function pollUntil(fn, { timeoutMs = 15000, everyMs = 250, what = 'condition' } = {}) {
   const deadline = Date.now() + timeoutMs;
