@@ -108,6 +108,13 @@ Same for every pairing-code version:
    setting the server's own web port has). Plain HTTP rides the pipe (range/seek,
    keep-alive, parallel requests all work). Clients typically run a local TCP
    listener and open a fresh bi-stream per inbound connection.
+   The server drops a `__lt` query parameter from each request that comes
+   through its bridge listener before it reaches the web app (the mstream_music
+   app tags every URL with `__lt=<token>` for its loopback proxy,
+   mstream-iroh-tunnel, which checks the first request line of each connection
+   and forwards the bytes as sent); the rest of the URL passes through
+   untouched. A redirect the web app builds from the request URL therefore
+   carries no `__lt`, and streams that fall back to the public port keep it.
 5. **(v2 only, proposed)** Over the tunnel, exchange `c` for a real session token —
    `POST /api/v1/auth/pair { code: c }` → returns the standard mStream JWT — then
    the server marks `c` used. From then on the client authenticates like any other

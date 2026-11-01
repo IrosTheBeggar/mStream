@@ -177,7 +177,7 @@ function bridgeTarget() {
       return srv;
     }, (err) => {
       bridgeListening = null;
-      winston.error(`[iroh] bridge listener could not start (${err.code || err.message}) — Quick Connect and federation fall back to port ${config.program.port}`);
+      winston.error(`[iroh] bridge listener could not start (${err.code || err.message}) — Quick Connect and federation fall back to port ${config.program.port}, where the tunnel client's __lt parameter is not dropped`);
       return null;
     });
   }

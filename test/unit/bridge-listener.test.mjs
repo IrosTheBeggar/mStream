@@ -6,7 +6,9 @@
  * serves at that moment, requests and WebSocket upgrades alike, whatever that
  * listener's address or TLS setting. The two #1101 failures are reproduced
  * first, each time: a loopback connect refused by a public listener bound to
- * another interface, and plain HTTP dropped by a TLS one.
+ * another interface, and plain HTTP dropped by a TLS one. The phone app's
+ * `__lt` query parameter (its loopback proxy's local token) is dropped on
+ * the way through, and nothing else in the URL.
  */
 
 import { describe, test, after } from 'node:test';
@@ -16,7 +18,7 @@ import https from 'node:https';
 import net from 'node:net';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
-import { listenBridge } from '../../src/util/bridge-listener.js';
+import { listenBridge, stripLocalToken } from '../../src/util/bridge-listener.js';
 import { connectOutcome, otherInterfaceAddress } from '../helpers/net.mjs';
 
 const listen = (srv, address) => new Promise((resolve, reject) => {
@@ -146,5 +148,73 @@ describe('bridge listener (real sockets)', () => {
     pub = track(http.createServer(pingApp('third')));
     await listen(pub, '127.0.0.1');
     assert.equal(JSON.parse((await get(port, '/api/v1/ping')).body).from, 'third');
+  });
+
+  // What the public app saw of a request's URL, as Express reads it.
+  function echoApp() {
+    const app = express();
+    app.get('/api/v1/echo', (req, res) => res.json({ url: req.url, originalUrl: req.originalUrl, query: req.query }));
+    return app;
+  }
+
+  // The phone app tags every request URL with `__lt=<token>` for its loopback
+  // proxy (the Rust shim from mstream-iroh-tunnel), which checks the first
+  // request line of each connection and forwards the bytes as sent, so a route
+  // whose query schema rejects unknown keys answered 400 over Quick Connect.
+  // The bridge drops that parameter, and only that one, from requests and
+  // upgrades alike; the public listener itself is not touched.
+  test('stripLocalToken drops that parameter and nothing else', () => {
+    const cases = [
+      ['/api/v1/ping', '/api/v1/ping'],
+      ['/api/v1/ping?', '/api/v1/ping?'],
+      ['/api/v1/discovery/plugin-jobs?__lt=4e90', '/api/v1/discovery/plugin-jobs'],
+      ['/api/v1/discovery/plugin-jobs?__lt', '/api/v1/discovery/plugin-jobs'],
+      ['/api/v1/discovery/plugin-jobs?state=queued&__lt=4e90', '/api/v1/discovery/plugin-jobs?state=queued'],
+      ['/api/v1/db/albums?__lt=4e90&limit=10&offset=0', '/api/v1/db/albums?limit=10&offset=0'],
+      // No re-encoding of what stays.
+      ['/api/v1/stats/top?period=week&__lt=4e90&tz=Europe%2FParis&q=a+b', '/api/v1/stats/top?period=week&tz=Europe%2FParis&q=a+b'],
+      // Only the exact key, and only in the query.
+      ['/x?__ltx=1&x__lt=2&lt=3&a__lt', '/x?__ltx=1&x__lt=2&lt=3&a__lt'],
+      ['/__lt?__lt=4e90', '/__lt'],
+      ['/x?a=1&__lt=4e90#top', '/x?a=1#top'],
+    ];
+    for (const [given, expected] of cases) { assert.equal(stripLocalToken(given), expected, given); }
+  });
+
+  test('a request reaches the public app without it, the other parameters kept', async () => {
+    const pub = track(http.createServer(echoApp()));
+    await listen(pub, '127.0.0.1');
+    const bridge = track(await listenBridge({ publicServer: () => pub, onConnection: () => {}, whileDown: stub }));
+    const port = bridge.address().port;
+
+    let r = await get(port, '/api/v1/echo?state=queued&__lt=4e90&limit=10');
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(r.body), {
+      url: '/api/v1/echo?state=queued&limit=10',
+      originalUrl: '/api/v1/echo?state=queued&limit=10',
+      query: { state: 'queued', limit: '10' },
+    });
+    r = await get(port, '/api/v1/echo?__lt=4e90');
+    assert.deepEqual(JSON.parse(r.body), { url: '/api/v1/echo', originalUrl: '/api/v1/echo', query: {} });
+    // Straight to the public listener, the parameter is still there.
+    r = await get(pub.address().port, '/api/v1/echo?__lt=4e90');
+    assert.deepEqual(JSON.parse(r.body).query, { __lt: '4e90' });
+  });
+
+  test('a WebSocket upgrade reaches the ws server without it', async () => {
+    const pub = track(http.createServer(echoApp()));
+    await listen(pub, '127.0.0.1');
+    const wss = new WebSocketServer({ server: pub });
+    wss.on('connection', (ws, req) => ws.send(`hello ${req.url}`));
+    const bridge = track(await listenBridge({ publicServer: () => pub, onConnection: () => {}, whileDown: stub }));
+
+    const ws = new WebSocket(`ws://127.0.0.1:${bridge.address().port}/?__lt=4e90&code=abc`);
+    const msg = await new Promise((resolve, reject) => {
+      ws.once('message', (m) => resolve(String(m)));
+      ws.once('error', reject);
+    });
+    ws.close();
+    wss.close();
+    assert.equal(msg, 'hello /?code=abc');
   });
 });
