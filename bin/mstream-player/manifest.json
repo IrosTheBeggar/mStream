@@ -2,59 +2,59 @@
   "family": "mstream-player",
   "schema": 2,
   "repo": "IrosTheBeggar/mstream-terminal-player",
-  "tag": "v0.15.0",
-  "builtFrom": "c32eba3c56e82e51f8e0d8b613748b93136f4f17",
-  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.15.0",
+  "tag": "v0.15.1",
+  "builtFrom": "2659e27f103f69f42af3d10e2c965bbf55cf1c63",
+  "release": "https://github.com/IrosTheBeggar/mstream-terminal-player/releases/tag/v0.15.1",
   "assets": {
     "mstream-player-darwin-arm64": {
       "file": "mstream-player-darwin-arm64",
-      "sha256": "b263e7da322176c9021eabc34ed5127fe9ed94ac274e9bb1b09edf57f0ddd3f6",
+      "sha256": "d0f0f4d1e8ad13942622f27a5d9448befcbb5755eed495fe82bc294fa3ea91ae",
       "size": 35510912
     },
     "mstream-player-darwin-x64": {
       "file": "mstream-player-darwin-x64",
-      "sha256": "ccdadc044fa71795c1ecc6553469e83c2c4325af89c7958826b9d86e41922ce1",
+      "sha256": "1bbc685023b77f272844f7f6d0373fb0849cd737c321b9e83af47780d4a17af8",
       "size": 39515504
     },
     "mstream-player-desktop-darwin-arm64-raw": {
       "file": "mstream-player-desktop-darwin-arm64-raw",
-      "sha256": "25dcbf03de10257d76f4c70d048ae8ca791c5420f7366cf5f7e1249faf3ed19d",
+      "sha256": "9efb05075b9c5859f26c5f4fc43379dd1999d572f9d15d987a8064d0cc06badb",
       "size": 36882208
     },
     "mstream-player-desktop-darwin-x64-raw": {
       "file": "mstream-player-desktop-darwin-x64-raw",
-      "sha256": "f6b3ccfe5e6aa27332f0cc141154acf84d8b247d3e69b2add880fa4753804fd9",
+      "sha256": "fd4f392160a1326c7f26e5e5e2bc3a8d043fced6b691dc60df8ec0a9240030f6",
       "size": 40974608
     },
     "mstream-player-desktop-linux-x64-raw": {
       "file": "mstream-player-desktop-linux-x64-raw",
-      "sha256": "8d894cb3b927a09070db3ae33d0d0079d1eff672e959cfbb1a35dfcd396d81af",
+      "sha256": "f6c0f948f8f90fb6ca363128368795e82777d95b770c317ad641e5c8f6adc485",
       "size": 52489696
     },
     "mstream-player-desktop-win32-x64-raw.exe": {
       "file": "mstream-player-desktop-win32-x64-raw.exe",
-      "sha256": "6aaa4d6f966d0a51a61d1399e5bd57b4baa89bb98fd8ae74ee7891814f15e2b6",
-      "size": 52089344
+      "sha256": "81f4f7ec8c2faaf762dfb48c1fa11d02d1060f16e32ca0376dcf168a0fa19215",
+      "size": 52102144
     },
     "mstream-player-linux-arm": {
       "file": "mstream-player-linux-arm",
-      "sha256": "1b89eb9f1dd24208d63f3d908417d3fdc1cb957df9f77feeb71d36053043e3d8",
+      "sha256": "418262e2b701483dbe89a34f8bd48e700a098b2941ac0152f0bf421fb704f4bb",
       "size": 43184616
     },
     "mstream-player-linux-arm64": {
       "file": "mstream-player-linux-arm64",
-      "sha256": "5c7e4a93083fb359f63a1a50117ae829f3828792e9fce6c50c5409a6a278ce50",
-      "size": 43678928
+      "sha256": "6ef8530614f8d20a22a2ffecfb7b627c09e8f521f3c5bdaafbf478c91cb14ffb",
+      "size": 43695312
     },
     "mstream-player-linux-x64": {
       "file": "mstream-player-linux-x64",
-      "sha256": "08b32e79c9d67c9e205828ac8c0de165a79f5fc7e21da7ce4dfae364a28068c3",
+      "sha256": "b4f92e8d4ba0e3cf99e7c47e522afd1fc82b45a130d89a2d0bec6b004f9eb3ee",
       "size": 50597064
     },
     "mstream-player-win32-x64.exe": {
       "file": "mstream-player-win32-x64.exe",
-      "sha256": "ccea375ebf7aaf9e2aab7b080669dd8cd522812055981bdf219535438245b849",
-      "size": 50412032
+      "sha256": "3d949d85c69c859691337fe6c0cbc00ffe777f841c10515121ba88051bf6fa1a",
+      "size": 50429952
     }
   }
 }
