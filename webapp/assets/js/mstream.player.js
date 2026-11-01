@@ -882,6 +882,13 @@ const MSTREAMPLAYER = (() => {
     }
   }
 
+  // Text for an iziToast title or message, which iziToast inserts as
+  // markup. This file also runs on the shared-playlist page, which has no
+  // m.js (and so no escapeHtml).
+  function _escapeToastText(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+
   // Info strip helper — fires an iziToast.info if similar-mode is on
   // AND the pick attempt actually queried Last.fm AND got results.
   // No-ops in every other case (similar off, no source artist, cache
@@ -896,11 +903,12 @@ const MSTREAMPLAYER = (() => {
     const SHOW = 5;
     const shown = candidates.slice(0, SHOW).join(', ');
     const extra = candidates.length > SHOW ? candidates.length - SHOW : 0;
+    // the artist names are Last.fm's and the tags': escaped for the toast
     iziToast.info({
       title: t('autoDJ.similarInfoTitle'),
-      message: extra > 0
+      message: _escapeToastText(extra > 0
         ? t('autoDJ.similarInfoBodyMore', { source: cache.sourceArtist, candidates: shown, extra })
-        : t('autoDJ.similarInfoBody',     { source: cache.sourceArtist, candidates: shown }),
+        : t('autoDJ.similarInfoBody',     { source: cache.sourceArtist, candidates: shown })),
       position: 'topCenter',
       timeout: 8000,
       close: true,
