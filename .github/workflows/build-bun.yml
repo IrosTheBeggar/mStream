@@ -809,7 +809,15 @@ jobs:
           set -euo pipefail
           D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
           A=${{ matrix.key == 'linux-x64' && 'x64' || 'arm64' }}
-          scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$D/mstream-server" "$D/bin/rust-parser/rust-parser-linux-$A" "$D/bin/iroh/iroh.linux-$A-gnu.node"
+          scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$D/mstream-server" "$D/bin/iroh/iroh.linux-$A-gnu.node"
+          # The scanner is CI-committed from master (build-rust-parser.yml),
+          # so a PR leg stages whatever master carries: gated on tags — a
+          # release must not ship one above the floor — and a warning before
+          # that; the workflow relinks the set on its next master push.
+          if ! scripts/check-glibc-floor.sh "$GLIBC_FLOOR" "$D/bin/rust-parser/rust-parser-linux-$A"; then
+            [ "${{ github.ref_type }}" != "tag" ] || exit 1
+            echo "::warning::the committed rust-parser-linux-$A is above the glibc floor — build-rust-parser.yml relinks it on the next master push; a tag build fails here"
+          fi
           echo "not gated (other repos / desktop only):"
           scripts/check-glibc-floor.sh --report "$D"/bin/p2p-sidecar/p2p-sidecar-* "$D"/bin/mstream-player/mstream-player-* "$D/mstream-desktop" || true
 
@@ -826,8 +834,15 @@ jobs:
           echo "server $(run /b/mstream-server -V) in $FLOOR_IMAGE"
           OUT=$(run /b/mstream-server --mstream-worker=iroh-selftest '{}' 2>&1) || { echo "$OUT"; echo "::error::the linux-x64 server did not run the iroh self-test on glibc $GLIBC_FLOOR"; exit 1; }
           echo "$OUT" | grep -q IROH_OK || { echo "$OUT"; echo "::error::the linux-x64 server did not load bin/iroh/iroh.linux-x64-gnu.node on glibc $GLIBC_FLOOR — Quick Connect would ship dead on Debian 10 / Ubuntu 20.04 / RHEL 8 hosts"; exit 1; }
-          GEN=$(run /b/bin/rust-parser/rust-parser-linux-x64 --hash-generation) || { echo "::error::the linux-x64 rust-parser cannot run on glibc $GLIBC_FLOOR"; exit 1; }
-          echo "OK: iroh binding loaded and the scanner answered --hash-generation $GEN on glibc $GLIBC_FLOOR"
+          echo "OK: the iroh binding loaded on glibc $GLIBC_FLOOR"
+          # The committed scanner: gated on tags, a warning on PRs (see the
+          # floor assert above for why).
+          if GEN=$(run /b/bin/rust-parser/rust-parser-linux-x64 --hash-generation 2>/dev/null); then
+            echo "OK: the scanner answered --hash-generation $GEN on glibc $GLIBC_FLOOR"
+          else
+            [ "${{ github.ref_type }}" != "tag" ] || { echo "::error::the linux-x64 rust-parser cannot run on glibc $GLIBC_FLOOR"; exit 1; }
+            echo "::warning::the committed rust-parser-linux-x64 does not run on glibc $GLIBC_FLOOR (it predates the floor; see the floor assert above)"
+          fi
 
       # ── Windows VersionInfo contract (win-x64) ──────────────────────────
       # Every PE the zip ships must carry the same ProductName / version /
