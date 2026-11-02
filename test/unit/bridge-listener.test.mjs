@@ -13,12 +13,14 @@
 
 import { describe, test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { once } from 'node:events';
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
 import express from 'express';
 import { WebSocketServer, WebSocket } from 'ws';
-import { listenBridge, stripLocalToken } from '../../src/util/bridge-listener.js';
+import { listenBridge, localSocketPath, stripLocalToken } from '../../src/util/bridge-listener.js';
 import { connectOutcome, otherInterfaceAddress } from '../helpers/net.mjs';
 
 const listen = (srv, address) => new Promise((resolve, reject) => {
@@ -216,5 +218,57 @@ describe('bridge listener (real sockets)', () => {
     ws.close();
     wss.close();
     assert.equal(msg, 'hello /?code=abc');
+  });
+});
+
+// A GET over a local socket: status + body.
+function getOver(socketPath, path) {
+  return new Promise((resolve, reject) => {
+    http.get({ socketPath, path, agent: false }, (res) => {
+      let body = '';
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => resolve({ status: res.statusCode, body }));
+    }).on('error', reject);
+  });
+}
+
+// The local-socket form (mStream#1101, the Windows report): the same
+// listener on a named pipe or a socket file.
+describe('bridge listener on a local socket', () => {
+  const servers = [];
+  const track = (srv) => { servers.push(srv); return srv; };
+  after(() => { for (const s of servers) { s.close(); s.closeAllConnections?.(); } });
+
+  test('answers on a named pipe or socket file, and the app sees a loopback caller', async () => {
+    const pub = track(http.createServer(pingApp()));
+    await listen(pub, '127.0.0.1');
+    const sockPath = localSocketPath();
+    const seen = [];
+    const bridge = track(await listenBridge({ publicServer: () => pub, onConnection: (s) => seen.push(s), whileDown: stub, path: sockPath }));
+    assert.equal(bridge.address(), sockPath);
+    const r = await getOver(sockPath, '/api/v1/ping?__lt=abc');
+    assert.equal(r.status, 200);
+    assert.deepEqual(JSON.parse(r.body), { from: 'public', remote: '127.0.0.1' });
+    assert.equal(seen.length, 1, 'onConnection saw the bridged socket');
+  });
+
+  test('localSocketPath: a pipe under Node on Windows, a short socket file elsewhere', () => {
+    assert.match(localSocketPath('win32', false, 'C:\\t'), /^\\\\\.\\pipe\\mstream-bridge-\d+-[0-9a-f]{6}$/);
+    assert.match(localSocketPath('win32', true, 'C:\\t'), /^C:\\t[\\/]mstream-bridge-\d+-[0-9a-f]{6}\.sock$/);
+    assert.match(localSocketPath('linux', false, '/tmp'), /^\/tmp\/mstream-bridge-\d+-[0-9a-f]{6}\.sock$/);
+    assert.notEqual(localSocketPath(), localSocketPath(), 'unique per call');
+  });
+
+  test('a stale socket file is replaced, and a close removes the file', async (t) => {
+    const sockPath = localSocketPath();
+    if (sockPath.startsWith('\\\\.\\pipe\\')) { t.skip('a named pipe leaves no file'); return; }
+    fs.writeFileSync(sockPath, '');
+    const pub = track(http.createServer(pingApp()));
+    await listen(pub, '127.0.0.1');
+    const bridge = await listenBridge({ publicServer: () => pub, onConnection: () => {}, whileDown: stub, path: sockPath });
+    assert.equal((await getOver(sockPath, '/api/v1/ping')).status, 200);
+    bridge.close();
+    await once(bridge, 'close');
+    assert.equal(fs.existsSync(sockPath), false);
   });
 });

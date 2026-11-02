@@ -23,6 +23,7 @@ import https from 'node:https';
 import net from 'node:net';
 import express from 'express';
 import winston from 'winston';
+import { localSocketPath } from '../../src/util/bridge-listener.js';
 
 const FAKE_IROH = new URL('../helpers/fake-iroh.mjs', import.meta.url).href;
 const FAKE_STACK = new URL('../helpers/fake-discovery-stack.mjs', import.meta.url).href;
@@ -43,7 +44,7 @@ const adminApi = await import('../../src/api/admin.js');
 winston.configure({ transports: [new winston.transports.Console({ silent: true })] });
 
 const CONNECT_SECRET = Buffer.alloc(32, 7).toString('base64');
-const NOT_YET = { bridgeOk: null, bridgeError: null };
+const NOT_YET = { bridgeOk: null, bridgeError: null, bridgeVia: null };
 
 const listen = (srv) => new Promise((resolve) => srv.listen(0, '127.0.0.1', () => resolve(srv.address().port)));
 const freePort = () => new Promise((resolve) => {
@@ -100,7 +101,7 @@ describe('bridge check', () => {
 
   test('start() without a target bridges to the registered one, and its probe is answered', async () => {
     await iroh.start({ connectSecret: CONNECT_SECRET, awaitOnline: false });
-    assert.deepEqual(await landed(iroh), { bridgeOk: true, bridgeError: null });
+    assert.deepEqual(await landed(iroh), { bridgeOk: true, bridgeError: null, bridgeVia: 'loopback' });
     assert.equal(backend.asked, 1);
     assert.deepEqual(backend.probes, ['HEAD /'], 'the probe went to the registered target');
     await iroh.stop();
@@ -143,7 +144,7 @@ describe('bridge check', () => {
     servers.push(flaky);
     const port = await listen(flaky);
     await federation.start({ targetPort: port, awaitOnline: false });
-    assert.deepEqual(await landed(federation), { bridgeOk: true, bridgeError: null });
+    assert.deepEqual(await landed(federation), { bridgeOk: true, bridgeError: null, bridgeVia: 'loopback' });
     assert.equal(seen, 2, 'the first probe failed and the retry was answered');
   });
 });
@@ -172,7 +173,7 @@ describe('admin routes', () => {
   const post = async (p, body) => (await fetch(`${base}${p}`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
   })).json();
-  const pick = ({ running, bridgeOk, bridgeError }) => ({ running, bridgeOk, bridgeError });
+  const pick = ({ running, bridgeOk, bridgeError, bridgeVia }) => ({ running, bridgeOk, bridgeError, bridgeVia });
 
   test('the status routes carry the outcome', async () => {
     assert.deepEqual(pick(await status('/api/v1/admin/iroh')), { running: false, ...NOT_YET });
@@ -182,7 +183,7 @@ describe('admin routes', () => {
     await landed(iroh);
     await landed(federation);
 
-    assert.deepEqual(pick(await status('/api/v1/admin/iroh')), { running: true, bridgeOk: true, bridgeError: null });
+    assert.deepEqual(pick(await status('/api/v1/admin/iroh')), { running: true, bridgeOk: true, bridgeError: null, bridgeVia: 'loopback' });
     const fed = await status('/api/v1/admin/federation');
     assert.equal(fed.running, true);
     assert.equal(fed.bridgeOk, false);
@@ -192,7 +193,7 @@ describe('admin routes', () => {
   // The routes below start an endpoint without a reboot. Each passed the
   // public port as the target, which a LAN-bound or SSL server never answers.
   async function startedAgainstTarget(endpoint) {
-    assert.deepEqual(await landed(endpoint), { bridgeOk: true, bridgeError: null });
+    assert.deepEqual(await landed(endpoint), { bridgeOk: true, bridgeError: null, bridgeVia: 'loopback' });
     assert.equal(backend.asked, 1, 'start() asked for the registered target');
     assert.deepEqual(backend.probes, ['HEAD /']);
   }
@@ -242,5 +243,108 @@ describe('backend connect failures', () => {
     await waitFor(() => resets === 4);
     assert.equal(lines().length, 2);
     assert.match(lines()[1], /\(2 more since the last warning\)/);
+  });
+});
+
+// The local-socket fallback (mStream#1101, the Windows report): a loopback
+// connect refused sends the stream over the local socket server.js
+// registers, the route then sticks, and the bridge check reports it.
+describe('local-socket fallback', () => {
+  // The registered fallback: a plain HTTP server on a local socket, counting
+  // what reaches it.
+  const fallback = { path: null, asked: 0, served: [] };
+  const register = () => common.setBridgeFallback(() => { fallback.asked += 1; return Promise.resolve({ targetPath: fallback.path }); });
+  const mode = process.env.MSTREAM_BRIDGE;
+  before(async () => {
+    fallback.path = localSocketPath();
+    const srv = http.createServer((req, res) => { fallback.served.push(`${req.method} ${req.url}`); res.end('ok'); });
+    servers.push(srv);
+    await new Promise((resolve) => srv.listen(fallback.path, resolve));
+    register();
+  });
+  after(() => { common.setBridgeFallback(null); common.resetBridgeRoute(); });
+  afterEach(async () => {
+    await stopBoth();
+    common.resetBridgeRoute();
+    fallback.asked = 0;
+    fallback.served.length = 0;
+    if (mode === undefined) { delete process.env.MSTREAM_BRIDGE; } else { process.env.MSTREAM_BRIDGE = mode; }
+  });
+
+  // A bi-stream carrying one request; what came back lands in `reply`.
+  function requestStream(text) {
+    const chunks = [Array.from(Buffer.from(text)), []];
+    const s = { reply: '', resets: 0 };
+    s.bi = {
+      recv: { read: () => Promise.resolve(chunks.shift() ?? []), stop: async () => {} },
+      send: { writeAll: (arr) => { s.reply += Buffer.from(arr).toString(); return Promise.resolve(); }, finish: async () => {}, reset: () => { s.resets += 1; return Promise.resolve(); } },
+    };
+    return s;
+  }
+  const GET = 'GET /api/v1/ping HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n';
+  const warnings = (warn) => warn.mock.calls.map((c) => String(c.arguments[0]));
+
+  test('a stream refused on loopback takes the local socket, and later streams go straight there', async (t) => {
+    const warn = t.mock.method(winston, 'warn', () => {});
+    const dead = await freePort();
+    const first = requestStream(GET);
+    common.bridgeStreamToBackend(first.bi, '127.0.0.1', dead);
+    await waitFor(() => first.reply.includes('HTTP/1.1 200'));
+    assert.deepEqual(common.bridgeRoute(), { targetPath: fallback.path });
+    assert.equal(fallback.asked, 1);
+    assert.equal(warnings(warn).length, 1, 'one line for the switch, none for the refusal');
+    assert.match(warnings(warn)[0], new RegExp(`loopback bridge refused \\(127\\.0\\.0\\.1:${dead}: connect ECONNREFUSED.*bridging over the local socket`));
+    const second = requestStream(GET);
+    common.bridgeStreamToBackend(second.bi, '127.0.0.1', dead);
+    await waitFor(() => second.reply.includes('HTTP/1.1 200'));
+    assert.equal(fallback.asked, 1, 'the route stuck: the fallback was not asked for again');
+    assert.equal(warnings(warn).length, 1, 'and nothing more was warned');
+    assert.deepEqual(fallback.served, ['GET /api/v1/ping', 'GET /api/v1/ping']);
+  });
+
+  test('the bridge check follows: a loopback that fails its retries reports the local socket as the route', async () => {
+    const dead = await freePort();
+    await federation.start({ targetPort: dead, awaitOnline: false });
+    assert.deepEqual(await landed(federation), { bridgeOk: true, bridgeError: null, bridgeVia: 'local-socket' });
+    assert.deepEqual(common.bridgeRoute(), { targetPath: fallback.path });
+    assert.deepEqual(fallback.served, ['HEAD /']);
+  });
+
+  test('both refused: reported with both errors, and loopback stays the route', async () => {
+    const dead = await freePort();
+    const missing = localSocketPath();
+    common.setBridgeFallback(() => Promise.resolve({ targetPath: missing }));
+    try {
+      await iroh.start({ targetPort: dead, connectSecret: CONNECT_SECRET, awaitOnline: false });
+      const check = await landed(iroh);
+      assert.equal(check.bridgeOk, false);
+      assert.equal(check.bridgeVia, 'loopback');
+      assert.match(check.bridgeError, new RegExp(`ECONNREFUSED 127\\.0\\.0\\.1:${dead}; local socket .*mstream-bridge`));
+      assert.equal(common.bridgeRoute(), null);
+    } finally {
+      register();
+    }
+  });
+
+  test('MSTREAM_BRIDGE=loopback never leaves loopback', async (t) => {
+    const warn = t.mock.method(winston, 'warn', () => {});
+    process.env.MSTREAM_BRIDGE = 'loopback';
+    const dead = await freePort();
+    const s = requestStream(GET);
+    common.bridgeStreamToBackend(s.bi, '127.0.0.1', dead);
+    await waitFor(() => s.resets === 1);
+    assert.equal(fallback.asked, 0);
+    assert.equal(common.bridgeRoute(), null);
+    assert.match(warnings(warn)[0], /backend connect failed/);
+  });
+
+  test('MSTREAM_BRIDGE=socket takes the local socket from the first stream', async (t) => {
+    const warn = t.mock.method(winston, 'warn', () => {});
+    process.env.MSTREAM_BRIDGE = 'socket';
+    const s = requestStream(GET);
+    common.bridgeStreamToBackend(s.bi, '127.0.0.1', 1);
+    await waitFor(() => s.reply.includes('HTTP/1.1 200'));
+    assert.deepEqual(common.bridgeRoute(), { targetPath: fallback.path });
+    assert.equal(warnings(warn).length, 0, 'no refusal to warn about');
   });
 });

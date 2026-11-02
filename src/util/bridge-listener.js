@@ -10,7 +10,17 @@
 // is, and hands each request and upgrade to whatever the public listener
 // serves at that moment (the app, the reboot stub, the /remote WebSocket
 // server), so a reboot or a bind change needs nothing from it.
+//
+// The same listener also comes in a local-socket form (`path`): a named
+// pipe under Node on Windows, a socket file elsewhere. That is the fallback
+// for a machine where something resets loopback TCP connections (security
+// software, a VPN kill switch — a Windows report on mStream#1101): those
+// filters work on IP traffic and never see a pipe or a socket file.
 import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import crypto from 'node:crypto';
 import winston from 'winston';
 
 // What whileDown says (the reboot stub), for an upgrade's raw socket.
@@ -40,14 +50,50 @@ export function stripLocalToken(url) {
   return url.slice(0, q) + (query ? `?${query}` : '') + url.slice(end);
 }
 
-// Listen on 127.0.0.1:<ephemeral>. `publicServer()` returns the current
-// public listener, `onConnection(socket)` sees every accepted socket, and
-// `whileDown(req, res)` answers while the public listener is not listening
-// (a recycle under way, a listen retry), when it has no app attached.
+const PIPE_PREFIX = '\\\\.\\pipe\\';
+
+// Where the local-socket form listens. Node on Windows listens on named
+// pipes only; Bun on Windows takes a socket file (AF_UNIX), not a pipe;
+// Linux and macOS take socket files. Per process plus a random tail, so two
+// servers on one machine never share one, and short: AF_UNIX paths are
+// capped at about a hundred bytes, which a deep data directory would exceed.
+export function localSocketPath(platform = process.platform, bun = Boolean(process.versions.bun), tmp = os.tmpdir()) {
+  const name = `mstream-bridge-${process.pid}-${crypto.randomBytes(3).toString('hex')}`;
+  const join = platform === 'win32' ? path.win32.join : path.posix.join;
+  return platform === 'win32' && !bun ? `${PIPE_PREFIX}${name}` : join(tmp, `${name}.sock`);
+}
+
+const isSocketFile = (p) => !p.startsWith(PIPE_PREFIX);
+
+// A socket from the local-socket form has no peer address; the app reads
+// req.socket.remoteAddress (mayShareCode, the admin gate, trust proxy), so
+// give it what a loopback TCP socket shows.
+function stampLoopback(socket) {
+  for (const [key, value] of Object.entries({ remoteAddress: '127.0.0.1', remoteFamily: 'IPv4', remotePort: 0 })) {
+    Object.defineProperty(socket, key, { value, configurable: true });
+  }
+}
+
+// A socket file outlives a process that dies hard: the next listen unlinks
+// it first, and a clean close or exit removes it.
+function removeOnClose(srv, file) {
+  const remove = () => { try { fs.unlinkSync(file); } catch (_err) { /* already gone */ } };
+  srv.once('close', remove);
+  process.once('exit', remove);
+}
+
+// Listen on 127.0.0.1:<ephemeral>, or on the local socket `path`.
+// `publicServer()` returns the current public listener, `onConnection(socket)`
+// sees every accepted socket, and `whileDown(req, res)` answers while the
+// public listener is not listening (a recycle under way, a listen retry),
+// when it has no app attached.
 // Resolves to the listening http.Server; rejects if it cannot listen.
-export function listenBridge({ publicServer, onConnection, whileDown }) {
+export function listenBridge({ publicServer, onConnection, whileDown, path: sockPath = null }) {
   const srv = http.createServer();
-  srv.on('connection', onConnection);
+  srv.on('connection', (socket) => {
+    if (sockPath) { stampLoopback(socket); }
+    onConnection(socket);
+  });
   srv.on('request', (req, res) => {
     req.url = stripLocalToken(req.url);
     const pub = publicServer();
@@ -64,10 +110,14 @@ export function listenBridge({ publicServer, onConnection, whileDown }) {
   });
   return new Promise((resolve, reject) => {
     srv.once('error', reject);
-    srv.listen(0, '127.0.0.1', () => {
+    const listening = () => {
       srv.off('error', reject);
       srv.on('error', (err) => winston.warn(`[iroh] bridge listener error: ${err.message}`));
+      if (sockPath && isSocketFile(sockPath)) { removeOnClose(srv, sockPath); }
       resolve(srv);
-    });
+    };
+    if (!sockPath) { srv.listen(0, '127.0.0.1', listening); return; }
+    if (isSocketFile(sockPath)) { try { fs.unlinkSync(sockPath); } catch (_err) { /* nothing stale */ } }
+    srv.listen(sockPath, listening);
   });
 }

@@ -145,6 +145,7 @@ export function setup(mstream) {
   // rotation take effect LIVE (start/stop the endpoint) without a reboot.
   // bridgeOk/bridgeError: whether the web server answered the tunnel's own
   // probe of its bridge target (null until it has).
+  // bridgeVia: which way the bridge goes, loopback or local-socket (iroh-common).
 
   mstream.get('/api/v1/admin/iroh', async (req, res) => {
     const enabled = config.program.iroh.enabled === true;
@@ -152,7 +153,7 @@ export function setup(mstream) {
     let endpointId = null;
     let relayUrl = null;
     let qr = null;
-    let bridge = { bridgeOk: null, bridgeError: null };
+    let bridge = { bridgeOk: null, bridgeError: null, bridgeVia: null };
     try {
       const iroh = await import('../state/iroh.js');
       endpointId = iroh.getEndpointId();
