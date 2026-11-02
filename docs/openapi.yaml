@@ -215,6 +215,18 @@ components:
       name: x-access-token
 
   schemas:
+    FlowStats:
+      type: object
+      description: Quality numbers over one ordering of a flow run (`POST /api/v1/db/flow`). Means and shares are null when no pair has the data.
+      properties:
+        transitions: { type: integer }
+        meanCost: { type: number, nullable: true, description: "Mean combined edge cost, 4 decimals." }
+        meanSound: { type: number, nullable: true, description: "Mean raw sound distance (1 − cos) over pairs with embeddings, 4 decimals." }
+        tempoOk: { type: number, nullable: true, description: "Percent of pairs with BPMs within the tempo tolerance (half/double aware), 1 decimal." }
+        keyOk: { type: number, nullable: true, description: "Percent of pairs with keys that are the same, relative or adjacent, 1 decimal." }
+        keyClash: { type: integer, description: Pairs whose keys clash. }
+        artistRepeats: { type: integer, description: Neighbours by the same artist. }
+        worst: { type: number, nullable: true, description: "The single worst transition's cost, 4 decimals." }
     DiscoveryCollectionDestination:
       type: object
       description: Where files the user decides to own are put — a library, a base folder inside it, and a layout rendered per song.
@@ -1768,6 +1780,14 @@ paths:
                           (which of these songs, albums and artists the
                           caller's library has, a list at a time). A version
                           fact like `sync`: gate on the key, never probe.
+                      flowOrder:
+                        type: integer
+                        description: >
+                          Flow ordering generation: this server answers
+                          `POST /api/v1/db/flow`. An integer like
+                          `discoveryTaste`; gate on `flowOrder >= 1`. A
+                          version fact, on with discovery off. Absent on
+                          older servers.
                       sync:
                         type: boolean
                         description: >
@@ -1851,6 +1871,7 @@ paths:
                   discoveryTaste: 2
                   moodFilters: true
                   sync: true
+                  flowOrder: 1
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -1918,6 +1939,12 @@ paths:
                     description: >
                       Mood scores to filter by, right now — the same fact as
                       `features.moodFilters` on `GET /api`. Absent on older
+                      servers.
+                  flowOrder:
+                    type: integer
+                    description: >
+                      Flow ordering generation — the same fact as
+                      `features.flowOrder` on `GET /api`. Absent on older
                       servers.
                   supportedAudioFiles:
                     type: object
@@ -2866,6 +2893,250 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "A sonic seed was given but discovery is disabled on this server (or nothing has been embedded yet)." }
         "404": { description: "A `similarTo` path does not resolve in the caller's libraries (uniform, so library names can't be probed)." }
+
+  /api/v1/db/flow:
+    post:
+      tags: [Library]
+      summary: Re-order songs so each flows into the next
+      description: |
+        Returns the caller's list of songs in a new order where each song
+        flows into the next — a permutation of the input, never a drop.
+        Each pair of neighbours gets one symmetric cost from whatever
+        analysis the two songs have: sound (the discovery embeddings),
+        tempo (half/double aware), key (Camelot wheel) and an energy proxy
+        from the mood heads, plus a light penalty for the same artist twice
+        in a row and a heavy one for the same recording. Copies of one song
+        touch only when it has more copies than one plus the other songs
+        that can go between them (a pinned `start` or `end`, or `after`,
+        can't), and then only as often as that forces — with an `arc` too.
+        Under an arc that can mean songs on a short list trade energy
+        bands (not only the copies, and not only into a neighbouring band)
+        or bands merge; long lists with few copies barely change. A song that needs every other
+        song between its copies is spread through the arc of the others.
+        (A `budget` or `deadline` stop can leave a pair the solver had no
+        time to part.) Songs are
+        ordered greedily, then improved with 2-opt and Or-opt on a
+        deterministic budget of move evaluations, with a 250 ms safety net
+        (`solver` says which ended it). Without a `seed`, the order depends
+        only on the set of songs, the pins and the options: shuffled input,
+        or a rerun on the answer, gives the same run (unless `solver` is
+        `deadline`).
+
+        **Layout.** `order` = `[start]` + the ordered run + `unanalysed` (input
+        order) + `unplaced` (input order) + `[end]`. `start` is always first
+        and `end` always last, whatever their class.
+
+        **Never a per-item 404.** A path this caller cannot resolve — a missing
+        file, a library they lack, a path escaping its library — lands in
+        `unplaced`; the three are indistinguishable. **Never a 403 when
+        discovery is off:** songs are ordered by BPM, key and moods and
+        `signals.sound` is false. When fewer than two songs carry any usable
+        signal the answer is the input order (pins honoured) with every
+        `signals` entry false, `stats: null`.
+
+        **Joining runs across servers.** A client orders each server's songs
+        with that server's own call (a peer through the browse proxy — the
+        route is on the federation allowlist) and passes the previous run's
+        `end` (from `returnEnd`) as the next call's `after`. An `after.vector`
+        from another model (or sent to a server with no model) is dropped
+        softly with `afterIgnored: modelMismatch`; its `bpm` and `key` still
+        count.
+
+        All options are body keys (the browse proxy forwards no query
+        string); unknown keys are a 400. One solve runs at a time per
+        process with at most four waiting; past that the call is answered
+        429. Feature flag: `features.flowOrder` (`GET /api`) / `flowOrder`
+        (ping), an integer generation — gate on `>= 1`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [songs]
+              properties:
+                songs:
+                  type: array
+                  minItems: 2
+                  maxItems: 1000
+                  items: { type: string, minLength: 1, maxLength: 4096 }
+                  description: Library paths (`vpath/relative/path`); duplicates allowed.
+                start:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  description: Index of the song kept first (the playing song); the run flows out of it. Not with `after`.
+                end:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  description: Index of the song kept last. Must differ from `start`.
+                after:
+                  type: object
+                  nullable: true
+                  additionalProperties: false
+                  description: |
+                    The song just before this list when it lives elsewhere — a
+                    virtual first song that is never returned. At least one of
+                    `vector`, `bpm`, `key` non-null; a non-null `vector`
+                    requires `modelId`. Not allowed together with `start`. A
+                    previous call's `end` can be passed as is (null members
+                    and `index` are accepted and ignored).
+                  properties:
+                    vector:
+                      type: string
+                      nullable: true
+                      format: byte
+                      maxLength: 65536
+                      description: Base64 little-endian float32 embedding (as `end.vector` returns). A wrong width for this server's model is a 400.
+                    modelId: { type: string, nullable: true, maxLength: 200 }
+                    bpm: { type: number, nullable: true, minimum: 20, maximum: 300 }
+                    key: { type: string, nullable: true, maxLength: 32, description: "Any common spelling: `8A`, `A minor`, `Am`." }
+                    index: { type: integer, nullable: true, minimum: 0, description: "Ignored (`end.index` from a previous call)." }
+                mode:
+                  type: string
+                  enum: [smooth, dj]
+                  default: smooth
+                  description: "Weight preset — smooth: sound 0.55, tempo 0.20, key 0.15, energy 0.10; dj: 0.35 / 0.30 / 0.25 / 0.10."
+                weights:
+                  type: object
+                  additionalProperties: false
+                  required: [sound, tempo, key, energy]
+                  description: Replaces the `mode` preset (normalised over the terms the songs have). All zero is a 400.
+                  properties:
+                    sound: { type: number, minimum: 0, maximum: 1 }
+                    tempo: { type: number, minimum: 0, maximum: 1 }
+                    key: { type: number, minimum: 0, maximum: 1 }
+                    energy: { type: number, minimum: 0, maximum: 1 }
+                arc:
+                  type: string
+                  enum: [steady, up, down, wave]
+                  default: steady
+                  description: Energy shape over five energy bands. To keep copies of one song apart, a short list may move songs between bands (not only the copies, and not only into a neighbouring band) or merge bands; long lists with few copies barely change. Ignored (`arc` answers `steady`) when fewer than two songs have mood scores.
+                tempoTolerance:
+                  type: number
+                  minimum: 0.02
+                  maximum: 0.25
+                  default: 0.06
+                  description: Tempo ratio at which the tempo cost reaches 0.5 (it reaches 1 at twice this).
+                halfDouble: { type: boolean, default: true, description: "Treat 140 BPM as matching 70 (+0.03)." }
+                artistGap: { type: boolean, default: true, description: Penalise the same artist twice in a row — a light nudge that thins same-artist runs rather than preventing them. }
+                seed:
+                  type: integer
+                  nullable: true
+                  minimum: 0
+                  maximum: 2147483647
+                  description: A varied order on request; the same seed reproduces its order. Absent = the deterministic order.
+                explain: { type: boolean, default: false, description: Include `transitions`. }
+                returnEnd: { type: boolean, default: false, description: "Include `end`, the run's last song's features, for joining runs." }
+            example:
+              songs: ["Music/a.mp3", "Music/b.mp3", "Music/c.mp3"]
+              start: 0
+              mode: smooth
+              returnEnd: true
+      responses:
+        "200":
+          description: The songs in flow order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [order, songs, unplaced, unanalysed, signals, arc, model, seed, solver, stats]
+                properties:
+                  order:
+                    type: array
+                    items: { type: integer }
+                    description: A permutation of the input indices.
+                  songs:
+                    type: array
+                    items: { type: string }
+                    description: "`songs[order[k]]`, for convenience."
+                  unplaced:
+                    type: array
+                    items: { type: integer }
+                    description: Indices that could not be resolved for this caller (at the tail, input order).
+                  unanalysed:
+                    type: array
+                    items: { type: integer }
+                    description: Indices resolved but with no vector, BPM or key (after the run, input order).
+                  signals:
+                    type: object
+                    description: The terms the order used.
+                    properties:
+                      sound: { type: boolean }
+                      tempo: { type: boolean }
+                      key: { type: boolean }
+                      energy: { type: boolean }
+                  arc:
+                    type: string
+                    enum: [steady, up, down, wave]
+                    description: The arc actually applied.
+                  model:
+                    type: object
+                    nullable: true
+                    description: This server's discovery model; null when discovery is off.
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  seed: { type: integer, nullable: true }
+                  solver:
+                    type: string
+                    enum: [complete, budget, deadline]
+                    description: What ended the improvement — convergence, the deterministic evaluation budget, or the wall-clock safety net (a `deadline` answer is not reproducible).
+                  stats:
+                    type: object
+                    nullable: true
+                    description: The run in input order vs. in flow order. Costs are per request (scaled to the request's own songs), so compare only within one answer.
+                    properties:
+                      before: { $ref: "#/components/schemas/FlowStats" }
+                      after: { $ref: "#/components/schemas/FlowStats" }
+                  transitions:
+                    type: array
+                    description: "`explain` only: one row per pair of neighbours in `order` that are both placed (an `unanalysed` or `unplaced` song has none, so a pinned `end` after that tail has no row, and the run is not ordered towards it)."
+                    items:
+                      type: object
+                      properties:
+                        from: { type: integer }
+                        to: { type: integer }
+                        cost: { type: number }
+                        why:
+                          type: array
+                          items:
+                            type: string
+                            enum: [soundClose, sameKey, relativeKey, adjacentKey, keyClash, tempoMatch, halfTime, tempoJump, sameArtist, noData]
+                  end:
+                    type: object
+                    nullable: true
+                    description: "`returnEnd` only: the last placed song of `order`, ready to pass as is as the next call's `after`. `vector` and `modelId` only when the song has an embedding; `bpm` only within 20–300. Null when no song is placed, or when the last one has nothing `after` can carry."
+                    properties:
+                      index: { type: integer }
+                      bpm: { type: number, nullable: true, minimum: 20, maximum: 300 }
+                      key: { type: string, nullable: true, description: Camelot code. }
+                      vector: { type: string, format: byte }
+                      modelId: { type: string }
+                  afterIgnored:
+                    type: string
+                    enum: [modelMismatch]
+                    description: Present only when `after.vector` was dropped.
+              example:
+                order: [0, 2, 1]
+                songs: ["Music/a.mp3", "Music/c.mp3", "Music/b.mp3"]
+                unplaced: []
+                unanalysed: []
+                signals: { sound: true, tempo: true, key: true, energy: false }
+                arc: steady
+                model: { id: discogs-effnet-bs64-1, version: "1" }
+                seed: null
+                solver: complete
+                stats:
+                  before: { transitions: 2, meanCost: 0.52, meanSound: 0.61, tempoOk: 50, keyOk: 0, keyClash: 1, artistRepeats: 0, worst: 0.71 }
+                  after: { transitions: 2, meanCost: 0.21, meanSound: 0.24, tempoOk: 100, keyOk: 100, keyClash: 0, artistRepeats: 0, worst: 0.24 }
+                end: { index: 1, bpm: 124, key: 8A }
+        "400": { description: "Request validation failed: an unknown key, the song caps, an index out of range, `start` equal to `end`, `after` with `start`, an `after` with no non-null `vector`, `bpm` or `key`, all-zero `weights`, `after.vector` without `modelId` or of the wrong width." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { description: "The body is over the server's request size limit." }
+        "429": { description: "Too many flow requests in progress (one runs at a time, four may wait); try again shortly." }
 
   /api/v1/discovery/local/embeddings:
     post:

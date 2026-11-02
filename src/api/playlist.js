@@ -45,6 +45,10 @@ export function setup(mstream) {
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.
       sync: features.sync,
+      // Flow ordering (POST /api/v1/db/flow) generation — same fact /api/
+      // carries under features; ping lists keys by hand, so it is added
+      // here too (the drift-lock test checks).
+      flowOrder: features.flowOrder,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —

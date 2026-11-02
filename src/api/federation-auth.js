@@ -73,6 +73,13 @@ const ALLOWED_EXACT = new Set([
   // per-user rating filter is skipped for a key (api/random.js), and
   // ignoreVPaths names OUR libraries, so a caller sends neither.
   'POST /api/v1/db/random-songs',
+  // Flow ordering across servers: a client orders each server's songs with
+  // that server's own call and joins the runs. A read — it orders the
+  // caller's own list and records nothing — and grant-scoped: every path
+  // resolves through getVPathInfo, so a song outside the key's libraries is
+  // just `unplaced`. The outbound browse proxy screens against this same
+  // table, so a parent can forward the call only because this line exists.
+  'POST /api/v1/db/flow',
   'POST /api/v1/discovery/local/embeddings',
   'POST /api/v1/file-explorer',
   'POST /api/v1/file-explorer/recursive',
