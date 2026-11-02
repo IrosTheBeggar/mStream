@@ -127,6 +127,12 @@ export function buildFeatures() {
     // contract as the discovery flags: the key's presence says this VERSION
     // has the route; clients never probe for it.
     sync: true,
+    // Flow ordering (POST /api/v1/db/flow): a list of songs back in an order
+    // where each flows into the next. An integer GENERATION like
+    // `discoveryTaste` — a later body key ships as 2 and clients gate on
+    // `>= n`. A version fact, unconditional: the route orders by BPM, key and
+    // moods with discovery off, so there is nothing to probe.
+    flowOrder: 1,
   };
 }
 

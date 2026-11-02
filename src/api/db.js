@@ -562,6 +562,66 @@ export function pullMetaDataBatch(filepaths, user) {
   return result;
 }
 
+// The flow orderer's lean twin of pullMetaDataBatch (POST /api/v1/db/flow,
+// api/flow.js): the same visibility step and the same row-value IN chunks,
+// but only the tracks columns an ordering reads — no trackQuery, whose
+// user_metadata / artist / album joins would be wasted here (and a
+// federation key's user has no id to join user_metadata on anyway).
+//
+// Returns an array ALIGNED to `filepaths`: { id, hash, bpm, musicalKey,
+// artistId, albumId } per resolved path, null for a path that cannot be
+// resolved for this user. Unknown files, forbidden libraries and path
+// escapes are all the same null — the caller cannot tell them apart, so
+// neither can a client probing library names. Duplicates resolve to the
+// same row object. `hash` is the canonical audio_hash || file_hash, the key
+// the similarity index uses.
+export function resolveFlowTracks(filepaths, user) {
+  const out = new Array(filepaths.length).fill(null);
+  const d = db.getDB();
+  if (!d) { return out; }
+
+  const keyOf = (libraryId, rel) => `${libraryId} ${rel}`;
+  const pending = new Map();   // key -> { library_id, rel, idx: [input index, ...] }
+  for (let i = 0; i < filepaths.length; i++) {
+    let info;
+    try { info = vpath.getVPathInfo(filepaths[i], user); } catch (_e) { continue; }
+    const lib = db.getLibraryByName(info.vpath);
+    if (!lib) { continue; }
+    const key = keyOf(lib.id, info.relativePath);
+    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, idx: [] };
+    entry.idx.push(i);
+    pending.set(key, entry);
+  }
+
+  // 500 pairs per chunk = 1000 bound parameters, under SQLite's limit.
+  const entries = [...pending.values()];
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const values = slice.map(() => '(?,?)').join(',');
+    const rows = d.prepare(`
+      SELECT t.id, t.library_id, t.filepath, t.audio_hash, t.file_hash,
+             t.bpm, t.musical_key, t.artist_id, t.album_id
+        FROM tracks t
+       WHERE (t.library_id, t.filepath) IN (VALUES ${values})
+    `).all(...slice.flatMap(e => [e.library_id, e.rel]));
+    for (const row of rows) {
+      const entry = pending.get(keyOf(row.library_id, row.filepath));
+      if (!entry) { continue; }
+      const rec = {
+        id: row.id,
+        hash: row.audio_hash || row.file_hash || null,
+        bpm: row.bpm ?? null,
+        musicalKey: row.musical_key ?? null,
+        artistId: row.artist_id ?? null,
+        albumId: row.album_id ?? null,
+      };
+      for (const idx of entry.idx) { out[idx] = rec; }
+    }
+  }
+  return out;
+}
+
 // ── Album items ─────────────────────────────────────────────────────────────
 // What /db/albums and /db/artists-albums return per album: the legacy trio
 // (name, year, album_art_file) plus, since the album-API series, the credit

@@ -19,6 +19,7 @@ import { startRetentionSweep, stopRetentionSweep } from './stats/retention.js';
 import * as discoveryApi from './api/discovery.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
+import * as flowApi from './api/flow.js';
 import * as playlistApi from './api/playlist.js';
 import * as authApi from './api/auth.js';
 import * as fileExplorerApi from './api/file-explorer.js';
@@ -652,6 +653,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   startRetentionSweep();
   searchApi.setup(mstream);
   randomApi.setup(mstream);
+  flowApi.setup(mstream);
   playlistApi.setup(mstream);
   downloadApi.setup(mstream);
   fileExplorerApi.setup(mstream);
