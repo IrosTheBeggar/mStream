@@ -41,6 +41,9 @@ export function setup(mstream) {
       // Discover page's and the song lists' filters gate on it; same flag
       // on /api/.
       moodFilters: features.moodFilters,
+      // The Auto DJ picker's generation (negative seeds from 1) — the same
+      // fact /api/ carries under features.
+      autoDj: features.autoDj,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.

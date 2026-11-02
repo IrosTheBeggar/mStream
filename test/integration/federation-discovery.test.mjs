@@ -189,6 +189,9 @@ describe('federation discovery similar (peer side)', () => {
     const j = await r.json();
     assert.deepEqual(j.libraries, ['shared']);
     assert.deepEqual(j.discovery, { modelId: 'test-fake', modelVersion: '1', dim: 4, analyzedCount: 3 });
+    // The Auto DJ picker's generation, read here beside the model id before
+    // a peer sends negative seeds (the same fact as features.autoDj).
+    assert.equal(j.autoDj, 1);
   });
 
   test('ranks by exact cosines within the granted library only', async () => {
@@ -332,7 +335,9 @@ describe('federation discovery similar (peer side)', () => {
   test('discovery-off server: health capability null, similar 403', async () => {
     const health = await fetch(`${offServer.baseUrl}/api/v1/federation/health`, { headers: fedHeaders(offKey) });
     assert.equal(health.status, 200);
-    assert.equal((await health.json()).discovery, null);
+    const healthBody = await health.json();
+    assert.equal(healthBody.discovery, null);
+    assert.equal(healthBody.autoDj, 1, 'a version fact: advertised with discovery off');
 
     const r = await similar(offServer, fedHeaders(offKey), { embedding: b64(Q), modelId: 'test-fake' });
     assert.equal(r.status, 403);
@@ -417,6 +422,44 @@ describe('federation discovery similar (peer side)', () => {
       // …while a plain pick there still works: the route is allowlisted, only
       // the sonic pool needs discovery.
       assert.equal((await post(offServer, fedHeaders(offKey), '/api/v1/db/random-songs', {})).status, 200);
+    });
+
+    // ── "less like this" negatives for a key: the same rules, inside the grants ──
+
+    test('a path negative outside the grants is ignored and counted, never a 404', async () => {
+      const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs',
+        { lessLike: [UNGRANTED_PATH], limit: 5 });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual({ used: body.lessLike.used, ignored: body.lessLike.ignored }, { used: 0, ignored: 1 });
+      for (const s of body.songs) { assert.ok(s.filepath.startsWith('shared/'), s.filepath); }
+    });
+
+    test('a vector negative steers a key\'s picks: the song near it comes last, flagged', async () => {
+      // V.ungranted is .969 from Alpha and .747 from Beta: at T = .8 Alpha is
+      // like the skip, Beta is not.
+      const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs',
+        { lessLikeVectors: [b64(V.ungranted)], lessLikeModelId: 'test-fake', limit: 5 });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual(body.songs.map((s) => s.metadata.title), ['Beta Song', 'Alpha Song']);
+      assert.deepEqual(body.lessLike.avoided, [false, true]);
+      assert.equal(body.lessLike.used, 1);
+    });
+
+    test('a granted path negative blocks its neighbours and still plays them', async () => {
+      // Alpha is 1.0 from itself and .889 from Beta: both like the skip, both
+      // still served.
+      const { status, body } = await post(server, fedHeaders(fedKey), '/api/v1/db/random-songs',
+        { lessLike: [ALPHA_PATH], limit: 5 });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.equal(body.songs.length, 2);
+      assert.deepEqual(body.lessLike.avoided, [true, true]);
+    });
+
+    test('a discovery-off peer ignores negatives (counted), unlike the positive seed\'s 403', async () => {
+      const { status, body } = await post(offServer, fedHeaders(offKey), '/api/v1/db/random-songs',
+        { lessLike: ['shared/x.mp3'] });
+      assert.equal(status, 200, JSON.stringify(body));
+      assert.deepEqual({ used: body.lessLike.used, ignored: body.lessLike.ignored }, { used: 0, ignored: 1 });
     });
   });
 

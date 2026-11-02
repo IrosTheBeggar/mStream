@@ -136,6 +136,9 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discoveryP2p, false);
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
+    // A version fact (the Auto DJ picker takes negative seeds), advertised
+    // with discovery off too — clients gate on it AND discoveryReady.
+    assert.equal(j.features.autoDj, 1);
     assert.equal(j.user.username, 'pleb');
     assert.equal(j.user.admin, false);
     assert.equal(j.user.federation, false);
