@@ -70,8 +70,8 @@ import * as backupApi from './api/backup.js';
 import * as backupManager from './backup/manager.js';
 import { classifyError } from './util/web-error.js';
 import { isAdminAllowed } from './util/admin-network.js';
-import { listenBridge } from './util/bridge-listener.js';
-import { setBridgeTarget } from './state/iroh-common.js';
+import { listenBridge, localSocketPath } from './util/bridge-listener.js';
+import { setBridgeTarget, setBridgeFallback } from './state/iroh-common.js';
 import { writeJsonAtomic, completedWrites } from './util/atomic-json.js';
 import * as adminUtil from './util/admin.js';
 import * as updateCheck from './util/update-check.js';
@@ -182,6 +182,26 @@ function bridgeTarget() {
     });
   }
   return bridgeListening.then((srv) => ({ targetHost: '127.0.0.1', targetPort: srv ? srv.address().port : config.program.port }));
+}
+
+// The local-socket fallback (iroh-common setBridgeFallback): the same
+// listener on a named pipe or a socket file, opened the first time a
+// loopback connect is refused, for a machine where something resets
+// loopback TCP. Kept for the process like the loopback one.
+let bridgeSocketListening = null;
+function bridgeFallback() {
+  if (!bridgeSocketListening) {
+    const sockPath = localSocketPath();
+    bridgeSocketListening = listenBridge({ publicServer: () => server, onConnection: trackBridgeSocket, whileDown: rebootStub, path: sockPath }).then(() => {
+      winston.info(`[iroh] local socket bridge listener ${sockPath}`);
+      return { targetPath: sockPath };
+    }, (err) => {
+      bridgeSocketListening = null;
+      winston.error(`[iroh] local socket bridge listener could not start at ${sockPath} (${err.code || err.message})`);
+      return null;
+    });
+  }
+  return bridgeSocketListening;
 }
 
 // Put a rejected bind change back: the previous port/address into the config
@@ -768,6 +788,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   // Before either path below serves the app: the admin toggles start the
   // iroh endpoints from inside it.
   setBridgeTarget(bridgeTarget);
+  setBridgeFallback(bridgeFallback);
 
   // Start the server!
   const protocol = bind.ssl ? 'https' : 'http';

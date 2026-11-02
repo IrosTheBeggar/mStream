@@ -89,7 +89,7 @@ export function register(mstream) {
     let available = true;
     let endpointId = null;
     let relayUrl = null;
-    let bridge = { bridgeOk: null, bridgeError: null };
+    let bridge = { bridgeOk: null, bridgeError: null, bridgeVia: null };
     try {
       const federation = await import('../state/federation.js');
       endpointId = federation.getEndpointId();
