@@ -76,7 +76,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'loca
   'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'showMoodFilters', 'songListMoods', 'moodSorted',
   'senddir', 'printdir', 'getFileExplorerPath', 'getDirectoryString2',
   'getAlbumsOnClick', 'getAlbumSongs', 'getArtistsAlbums', 'getAllAlbums', 'getGenreSongs', 'redoRecentlyAdded', 'runLocalSearch',
-  'openFileExplorerAt', 'applyServerContext', ...KEEP_FNS];
+  'openFileExplorerAt', 'applyServerContext', 'flowAddAllGate', 'flowServerCan', ...KEEP_FNS];
 
 const tStub = (k, p) => (p && Object.keys(p).length ? `${k}${JSON.stringify(p)}` : k);
 
@@ -315,6 +315,7 @@ function makeSandbox({ peer = PEER, flagOn = true, listing = LISTING(), view = V
     ${sliceConst('MOODS')}
     ${sliceConst('searchMap')}
     ${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    ${sliceConst('flowSession')}
     let keepGatePending = null;
     let keepGateAsk = 0;
     let browseKeepQueued = null;

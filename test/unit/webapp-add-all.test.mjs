@@ -108,7 +108,7 @@ const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(s
 // same behavioural assertions against any m.js — one that inlines it, or
 // the pre-fix one (where they fail on the lookups, not on a missing name).
 // Renaming it without updating this list fails as a ReferenceError in addAll.
-const OPTIONAL = ['browsingListMetadata'];
+const OPTIONAL = ['browsingListMetadata', 'addAllRows'];
 
 // ── a just-enough DOM ───────────────────────────────────────────────
 // addAll walks document.getElementsByClassName('filez'). Rebuild that list

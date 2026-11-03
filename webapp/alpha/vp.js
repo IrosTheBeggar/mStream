@@ -231,6 +231,12 @@ const VUEPLAYERCORE = (() => {
     // destination form, open in place.
     modal: blankDiscoverModal(),
   };
+
+  // The Now Playing bar's Flow (m.js flowQueue): shown while the server has
+  // POST /api/v1/db/flow (ping `flowOrder`, setFlowAvailable) and Auto DJ is
+  // off; busy while an answer is out; open while its two choices show.
+  const flowState = { available: false, busy: false, open: false };
+
   function blankDiscoverModal(over) {
     return Object.assign({
       open: false,
@@ -912,6 +918,9 @@ const VUEPLAYERCORE = (() => {
       meta: MSTREAMPLAYER.playerStats.metadata,
       livePlaylist: mstreamModule.livePlaylist,
       discover: discoverState,
+      flow: flowState,
+      // Auto DJ hides Flow (the template reads playerStats.autoDJ).
+      playerStats: MSTREAMPLAYER.playerStats,
       // Owned here rather than in each playlist-item so that one shared
       // value has one subscriber instead of one per queue row — see the
       // note on the playlist-item component.
@@ -1005,6 +1014,50 @@ const VUEPLAYERCORE = (() => {
         document.getElementById("pop").style.visibility = "hidden";
         MSTREAMPLAYER.resetPositionCache();
         saveLiveQueue();
+      },
+      // ── Flow ───────────────────────────────────────────────────────────
+      // A disclosure with two choices; Escape or a click outside closes it.
+      // A mouse press leaves no focus on Flow (Chrome and Firefox focus a
+      // clicked button): Space after it must pause, not press Flow again.
+      flowToggle: function (e) {
+        if (e && e.detail > 0 && e.currentTarget) { e.currentTarget.blur(); }
+        if (this.flow.busy) { return; }
+        if (this.flow.open) { this.flowClose(false); return; }
+        this.flow.open = true;
+        document.addEventListener('mousedown', this.flowOutside, true);
+        this.$nextTick(() => {
+          const first = document.querySelector('#flow_menu button:not([disabled])');
+          if (first) { first.focus(); }
+        });
+      },
+      flowClose: function (refocus) {
+        this.flow.open = false;
+        document.removeEventListener('mousedown', this.flowOutside, true);
+        if (refocus) {
+          const btn = document.getElementById('flow_queue_btn');
+          if (btn) { btn.focus(); }
+        }
+      },
+      flowOutside: function (e) {
+        if (!this.flow.open) { document.removeEventListener('mousedown', this.flowOutside, true); return; }
+        if (!(e.target && e.target.closest && e.target.closest('.flow-wrap'))) { this.flowClose(false); }
+      },
+      // Tabbing out of it closes it too. Only when focus lands on something
+      // else: a click that just drops focus (Safari's buttons) is the
+      // mousedown's to judge.
+      flowFocusOut: function (e) {
+        const to = e.relatedTarget;
+        if (this.flow.open && to && !(to.closest && to.closest('.flow-wrap'))) { this.flowClose(false); }
+      },
+      // Focus back on Flow only for a key press; a mouse choice leaves none.
+      flowChoose: function (mode, e) {
+        this.flowClose(!(e && e.detail > 0));
+        flowQueue(mode);
+      },
+      // Nothing to reorder: fewer than two songs in that choice.
+      flowCan: function (mode) {
+        return typeof QUEUEFLOW !== 'undefined'
+          && QUEUEFLOW.queueSubject(this.playlist, this.positionCache.val, mode).subject.length >= 2;
       },
       clearRating: async function () {
         try {
@@ -4788,7 +4841,9 @@ const VUEPLAYERCORE = (() => {
     if (!target || typeof target.tagName !== 'string') { return false; }
     const element = target.tagName.toLowerCase();
     if (element === 'input' || element === 'textarea' || element === 'select' || target.isContentEditable) { return true; }
-    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more') !== null;
+    // (and Flow's controls, its own toast's Undo too — no other toast's
+    // buttons: Space presses them, as Enter does)
+    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more, .flow-wrap, .flow-add-btn, #flow-toast .iziToast-buttons') !== null;
   }
 
   window.addEventListener("keydown", (event) => {
@@ -5340,6 +5395,18 @@ const VUEPLAYERCORE = (() => {
   mstreamModule.setDiscoveryAvailable = (available) => {
     discoverState.available = available === true;
     if (discoverState.available) { playlistVue.refreshDiscover(); }
+  };
+
+  // m.js init(): the ping's `flowOrder` (and not server-audio mode) shows
+  // the Now Playing bar's Flow; m.js flowQueue marks it busy while an answer
+  // is out (a spinner, and the menu shut).
+  mstreamModule.setFlowAvailable = (on) => {
+    flowState.available = on === true;
+    if (!flowState.available) { flowState.open = false; }
+  };
+  mstreamModule.setFlowBusy = (on) => {
+    flowState.busy = on === true;
+    if (flowState.busy) { flowState.open = false; }
   };
 
   // Ping's discoveryP2p flag — reveals the "From the network" section inside

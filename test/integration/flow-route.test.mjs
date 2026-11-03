@@ -28,6 +28,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../helpers/server.mjs';
 
@@ -467,5 +468,57 @@ describe('flow: concurrency', () => {
     }
     const late = await flow(gateServer, body);
     assert.equal(late.status, 200);
+  });
+});
+
+// The webapp's runner (webapp/alpha/queue-flow.js) against the real route:
+// `server` stands in for this server and `offServer` for a peer (7).
+describe('flow: the webapp runner', () => {
+  const QUEUEFLOW = createRequire(import.meta.url)('../../webapp/alpha/queue-flow.js');
+  const httpCall = (target) => async (srv, body) => {
+    const r = await flow(target(srv), body);
+    if (r.status !== 200) { throw Object.assign(new Error(`HTTP ${r.status}`), { status: r.status, body: r.body }); }
+    return r.body;
+  };
+
+  test('a pinned run joined onto a second server by its end; the foreign vector is dropped softly', async () => {
+    const answers = [];
+    const sent = [];
+    const call = httpCall((srv) => (srv === null ? server : offServer));
+    const items = [
+      QUEUEFLOW.item(null, `/${P.Rise}`, {}), QUEUEFLOW.item(7, P.Static, {}), QUEUEFLOW.item(null, P.Orbit, {}),
+      QUEUEFLOW.item(7, P.Neon, {}), QUEUEFLOW.item(null, P.Return, {}), QUEUEFLOW.item(7, P.Highway, {}),
+      QUEUEFLOW.item(null, P.Descent, {}),
+    ];
+    const res = await QUEUEFLOW.flowRuns(items, {
+      lead: QUEUEFLOW.item(null, P['Be Somebody'], { bpm: 124 }),
+      call: async (srv, body, signal) => { sent.push({ srv, body }); const a = await call(srv, body, signal); answers.push(a); return a; },
+    });
+    assert.equal(res.failed, false, String(res.error && res.error.message));
+    assert.equal(res.calls, 2);
+    assert.ok(isPerm(res.order, items.length), JSON.stringify(res.order));
+    assert.deepEqual(sent.map((c) => c.srv), [null, 7]);
+    assert.equal(sent[0].body.start, 0);
+    assert.equal(sent[0].body.songs[0], P['Be Somebody']);
+    assert.equal(sent[0].body.returnEnd, true);
+    assert.equal(sent[1].body.after.modelId, 'test-fake');
+    assert.equal(typeof sent[1].body.after.vector, 'string');
+    assert.equal(answers[1].afterIgnored, 'modelMismatch');
+    // the local run first, then the peer's
+    assert.deepEqual(res.order.slice(0, 4).map((i) => items[i].server), [null, null, null, null]);
+    assert.deepEqual(res.order.slice(4).map((i) => items[i].server), [7, 7, 7]);
+  });
+
+  test('a server whose solve queue is full answers 429 and the runner fails', async () => {
+    const body = { songs: ['testlib/nope-1.mp3', 'testlib/nope-2.mp3'] };
+    const held = Array.from({ length: 5 }, () => flow(gateServer, body));
+    await new Promise((r) => { setTimeout(r, 150); });
+    const res = await QUEUEFLOW.flowRuns(
+      [QUEUEFLOW.item(null, 'testlib/nope-1.mp3'), QUEUEFLOW.item(null, 'testlib/nope-2.mp3')],
+      { call: httpCall(() => gateServer) },
+    );
+    assert.equal(res.failed, true);
+    assert.equal(res.error.status, 429);
+    assert.deepEqual((await Promise.all(held)).map((r) => r.status), [200, 200, 200, 200, 200]);
   });
 });

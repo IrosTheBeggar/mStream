@@ -1414,6 +1414,50 @@ const MSTREAMPLAYER = (() => {
     mstreamModule.positionCache.val = -1;
   }
 
+  // Put the queue in a new order WITHOUT touching playback (Flow and its
+  // Undo, webapp/alpha/m.js): the same rows, rearranged in place — Vue is
+  // bound to this array, which is why it is spliced, never replaced — and
+  // the position moved to wherever the playing song landed. Never goToSong,
+  // setMedia on the current player, pause or clearEnd. Returns false, and
+  // changes nothing, unless `order` holds exactly the queue's rows.
+  mstreamModule.applyQueueOrder = function (order) {
+    const pl = mstreamModule.playlist;
+    const next = Array.prototype.slice.call(order || []);
+    if (next.length !== pl.length) { return false; }
+    const counts = new Map();
+    for (let i = 0; i < pl.length; i++) { counts.set(pl[i], (counts.get(pl[i]) || 0) + 1); }
+    for (let i = 0; i < next.length; i++) {
+      const c = counts.get(next[i]);
+      if (!c) { return false; }
+      counts.set(next[i], c - 1);
+    }
+
+    // In chunks: one spread of a very long queue can pass the engine's
+    // argument limit.
+    const CHUNK = 8192;
+    pl.splice(0, pl.length, ...next.slice(0, CHUNK));
+    for (let i = CHUNK; i < next.length; i += CHUNK) { pl.push(...next.slice(i, i + CHUNK)); }
+
+    mstreamModule.resetPositionCache();
+
+    // The next song cached on the other player may not be next any more:
+    // drop a pending cache timer (a goToSong set earlier holds the OLD index
+    // in its closure) and cache the new next song now, unless the other
+    // player already holds it — a flow late in a track must not lose the
+    // preload. With shuffle on the pending timer stays — it finds its song
+    // by object.
+    if (mstreamModule.playerStats.shuffle !== true) {
+      clearTimeout(cacheTimer);
+      cacheTimer = undefined;
+      const pos = mstreamModule.positionCache.val;
+      if (pos >= 0) {
+        const at = mstreamModule.playerStats.shouldLoop === true && pos === pl.length - 1 ? 0 : pos + 1;
+        if (pl[at] && getOtherPlayer().songObject !== pl[at]) { setCachedSong(at); }
+      }
+    }
+    return true;
+  }
+
   // ========================= Howler Player ===============
   function howlPlayerPlay() {
     const localPlayer = getCurrentPlayer();
