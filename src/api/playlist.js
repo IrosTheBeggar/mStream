@@ -49,6 +49,10 @@ export function setup(mstream) {
       // carries under features; ping lists keys by hand, so it is added
       // here too (the drift-lock test checks).
       flowOrder: features.flowOrder,
+      // Instant Mix (POST /api/v1/discovery/local/mix) generation — same
+      // fact /api/ carries under features, listed by hand for the same
+      // reason.
+      instantMix: features.instantMix,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —

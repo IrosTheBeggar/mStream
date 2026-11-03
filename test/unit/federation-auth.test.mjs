@@ -44,6 +44,7 @@ describe('federation route allowlist', () => {
       ['POST', '/api/v1/db/recent/added'],
       ['POST', '/api/v1/db/search'],
       ['POST', '/api/v1/db/flow'],
+      ['POST', '/api/v1/discovery/local/mix'],
       ['POST', '/api/v1/file-explorer'],
       ['POST', '/api/v1/file-explorer/recursive'],
       ['POST', '/api/v1/file-explorer/m3u'],

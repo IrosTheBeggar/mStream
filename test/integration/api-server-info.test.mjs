@@ -135,6 +135,7 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discovery, false);
     assert.equal(j.features.discoveryP2p, false);
     assert.equal(j.features.flowOrder, 1, 'flow ordering is a version fact, on with discovery off');
+    assert.equal(j.features.instantMix, 1, 'Instant Mix is a version fact too; clients gate on it AND discoveryReady');
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
     assert.equal(j.user.username, 'pleb');

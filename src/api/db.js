@@ -737,6 +737,87 @@ export function albumItems(d, rows) {
   });
 }
 
+// ── Album songs ─────────────────────────────────────────────────────────────
+// One album as a client holds it — { album, artist, album_artist, year },
+// a falsy `album` being the singles bucket — as WHERE conditions over
+// trackQuery's joins (`a`, `al`, `pa`), with `filter` (a libraryFilter())
+// first: { conditions, params }. The one definition of "an album's songs":
+// POST /db/album-songs lists them, and Instant Mix seeds from them
+// (api/discovery-mix.js).
+export function albumSongConditions({ album, artist, album_artist: albumArtistTag, year }, filter) {
+  const conditions = [filter.clause];
+  const params = [...filter.params];
+
+  if (album) {
+    conditions.push('al.name = ?');
+    params.push(String(album));
+  } else {
+    conditions.push('t.album_id IS NULL');
+  }
+
+  if (artist) {
+    // V72: TRACK artist, matched on its normalised key (see artists-albums).
+    // V73: a performer credit (main / featured — the set artists-albums
+    // lists by default) counts too, so the singles bucket of an artist who
+    // is only ever featured is not empty. Other roles never match here.
+    const key = nameKey(artist);
+    conditions.push(`(a.name_key = ? OR t.id IN (
+      SELECT ta.track_id FROM track_artists ta
+       WHERE ta.role IN (${PERFORMER_ROLES_SQL})
+         AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+    params.push(key, key);
+  }
+
+  // `album_artist` narrows a named album to one credit. Two albums that
+  // share a name (and overlapping years) are one `album` + `year` match
+  // here, so a client that holds the album artist a list response gave it
+  // sends it back. Matched three ways, so any spelling a client can hold
+  // resolves: the primary album artist's normalised key, a 'main' album
+  // credit's key, or the display string verbatim (a joined "A & B" tag has
+  // no artist row of its own). The singles bucket has no album to credit:
+  // there the album artist IS the track artist, matched like `artist`.
+  // `pa`, the album's primary artist, is trackQuery's own join.
+  const albumArtist = typeof albumArtistTag === 'string' ? albumArtistTag.trim() : '';
+  if (albumArtist) {
+    const key = nameKey(albumArtist);
+    if (album) {
+      conditions.push(`(pa.name_key = ? OR COALESCE(al.album_artist, pa.name) = ? OR al.id IN (
+        SELECT aa.album_id FROM album_artists aa
+         WHERE aa.role = 'main'
+           AND aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+      params.push(key, albumArtist, key);
+    } else {
+      conditions.push(`(a.name_key = ? OR t.id IN (
+        SELECT ta.track_id FROM track_artists ta
+         WHERE ta.role IN (${PERFORMER_ROLES_SQL})
+           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
+      params.push(key, key);
+    }
+  }
+
+  // V71 dropped the year from album identity, so one album can span
+  // several track years (a compilation tagged with per-track original
+  // years, a reissue with a later bonus track). A client's `year` is
+  // whatever it last saw — the album's aggregate year from a list
+  // response, or the PLAYING TRACK's year from the now-playing card's
+  // "go to album" — so it is matched against the album's year RANGE,
+  // never the track column: matching t.year would silently return a
+  // partial album. COALESCE covers rows without aggregates yet (a
+  // trackless ghost, a fixture insert).
+  // The singles bucket (no album) keeps the per-track match — there is
+  // no album range to consult.
+  if (year) {
+    if (album) {
+      conditions.push('? BETWEEN COALESCE(al.year_min, al.year) AND COALESCE(al.year_max, al.year)');
+    } else {
+      conditions.push('t.year = ?');
+    }
+    params.push(Number(year));
+  }
+
+  return { conditions, params };
+}
+
 // ── Route setup ─────────────────────────────────────────────────────────────
 
 export function setup(mstream) {
@@ -1164,75 +1245,7 @@ export function setup(mstream) {
     joiValidate(schema, req.body);
 
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    const conditions = [filter.clause];
-    const params = [...filter.params];
-
-    if (req.body.album) {
-      conditions.push('al.name = ?');
-      params.push(String(req.body.album));
-    } else {
-      conditions.push('t.album_id IS NULL');
-    }
-
-    if (req.body.artist) {
-      // V72: TRACK artist, matched on its normalised key (see artists-albums).
-      // V73: a performer credit (main / featured — the set artists-albums
-      // lists by default) counts too, so the singles bucket of an artist who
-      // is only ever featured is not empty. Other roles never match here.
-      const key = nameKey(req.body.artist);
-      conditions.push(`(a.name_key = ? OR t.id IN (
-        SELECT ta.track_id FROM track_artists ta
-         WHERE ta.role IN (${PERFORMER_ROLES_SQL})
-           AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
-      params.push(key, key);
-    }
-
-    // `album_artist` narrows a named album to one credit. Two albums that
-    // share a name (and overlapping years) are one `album` + `year` match
-    // here, so a client that holds the album artist a list response gave it
-    // sends it back. Matched three ways, so any spelling a client can hold
-    // resolves: the primary album artist's normalised key, a 'main' album
-    // credit's key, or the display string verbatim (a joined "A & B" tag has
-    // no artist row of its own). The singles bucket has no album to credit:
-    // there the album artist IS the track artist, matched like `artist`.
-    // `pa`, the album's primary artist, is trackQuery's own join.
-    const albumArtist = typeof req.body.album_artist === 'string' ? req.body.album_artist.trim() : '';
-    if (albumArtist) {
-      const key = nameKey(albumArtist);
-      if (req.body.album) {
-        conditions.push(`(pa.name_key = ? OR COALESCE(al.album_artist, pa.name) = ? OR al.id IN (
-          SELECT aa.album_id FROM album_artists aa
-           WHERE aa.role = 'main'
-             AND aa.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
-        params.push(key, albumArtist, key);
-      } else {
-        conditions.push(`(a.name_key = ? OR t.id IN (
-          SELECT ta.track_id FROM track_artists ta
-           WHERE ta.role IN (${PERFORMER_ROLES_SQL})
-             AND ta.artist_id IN (SELECT id FROM artists WHERE name_key = ?)))`);
-        params.push(key, key);
-      }
-    }
-
-    // V71 dropped the year from album identity, so one album can span
-    // several track years (a compilation tagged with per-track original
-    // years, a reissue with a later bonus track). A client's `year` is
-    // whatever it last saw — the album's aggregate year from a list
-    // response, or the PLAYING TRACK's year from the now-playing card's
-    // "go to album" — so it is matched against the album's year RANGE,
-    // never the track column: matching t.year would silently return a
-    // partial album. COALESCE covers rows without aggregates yet (a
-    // trackless ghost, a fixture insert).
-    // The singles bucket (no album) keeps the per-track match — there is
-    // no album range to consult.
-    if (req.body.year) {
-      if (req.body.album) {
-        conditions.push('? BETWEEN COALESCE(al.year_min, al.year) AND COALESCE(al.year_max, al.year)');
-      } else {
-        conditions.push('t.year = ?');
-      }
-      params.push(Number(req.body.year));
-    }
+    const { conditions, params } = albumSongConditions(req.body, filter);
 
     // Add user ID for metadata join
     const allParams = req.user?.id ? [req.user.id, ...params] : params;

@@ -1161,6 +1161,96 @@ components:
         by: absent (as from servers older than the filter), a requested filter was NOT
         applied and the answer is unfiltered.
 
+    SongFilters:
+      type: object
+      description: |
+        Auto DJ's song filters — what a song must be to be served, whatever the session:
+        its libraries, a minimum rating, its tempo and key, its genres, its length and
+        its mood. `POST /api/v1/discovery/local/mix` takes exactly these keys, and
+        `POST /api/v1/db/random-songs` the same keys with the same rules (its own entry
+        lists them for now). Every one of them is a hard condition on both routes, but
+        for tempo and key, which random-songs' waterfall relaxes step by step and the mix
+        never does. A key added here is a new `features.instantMix` generation.
+      properties:
+        ignoreVPaths:
+          type: array
+          maxItems: 50
+          items: { type: string }
+          description: Libraries (vpaths) to leave out.
+        minRating:
+          type: integer
+          minimum: 0
+          maximum: 10
+          description: |
+            Only songs the caller rated at least this (half-stars, 10 = five stars); `0`
+            or absent is no filter, and an unrated song counts as 0. Ignored for a
+            caller with no user id — a federation key has no ratings.
+        bpmRanges:
+          type: array
+          maxItems: 16
+          description: |
+            BPM windows, OR-ed; a song with no BPM never matches. Clients send three
+            around a reference tempo (normal ± tolerance, half, double).
+          items:
+            type: object
+            required: [min, max]
+            properties:
+              min: { type: number, minimum: 0, maximum: 1000 }
+              max: { type: number, minimum: 0, maximum: 1000, description: "At least `min`, else 400." }
+        requireBpm:
+          type: boolean
+          description: Only songs with a known BPM (implied by `bpmRanges`).
+        musicalKeys:
+          type: array
+          maxItems: 24
+          items: { type: string }
+          description: |
+            Camelot codes (`1A`..`12B`), each expanded to every spelling the library may
+            hold ("A minor", "Am", "Amin", `8A`). Unknown codes match nothing; a list of
+            nothing but unknown codes is a 400.
+        requireMusicalKey:
+          type: boolean
+          description: Only songs with a known key (implied by `musicalKeys`).
+        genres:
+          type: array
+          maxItems: 200
+          items: { type: string, minLength: 1, maxLength: 200 }
+          description: Genre names, case-insensitive; empty or absent is no filter.
+        genreMode:
+          type: string
+          enum: [whitelist, blacklist]
+          default: whitelist
+          description: |
+            `whitelist`: only songs with one of `genres` (untagged songs never match).
+            `blacklist`: never those (untagged songs pass).
+        genreSource:
+          type: string
+          enum: [tag, model]
+          description: |
+            Which genre links count: the files' own (`tag`) or the discovery model's
+            (`model`). Absent, both.
+        minDuration:
+          type: number
+          minimum: 0
+          maximum: 86400
+          description: Shortest length, in seconds; `0` or absent is no bound.
+        maxDuration:
+          type: number
+          minimum: 0
+          maximum: 86400
+          description: Longest length, in seconds; `0` or absent is no bound. Below `minDuration` is a 400.
+        allowUnknownDuration:
+          type: boolean
+          default: false
+          description: With a length bound, let songs of unknown length through too.
+        moods:
+          allOf:
+            - { $ref: "#/components/schemas/MoodFilter" }
+          description: |
+            Only songs that match this mood filter. The answer's `moods` says whether it
+            was applied; while server-info's `moodFilters` is false a filter is
+            validated but filters nothing.
+
     StatsPeriod:
       type: object
       description: The resolved range a stats read covered.
@@ -1788,6 +1878,17 @@ paths:
                           `discoveryTaste`; gate on `flowOrder >= 1`. A
                           version fact, on with discovery off. Absent on
                           older servers.
+                      instantMix:
+                        type: integer
+                        description: >
+                          Instant Mix generation: this server answers
+                          `POST /api/v1/discovery/local/mix`. An integer like
+                          `flowOrder`: 1 = the route with the `SongFilters`
+                          keys plus `skipWords`; a song filter added later
+                          ships as 2. A version fact, on with discovery off:
+                          show the entries on `discovery === true &&
+                          discoveryReady === true && instantMix >= 1`.
+                          Absent on older servers.
                       sync:
                         type: boolean
                         description: >
@@ -1872,6 +1973,7 @@ paths:
                   moodFilters: true
                   sync: true
                   flowOrder: 1
+                  instantMix: 1
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -1945,6 +2047,12 @@ paths:
                     description: >
                       Flow ordering generation — the same fact as
                       `features.flowOrder` on `GET /api`. Absent on older
+                      servers.
+                  instantMix:
+                    type: integer
+                    description: >
+                      Instant Mix generation — the same fact as
+                      `features.instantMix` on `GET /api`. Absent on older
                       servers.
                   supportedAudioFiles:
                     type: object
@@ -3275,6 +3383,166 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "Discovery is disabled on this server (or its index is unavailable)." }
         "404": { description: "The seed does not resolve in the caller's libraries (uniform: unknown and forbidden alike)." }
+
+  /api/v1/discovery/local/mix:
+    post:
+      tags: [Discovery]
+      summary: Instant Mix — songs that sound like a song, album, artist or playlist
+      description: |
+        About fifty songs of the caller's library that sound like one item of it,
+        closest first, under Auto DJ's song filters (`SongFilters`) and its keyword
+        filter (`skipWords`). A list for the client to play, queue or save: nothing
+        plays and nothing is recorded.
+
+        **The item** (`from`, exactly one kind) resolves under the caller's access alone
+        — never `ignoreVPaths`, which shapes only the candidates — so its sound is the
+        item's:
+          - `song`: its vector. It leads its own mix when it passes the filters itself,
+            with `similarity` 1; another file of it never comes back.
+          - `album`: the centroid of its analysed songs. Its songs never come back.
+          - `artist`: one point per album. Its own songs stay in, inside the cap.
+          - `playlist` (the caller's own) and `songs` (any list, unresolvable paths
+            skipped): one point per artist, weighted by its share of the analysed
+            songs, so each corner of an eclectic list keeps its share. Their songs
+            never come back.
+
+        **Every filter is hard**: a mix may come back short, never padded with a song a
+        filter excludes. Tempo and key are absolute windows (`bpmRanges`,
+        `musicalKeys`), which a client builds around the seed song. The list keeps one
+        file per recording and one recording per song, holds an artist to a tenth of the
+        list (at least 2) while it can, and spreads artists through each ten rows; when
+        the cap had to give, `relaxed` says `artistCap`.
+
+        **States** — every empty answer is a 200:
+          - `notAnalyzed: true`, `songs: []`: the seed, or every song of the item, has
+            no vector yet.
+          - `songs` empty, or only the seed, with `filteredOut: false`: nothing similar
+            the caller can see.
+          - the same with `filteredOut: true`: the filters left nothing.
+          - `short: true`: fewer than `limit` songs (`capped` when the walk stopped at
+            its budget, `max(limit × 50, 2000)` ranked songs).
+          - `moods` absent: this server has no mood scores, and no mood filter was
+            applied.
+
+        Feature flag: `features.instantMix` (`GET /api`) / `instantMix` (ping);
+        generation 1 = the keys below. On the federation read allowlist: a key's
+        `minRating` is ignored and its `playlist` kind is a 404 (a key has no user).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - { $ref: "#/components/schemas/SongFilters" }
+                - type: object
+                  required: [from]
+                  properties:
+                    from:
+                      description: The item — exactly one kind.
+                      oneOf:
+                        - type: object
+                          additionalProperties: false
+                          required: [song]
+                          properties:
+                            song: { type: string, minLength: 1, maxLength: 4096, description: "`<library>/<path>` in one of the caller's libraries." }
+                        - type: object
+                          additionalProperties: false
+                          required: [songs]
+                          properties:
+                            songs:
+                              type: array
+                              minItems: 1
+                              maxItems: 500
+                              items: { type: string, minLength: 1, maxLength: 4096 }
+                        - type: object
+                          additionalProperties: false
+                          required: [album]
+                          properties:
+                            album:
+                              type: object
+                              additionalProperties: false
+                              required: [album]
+                              description: |
+                                The album as `POST /api/v1/db/album-songs` takes it; `year`
+                                matches the album's year range. The singles bucket (`album:
+                                null`) is a 400.
+                              properties:
+                                album: { type: string, minLength: 1, maxLength: 1000 }
+                                artist: { type: string, minLength: 1, maxLength: 1000, nullable: true }
+                                album_artist: { type: string, maxLength: 1000, nullable: true }
+                                year: { type: integer, nullable: true }
+                        - type: object
+                          additionalProperties: false
+                          required: [artist]
+                          properties:
+                            artist: { type: string, minLength: 1, maxLength: 1000, description: "Any spelling; folded to the library's name key." }
+                        - type: object
+                          additionalProperties: false
+                          required: [playlist]
+                          properties:
+                            playlist: { type: string, minLength: 1, maxLength: 1000, description: "One of the caller's own playlists, by name." }
+                    limit: { type: integer, minimum: 1, maximum: 200, default: 50 }
+                    skipWords:
+                      type: array
+                      maxItems: 50
+                      items: { type: string, minLength: 1, maxLength: 100 }
+                      description: |
+                        Auto DJ's keyword filter: no song whose title, artist, album or
+                        `<library>/<path>` holds one of these words — case-insensitive, with
+                        repeated letters folded on both sides ("acappella" matches
+                        "Acapella"). Trimmed; a blank word is a 400.
+            example:
+              from: { song: "demo/Boukmanflow/Dolo.mp3" }
+              limit: 50
+              moods: { energy: relaxed }
+              musicalKeys: ["3A", "3B", "2A", "2B", "4A", "4B"]
+              requireMusicalKey: true
+      responses:
+        "200":
+          description: The mix, in play order (or one of the empty states above).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  model:
+                    type: object
+                    properties:
+                      id: { type: string }
+                      version: { type: string, nullable: true }
+                  seed:
+                    type: object
+                    description: Diagnostics, never drawn.
+                    properties:
+                      kind: { type: string, enum: [song, songs, album, artist, playlist] }
+                      members: { type: integer, description: "The item's songs the caller can see, one per recording." }
+                      analyzed: { type: integer, description: "How many of them have a vector." }
+                  notAnalyzed: { type: boolean }
+                  songs:
+                    type: array
+                    description: |
+                      Play order: the seed song first when it leads, then by similarity in
+                      bands of ten rows with the artists spread — so `similarity` is not
+                      strictly descending.
+                    items: { $ref: "#/components/schemas/DiscoverySimilarTrack" }
+                  short: { type: boolean, description: "Fewer than `limit` songs." }
+                  capped: { type: boolean, description: "Short because the walk stopped at its budget." }
+                  relaxed:
+                    type: array
+                    items: { type: string, enum: [artistCap] }
+                  floor: { type: number, nullable: true, description: "The lowest similarity in the list besides the seed, 2 decimals; a diagnostic." }
+                  filteredOut: { type: boolean, description: "Nothing beyond the seed, because of the filters." }
+                  moods: { $ref: "#/components/schemas/MoodEcho" }
+        "400":
+          description: |
+            Request validation failed: `from` missing or holding two kinds, an unknown
+            key (Auto DJ's session keys — `ignoreList`, `ignoreArtists`, `artists`,
+            `bpmRangesWide`, `similarTo`, `minSimilarity`, `lessLike`… — included), a
+            bound, a BPM range with `min` > `max`, no recognised Camelot code, a
+            backwards length window, a bad mood group or value, a blank skip word.
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "Discovery is disabled on this server (or its index is unavailable)." }
+        "404": { description: "The item has no song the caller can see, or is not theirs — uniform, so it cannot be used to probe: `Track not found`, `Album not found`, `Artist not found` or `Playlist not found`." }
 
   /api/v1/discovery/local/similar/artists:
     post:
