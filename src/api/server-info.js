@@ -208,6 +208,14 @@ export function buildFeatures() {
     // GENERATION like `flowOrder` — clients gate on `>= 1`. A version fact:
     // whether yt-dlp is there is the routes' answer.
     ytdl: 1,
+    // Instant Mix (POST /api/v1/discovery/local/mix): about fifty songs that
+    // sound like a song, an album, an artist or a playlist, under Auto DJ's
+    // song filters. An integer GENERATION like `flowOrder`: 1 = the route
+    // with random-songs' song-filter keys (SONG_FILTER_KEYS, api/random.js)
+    // plus `skipWords`, so a filter added there ships as 2 in the same PR.
+    // A version fact, unconditional — clients show their entries on
+    // `discovery === true && discoveryReady === true && instantMix >= 1`.
+    instantMix: 1,
   };
 }
 
