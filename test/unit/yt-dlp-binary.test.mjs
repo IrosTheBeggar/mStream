@@ -77,7 +77,7 @@ describe('the yt-dlp executable', () => {
       // Now that file is "already there": a second run must not hand it back.
       fs.writeFileSync(fresh.filePath, 'somebody else\'s file');
       await assert.rejects(ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: out, codec: 'mp3' }).done,
-        (err) => err.exists === true && /already exists/.test(err.message));
+        (err) => err.exists === true && err.reason === 'exists' && /already exists/.test(err.message));
     } finally {
       if (saved.script === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT; } else { process.env.MSTREAM_FAKE_YTDLP_SCRIPT = saved.script; }
       if (saved.fixture === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_FIXTURE; } else { process.env.MSTREAM_FAKE_YTDLP_FIXTURE = saved.fixture; }
@@ -100,20 +100,132 @@ describe('the yt-dlp executable', () => {
       fs.writeFileSync(script, JSON.stringify({ download: { partBytes: 3 * 1024 * 1024, slowMs: 1500 } }));
       const t0 = Date.now();
       await assert.rejects(ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: outA, codec: 'mp3', maxFilesizeMb: 1 }).done,
-        (err) => err.stopped === true && /passed the 1 MB size cap/.test(err.message));
+        (err) => err.stopped === true && err.reason === 'too-big' && /passed the 1 MB size cap/.test(err.message));
       assert.ok(Date.now() - t0 < 6000, 'stopped by the poll, not by the fake finishing');
       // A run that outlives its wall clock is stopped the same way.
       const outB = path.join(dir, 'clock');
       fs.mkdirSync(outB, { recursive: true });
       fs.writeFileSync(script, JSON.stringify({ download: { slowMs: 800 } }));
       await assert.rejects(ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: outB, codec: 'mp3', maxSeconds: 1 }).done,
-        (err) => err.stopped === true && /took longer than/.test(err.message));
+        (err) => err.stopped === true && err.reason === 'too-long' && /took longer than/.test(err.message));
       // Within both, the download lands as before.
       const outC = path.join(dir, 'fine');
       fs.mkdirSync(outC, { recursive: true });
       fs.writeFileSync(script, JSON.stringify({ download: {} }));
       const ok = await ytdlp.startDownload({ bin, url: 'https://www.youtube.com/watch?v=abcdefghijk', dir: outC, codec: 'mp3', maxFilesizeMb: 1, maxSeconds: 30 }).done;
       assert.equal(path.basename(ok.filePath), 'Unknown_Upload.mp3');
+    } finally {
+      if (saved.script === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT; } else { process.env.MSTREAM_FAKE_YTDLP_SCRIPT = saved.script; }
+      if (saved.fixture === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_FIXTURE; } else { process.env.MSTREAM_FAKE_YTDLP_FIXTURE = saved.fixture; }
+    }
+  });
+
+  test('fileNameFor: the probed stem and the extension the codec lands with', () => {
+    const table = { mp3: 'mp3', aac: 'm4a', m4a: 'm4a', m4b: 'm4a', ogg: 'ogg', opus: 'opus', flac: 'flac', wav: 'wav' };
+    for (const [codec, ext] of Object.entries(table)) {
+      assert.equal(ytdlp.fileNameFor('Remote_Hit', codec), `Remote_Hit.${ext}`, codec);
+      assert.equal(ytdlp.outputExtension(codec), ext, `outputExtension(${codec})`);
+    }
+    assert.equal(ytdlp.fileNameFor(null, 'mp3'), null, 'no stem, no name');
+    assert.equal(ytdlp.fileNameFor('', 'mp3'), null);
+  });
+
+  test('probe: the record, the route\'s artist and year rule, and the stem of the name a download would get', async () => {
+    const script = path.join(dir, 'probe.json');
+    const saved = process.env.MSTREAM_FAKE_YTDLP_SCRIPT;
+    process.env.MSTREAM_FAKE_YTDLP_SCRIPT = script;
+    const bin = { cmd: process.execPath, prefix: [FAKE] };
+    try {
+      fs.writeFileSync(script, JSON.stringify({ details: {
+        song: { id: 'song', title: 'Daft Punk - One More Time (Official Video)', duration: 320, uploader: 'Daft Punk', channel: 'Daft Punk',
+          release_date: '20010312', thumbnail: 'https://i.ytimg.com/vi/song/hq.jpg', filesize: 5120 },
+        stream: { id: 'stream', title: 'Radio 24/7', is_live: true, live_status: 'is_live', channel: 'Radio' },
+        gone: { id: 'gone', title: 'Gone', fail: 'Video unavailable. This video has been removed by the uploader' },
+      } }));
+      const p = await ytdlp.probe('https://www.youtube.com/watch?v=song', { bin });
+      assert.equal(p.fileStem, 'Daft_Punk_-_One_More_Time_Official_Video', 'the source extension is not part of the stem');
+      assert.deepEqual([p.title, p.artist, p.year, p.durationSec, p.channel, p.isLive, p.liveStatus, p.bytes],
+        ['Daft Punk - One More Time (Official Video)', 'Daft Punk', '2001', 320, 'Daft Punk', false, null, 5120]);
+      assert.equal(p.thumbnail, 'https://i.ytimg.com/vi/song/hq.jpg');
+      assert.deepEqual(ytdlp.metadataOf(p), {
+        title: 'Daft Punk - One More Time (Official Video)', artist: 'Daft Punk', album: null, year: '2001',
+        thumbnail: 'https://i.ytimg.com/vi/song/hq.jpg', fileStem: 'Daft_Punk_-_One_More_Time_Official_Video',
+        isLive: false, liveStatus: null, durationSec: 320, channel: 'Daft Punk',
+      });
+      const live = await ytdlp.probe('https://www.youtube.com/watch?v=stream', { bin });
+      assert.deepEqual([live.isLive, live.liveStatus, live.fileStem], [true, 'is_live', 'Radio_24_7']);
+      await assert.rejects(ytdlp.probe('https://www.youtube.com/watch?v=gone', { bin }), /\[youtube\] gone: Video unavailable/);
+      await assert.rejects(ytdlp.lookupMetadata('https://www.youtube.com/watch?v=gone', { bin }), (err) => err.message === 'Failed to lookup metadata',
+        'the metadata lookup keeps its plain failure');
+
+      // A lookup that hangs is killed at its bound and says so — the POST's
+      // name check waits on it, so it must never hold the request open.
+      fs.writeFileSync(script, JSON.stringify({ probe: { slowMs: 20_000 }, details: {} }));
+      const t0 = Date.now();
+      await assert.rejects(ytdlp.probe('https://www.youtube.com/watch?v=song', { bin, timeoutMs: 400 }),
+        (err) => err.timedOut === true && /did not answer within/.test(err.message));
+      assert.ok(Date.now() - t0 < 5000, `killed at the bound, not when the fake gave up (${Date.now() - t0} ms)`);
+    } finally {
+      if (saved === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT; } else { process.env.MSTREAM_FAKE_YTDLP_SCRIPT = saved; }
+    }
+  });
+
+  test('startDownload says why yt-dlp refused without failing (a live stream, a file past its cap), and takes only a path in its folder for the printed one', async () => {
+    const fixture = path.join(dir, 'fixture3.mp3');
+    fs.writeFileSync(fixture, 'the download');
+    const script = path.join(dir, 'refusals.json');
+    const saved = { script: process.env.MSTREAM_FAKE_YTDLP_SCRIPT, fixture: process.env.MSTREAM_FAKE_YTDLP_FIXTURE };
+    process.env.MSTREAM_FAKE_YTDLP_SCRIPT = script;
+    process.env.MSTREAM_FAKE_YTDLP_FIXTURE = fixture;
+    const bin = { cmd: process.execPath, prefix: [FAKE] };
+    const run = (name, url, extra = {}) => {
+      const out = path.join(dir, name);
+      fs.mkdirSync(out, { recursive: true });
+      return ytdlp.startDownload({ bin, url, dir: out, codec: 'mp3', ...extra }).done;
+    };
+    try {
+      fs.writeFileSync(script, JSON.stringify({ details: { stream: { id: 'stream', title: 'On Air', is_live: true, live_status: 'is_live' } } }));
+      // Quiet (--print without --no-quiet), yt-dlp would say nothing here
+      // and exit 0: the reason exists only because downloadArgs asks for
+      // the loud output.
+      assert.ok(ytdlp.downloadArgs({ url: 'u', dir: 'd' }).includes('--no-quiet'));
+      await assert.rejects(run('live', 'https://www.youtube.com/watch?v=stream'),
+        (err) => err.reason === 'live' && /live stream/.test(err.message));
+
+      fs.writeFileSync(script, JSON.stringify({ download: { tooBig: true } }));
+      await assert.rejects(run('big', 'https://www.youtube.com/watch?v=abcdefghijk', { maxFilesizeMb: 500 }),
+        (err) => err.reason === 'too-big' && /larger than the 500 MB size cap/.test(err.message));
+
+      // Loud, yt-dlp also prints "Deleting original file <path> (pass -k to
+      // keep)" — a line with no [tag] — and a path outside the folder must
+      // never be taken for the download either.
+      const elsewhere = path.join(dir, 'elsewhere.mp3');
+      fs.writeFileSync(elsewhere, 'not the download');
+      fs.writeFileSync(script, JSON.stringify({ download: { extraStdout: [`Deleting original file ${elsewhere} (pass -k to keep)`, elsewhere] } }));
+      const ok = await run('capture', 'https://www.youtube.com/watch?v=abcdefghijk');
+      assert.equal(ok.filePath, path.join(dir, 'capture', 'Unknown_Upload.mp3'));
+
+      // Exit 0 with no file and nothing said: the plain message, no reason.
+      fs.writeFileSync(script, JSON.stringify({ download: { fail: 'nothing to see', exitCode: 0 } }));
+      await assert.rejects(run('none', 'https://www.youtube.com/watch?v=abcdefghijk'),
+        (err) => err.reason === undefined && /no output file/.test(err.message));
+
+      // A failed run: the reason is read from an extractor's refusal only.
+      fs.writeFileSync(script, JSON.stringify({ download: { fail: '[youtube] abcdefghijk: Video unavailable. This video is private' } }));
+      await assert.rejects(run('refused', 'https://www.youtube.com/watch?v=abcdefghijk'),
+        (err) => err.reason === 'unavailable' && /Video unavailable/.test(err.message));
+      // An error that runs on: a geo block ends on yt-dlp's VPN hint, and
+      // the ERROR line above it is the one that says what happened.
+      fs.writeFileSync(script, JSON.stringify({ download: { fail: '[youtube] abcdefghijk: The uploader has not made this video available in your country\n'
+        + 'This video is available in Germany, France.\nYou might want to use a VPN or a proxy server (with --proxy) to workaround.' } }));
+      await assert.rejects(run('geo', 'https://www.youtube.com/watch?v=abcdefghijk'),
+        (err) => err.reason === 'unavailable' && err.message === '[youtube] abcdefghijk: The uploader has not made this video available in your country');
+      // Any other line names the file, and so the title: a "No Copyright
+      // Music" upload that hit a full disk is no video YouTube refused.
+      fs.writeFileSync(script, JSON.stringify({ details: { nc: { id: 'nc', title: 'No Copyright Music - Premieres in May' } },
+        download: { fail: 'unable to write data: [Errno 28] No space left on device: \'%(out)s.part\'' } }));
+      await assert.rejects(run('disk', 'https://www.youtube.com/watch?v=nc'),
+        (err) => err.reason === null && /No_Copyright_Music_-_Premieres_in_May\.mp3\.part/.test(err.message));
     } finally {
       if (saved.script === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_SCRIPT; } else { process.env.MSTREAM_FAKE_YTDLP_SCRIPT = saved.script; }
       if (saved.fixture === undefined) { delete process.env.MSTREAM_FAKE_YTDLP_FIXTURE; } else { process.env.MSTREAM_FAKE_YTDLP_FIXTURE = saved.fixture; }

@@ -19,8 +19,9 @@ import { parseFile } from 'music-metadata';
 
 // yt-dlp's --audio-format names differ from our codec names for two.
 export const AUDIO_FORMAT_MAP = Object.freeze({ ogg: 'vorbis', m4b: 'm4a' });
-// The extension a codec lands with.
-export const OUTPUT_EXT_MAP = Object.freeze({ aac: 'm4a' });
+// The extension a codec lands with (m4b goes to yt-dlp as m4a, so it lands
+// as one: the name the Youtube DL route checks before downloading is this).
+export const OUTPUT_EXT_MAP = Object.freeze({ aac: 'm4a', m4b: 'm4a' });
 // Containers yt-dlp cannot embed a thumbnail into (embedThumbnailIfMissing
 // covers the lossless / Vorbis ones afterwards).
 export const NO_EMBED_THUMBNAIL = Object.freeze(['wav', 'opus', 'ogg']);
@@ -58,6 +59,19 @@ export function lastMeaningfulLine(text) {
   const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const last = lines.length ? lines[lines.length - 1] : '';
   return last.replace(/^ERROR:\s*/i, '');
+}
+
+// The line a failed download is about: yt-dlp's last "ERROR:" line, else
+// its last line. An error can run on below it — a geo block ends "…
+// available in your country" / "This video is available in …" / "You
+// might want to use a VPN or a proxy server (with --proxy) to workaround."
+// — and the hint is neither the reason nor words worth showing alone.
+function errorLine(text) {
+  const lines = String(text || '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^ERROR:/i.test(lines[i])) { return lines[i].replace(/^ERROR:\s*/i, ''); }
+  }
+  return lastMeaningfulLine(text);
 }
 
 function killTree(proc) {
@@ -186,22 +200,117 @@ export function entryToRecord(json) {
   };
 }
 
-// The Youtube DL route's metadata lookup, unchanged in shape.
-export async function lookupMetadata(url, { bin } = {}) {
-  const { code, stdout, stderr } = await spawnYtDlp(bin, ['--dump-json', '--no-download', '--no-playlist', url]).done;
-  if (code !== 0) {
-    winston.error(`yt-dlp metadata lookup failed: ${stderr}`);
-    throw new Error('Failed to lookup metadata');
+// The file name template every download uses (the probe below reads the
+// name it would give without downloading).
+export const NAME_TEMPLATE = '%(title)s.%(ext)s';
+
+// What a download of `url` would be, read without downloading: the video's
+// record (entryToRecord), the Youtube DL route's own artist / year rule, and
+// `fileStem`, the stem of the file name yt-dlp will give it — the same
+// template under the same --restrict-filenames, so the route can tell
+// before a download whether the folder already has that name. The dump's
+// extension is the source's (webm, m4a…); the audio pass swaps only the
+// last one, so the landed name is the stem plus outputExtension(codec)
+// (fileNameFor). Rejects with yt-dlp's last line, or `timedOut`.
+export async function probe(url, { bin, timeoutMs = 15000 } = {}) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const { code, stdout, stderr } = await spawnYtDlp(bin, ['--dump-json', '--no-download', '--no-playlist', '--no-warnings',
+      '-f', 'ba/b', '-o', NAME_TEMPLATE, '--restrict-filenames', url], { signal: ac.signal }).done;
+    if (ac.signal.aborted) {
+      throw Object.assign(new Error(`yt-dlp did not answer within ${Math.round(timeoutMs / 1000)} s`), { timedOut: true });
+    }
+    if (code !== 0) { throw new Error(lastMeaningfulLine(stderr) || `yt-dlp exited with code ${code}`); }
+    let json;
+    try { json = JSON.parse(stdout.trim().split(/\r?\n/).pop()); } catch (err) { throw new Error('Failed to parse yt-dlp output', { cause: err }); }
+    const name = typeof json._filename === 'string' ? json._filename : (typeof json.filename === 'string' ? json.filename : null);
+    let fileStem = null;
+    if (name) {
+      const base = path.basename(name);
+      fileStem = json.ext && base.endsWith('.' + json.ext) ? base.slice(0, -(json.ext.length + 1)) : path.parse(base).name;
+    }
+    return {
+      ...entryToRecord(json),
+      artist: json.artist || json.creator || json.uploader || null,
+      year: json.release_year || json.release_date?.substring(0, 4) || null,
+      fileStem: fileStem || null,
+      bytes: Number(json.filesize || json.filesize_approx) || null,
+    };
+  } finally {
+    clearTimeout(timer);
   }
-  let json;
-  try { json = JSON.parse(stdout.trim().split(/\r?\n/).pop()); } catch (err) { throw new Error('Failed to parse yt-dlp output', { cause: err }); }
+}
+
+// The name a download lands with: the probed stem and the codec's extension.
+export function fileNameFor(stem, codec) {
+  return stem ? `${stem}.${outputExtension(codec)}` : null;
+}
+
+// The Youtube DL route's metadata answer: the five fields it always had,
+// then what the same probe adds (old clients ignore unknown keys).
+export function metadataOf(probed) {
+  const p = probed || {};
   return {
-    title: json.title || null,
-    artist: json.artist || json.creator || json.uploader || null,
-    album: json.album || null,
-    year: json.release_year || json.release_date?.substring(0, 4) || null,
-    thumbnail: json.thumbnail || null,
+    title: p.title || null,
+    artist: p.artist || null,
+    album: p.album || null,
+    year: p.year || null,
+    thumbnail: p.thumbnail || null,
+    fileStem: p.fileStem || null,
+    isLive: p.isLive === true,
+    liveStatus: p.liveStatus || null,
+    durationSec: p.durationSec || null,
+    channel: p.channel || null,
   };
+}
+
+// The Youtube DL route's metadata lookup: a plain 'Failed to lookup
+// metadata' on any failure (clients map that bare 500 to "couldn't look it
+// up"), bounded so a hung yt-dlp cannot hold the request for ever.
+export async function lookupMetadata(url, { bin, timeoutMs = 60000 } = {}) {
+  try {
+    return metadataOf(await probe(url, { bin, timeoutMs }));
+  } catch (err) {
+    winston.error(`yt-dlp metadata lookup failed: ${err.message}`);
+    throw new Error('Failed to lookup metadata', { cause: err });
+  }
+}
+
+// Why a download failed, as one of the Youtube DL route's reason codes —
+// read from yt-dlp's own words (errorLineReason decides which words are
+// read at all; the refusals startDownload sees itself set their reason
+// directly). `null` = no code fits, and the words are the answer:
+// that is deliberately the case for YouTube's bot check and for a yt-dlp
+// too old for YouTube's current player, both checked FIRST because their
+// texts can mention a format or an unavailable stream — they are the
+// server's problem, not the video's, and "unavailable" would blame the
+// video. So is YouTube rate-limiting the server ("Video unavailable. This
+// content isn't available, try again later. The current session has been
+// rate-limited…"): it opens like a removed video and is nothing of the sort.
+export function failureReason(text) {
+  const t = String(text || '');
+  if (!t) { return null; }
+  if (/not a bot|rate-?limited|try again later|requested format is not available|HTTP Error 403|nsig|signature extraction|unable to extract|no video formats/i.test(t)) { return null; }
+  if (/live event will begin|premieres? in|does not pass filter \(!?is_live\)|is a live stream/i.test(t)) { return 'live'; }
+  if (/larger than max-filesize|size cap/i.test(t)) { return 'too-big'; }
+  if (/took longer than/i.test(t)) { return 'too-long'; }
+  if (/already exists/i.test(t)) { return 'exists'; }
+  if (/video unavailable|private video|video is private|has been removed|no longer available|not available in your country|not made this video available|members[- ]only|join this channel|channel.s members|premium members|requires payment|drm protected|confirm your age|age[- ]restricted|terminated|copyright/i.test(t)) {
+    return 'unavailable';
+  }
+  return null;
+}
+
+// The reason in the line a failed run is about (its ERROR line). Only
+// an extractor's own refusal is read — "[youtube] <id>: <YouTube's words>"
+// — because every other line can carry a file name, and a title would
+// pass for a reason: a "No Copyright Music" upload that hit a full disk
+// ("… No space left on device: '…/No_Copyright_Music.webm.part'") is not a
+// video YouTube refused.
+export function errorLineReason(line) {
+  const said = /^\[[^\]\s]+\]\s+[^\s:]+:\s+(.+)$/.exec(String(line || '').trim().replace(/^ERROR:\s*/i, ''));
+  return said ? failureReason(said[1]) : null;
 }
 
 // YouTube search: N flat entries (id, title, duration, channel), one JSON
@@ -238,11 +347,15 @@ export async function details(url, { bin, signal } = {}) {
 export function downloadArgs({ url, dir, codec = 'mp3', ffmpegPath = null, maxFilesizeMb = null }) {
   const args = [
     '-f', 'ba/b', '-x', '--no-playlist', url,
-    '-o', path.join(dir, '%(title)s.%(ext)s'),
+    '-o', path.join(dir, NAME_TEMPLATE),
     '--restrict-filenames', '--no-overwrites',
     '--audio-format', AUDIO_FORMAT_MAP[codec] || codec,
     '--embed-metadata', '--newline', '--progress',
     '--print', 'after_move:filepath',
+    // --print implies --quiet, and a quiet yt-dlp says NOTHING when
+    // --max-filesize refuses a file or --match-filters skips a live stream:
+    // it exits 0 with no file. Loud, it says which (startDownload reads it).
+    '--no-quiet',
     // A live stream is fetched through ffmpeg, where --max-filesize does
     // not apply: yt-dlp itself refuses one (the callers check first).
     '--match-filters', '!is_live',
@@ -321,11 +434,19 @@ const SIZE_HEADROOM = 1.1;
 // live fetch through ffmpeg, so the folder is measured while the download
 // runs and the tree is killed past the cap. `maxSeconds` is a wall clock
 // for the whole run. Either ends the run with a plain error (not a cancel).
+//
+// A failure that knows why carries `reason` (the Youtube DL route's codes):
+// 'too-big' for either size cap, 'too-long' for the clock, 'live' when
+// yt-dlp's filter skipped a live stream, 'exists' for a file that was
+// already there; a run that failed with no file carries what its last
+// line says when an extractor refused the video (errorLineReason, e.g.
+// 'unavailable'), else null.
 export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFilesizeMb, maxSeconds, onProgress, onLog } = {}) {
   const before = snapshotDir(dir);
   const abort = new AbortController();
   let printed = null;
-  let stoppedFor = null;
+  let stoppedFor = null;   // { message, reason }
+  let refused = null;      // yt-dlp said no without failing: { message, reason }
   const capBytes = Number.isFinite(maxFilesizeMb) && maxFilesizeMb > 0 ? maxFilesizeMb * 1024 * 1024 * SIZE_HEADROOM : 0;
   let measuring = false;
   const sizeTimer = capBytes ? setInterval(async () => {
@@ -333,16 +454,19 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
     measuring = true;
     try {
       if (await dirBytes(dir) > capBytes) {
-        stoppedFor = `the download passed the ${Math.round(maxFilesizeMb)} MB size cap and was stopped`;
+        stoppedFor = { message: `the download passed the ${Math.round(maxFilesizeMb)} MB size cap and was stopped`, reason: 'too-big' };
         abort.abort();
       }
     } finally { measuring = false; }
   }, SIZE_POLL_MS) : null;
   const clock = Number.isFinite(maxSeconds) && maxSeconds > 0 ? setTimeout(() => {
-    if (!stoppedFor) { stoppedFor = `the download took longer than ${Math.round(maxSeconds / 60)} minutes and was stopped`; }
+    if (!stoppedFor) { stoppedFor = { message: `the download took longer than ${Math.round(maxSeconds / 60)} minutes and was stopped`, reason: 'too-long' }; }
     abort.abort();
   }, maxSeconds * 1000) : null;
   const cleanup = () => { if (sizeTimer) { clearInterval(sizeTimer); } if (clock) { clearTimeout(clock); } };
+  const outDir = path.resolve(dir) + path.sep;
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const insideOut = (p) => fold(path.resolve(p)).startsWith(fold(outDir));
   const { proc, done: spawned } = spawnYtDlp(bin, downloadArgs({ url, dir, codec, ffmpegPath, maxFilesizeMb }), {
     signal: abort.signal,
     onStdoutLine: (line) => {
@@ -350,16 +474,28 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
       if (frac != null) { if (onProgress) { onProgress(frac); } return; }
       if (onLog) { onLog(line); }
       const t = line.trim();
-      // The --print output is a bare path; everything else yt-dlp says on
-      // stdout starts with a [tag].
-      if (t && !t.startsWith('[')) { printed = t; }
+      // The two refusals yt-dlp reports only on stdout, with exit 0 and no
+      // file (downloadArgs: --no-quiet is what makes it say them).
+      if (/File is larger than max-filesize/i.test(t)) {
+        const cap = Number.isFinite(maxFilesizeMb) && maxFilesizeMb > 0 ? ` ${Math.round(maxFilesizeMb)} MB` : '';
+        refused = { message: `the file is larger than the${cap} size cap, so yt-dlp did not download it`, reason: 'too-big' };
+        return;
+      }
+      if (/does not pass filter \(!?is_live\)/i.test(t)) {
+        refused = { message: 'it is a live stream, which is not downloaded', reason: 'live' };
+        return;
+      }
+      // The --print output is a bare path inside the output folder. Every
+      // other stdout line starts with a [tag] — but for one: loud, yt-dlp
+      // also says "Deleting original file <path> (pass -k to keep)".
+      if (t && !t.startsWith('[') && insideOut(t)) { printed = t; }
     },
     onStderrLine: (line) => { if (onLog) { onLog(line); } },
   });
   const done = spawned.finally(cleanup);
   const result = done.then(async ({ code, stdout, stderr }) => {
     if (abort.signal.aborted) {
-      if (stoppedFor) { throw Object.assign(new Error(stoppedFor), { stopped: true }); }
+      if (stoppedFor) { throw Object.assign(new Error(stoppedFor.message), { stopped: true, reason: stoppedFor.reason }); }
       throw Object.assign(new Error('cancelled'), { cancelled: true });
     }
     const seen = await before;
@@ -370,17 +506,23 @@ export function startDownload({ bin, url, dir, codec = 'mp3', ffmpegPath, maxFil
     // re-embeds metadata into the file). Adopting it would hand the caller
     // somebody else's file as their download. The snapshot knows.
     if (filePath && seen.has(path.basename(filePath))) {
-      throw Object.assign(new Error(`a file with that name already exists in this folder (${path.basename(filePath)})`), { exists: true });
+      throw Object.assign(new Error(`a file with that name already exists in this folder (${path.basename(filePath)})`), { exists: true, reason: 'exists' });
     }
     if (!filePath) { filePath = await newOutput(dir, outputExtension(codec), seen); }
     if (code !== 0) {
       // A non-zero exit after the file landed is a post-processing grumble
       // (the old route carried on the same way); without a file it is the
       // failure it says it is.
-      if (!filePath) { throw new Error(lastMeaningfulLine(stderr) || `yt-dlp exited with code ${code}`); }
+      if (!filePath) {
+        const line = errorLine(stderr);
+        throw Object.assign(new Error(line || `yt-dlp exited with code ${code}`), { reason: errorLineReason(line) });
+      }
       return { filePath, stdout, stderr, warning: lastMeaningfulLine(stderr) || `yt-dlp exited with code ${code}` };
     }
-    if (!filePath) { throw new Error('yt-dlp finished but no output file was found'); }
+    if (!filePath) {
+      if (refused) { throw Object.assign(new Error(refused.message), { reason: refused.reason }); }
+      throw new Error('yt-dlp finished but no output file was found');
+    }
     return { filePath, stdout, stderr };
   });
   return { pid: proc.pid, done: result, abort: () => abort.abort() };

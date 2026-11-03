@@ -149,6 +149,7 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discoveryP2p, false);
     assert.equal(j.features.flowOrder, 1, 'flow ordering is a version fact, on with discovery off');
     assert.equal(j.features.moodScores, 1, 'the mood scores read-out is a version fact, on with nothing scored');
+    assert.equal(j.features.ytdl, 1, 'the Youtube DL generation (per-account jobs with ids, the 409 name check) is a version fact');
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
     // The peer stream proxy forwards X-mStream-Purpose (federation-stream.js
