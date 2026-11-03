@@ -138,6 +138,16 @@ const MSTREAMAPI = (() => {
     });
   };
 
+  // Instant Mix: the songs that sound like a song, an album, an artist or
+  // one of the caller's playlists, under Auto DJ's filters (the body is
+  // alpha/instant-mix.js requestBody's). Every empty state answers 200, so
+  // the same degrade contract as the calls above holds: {disabled:true} on
+  // 403, null on any other failure. Reveal via /api/'s features.instantMix
+  // (an integer generation) beside discovery and discoveryReady.
+  mstreamModule.instantMix = (body) => {
+    return discoveryReq('api/v1/discovery/local/mix', body);
+  };
+
   // The embeddings behind LOCAL tracks (1–8 paths): the seed a federated
   // Auto DJ session carries to other servers as a vector, since a filepath
   // only names a row here (mStream #929). Same degrade contract as the

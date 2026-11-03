@@ -834,7 +834,7 @@ body.top-bar-hidden #content {
   padding: 5px 10px;
   border-bottom: 1px solid #444;
   font-size: 11px;
-  color: #888;
+  color: #9a9a9a;
   text-transform: uppercase;
   letter-spacing: .5px;
 }
@@ -2900,6 +2900,87 @@ select {
 @keyframes spath-banner-pulse { 0%, 100% { background: #22c55e; } 50% { background: #4ade80; } }
 .spath-banner-cancel { text-decoration: underline; color: #06280f; opacity: 0.8; }
 .spath-banner-cancel:hover { opacity: 1; }
+
+/* ── Instant Mix (m.js instantMix*) ──────────────────────────────────────
+   The bar's ✦ on album, artist and playlist pages; on the mix page, the
+   header in #browse-head (the browse header's grid: the verbs, then the
+   Filters funnel at the action row's right end), the filter panel under
+   it, and the list in Discover's rows — dimmed while a filter change is
+   asked, after a beat, so a quick answer never flashes. */
+.mix-bar-btn { flex: 0 0 auto; width: 24px; height: 40px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; background: transparent; border: 0; color: #fff; cursor: pointer; }
+.mix-bar-btn svg path { fill: #fff; transition: fill .15s; }
+.mix-bar-btn:hover svg path { fill: #999; }
+.mix-bar-btn:focus { background-color: transparent; outline: none; }
+.mix-bar-btn:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+@media (pointer: coarse) {
+  .mix-bar-btn { width: 44px; height: 44px; }
+}
+#browse-head .mix-head .mood-filter-btn { margin-left: auto; }
+/* the heading takes focus when the page opens (it is no control: no ring) */
+.mix-head .browse-head-title:focus { outline: none; }
+/* materialize paints a focused button teal: the verbs keep their face, and
+   the keyboard gets the house ring */
+.mix-head .spath-btn:focus { background-color: rgba(255,255,255,0.07); outline: none; }
+.mix-head .spath-btn:focus:hover { background-color: rgba(255,255,255,0.12); }
+.mix-head .spath-btn-primary:focus { background-color: #33507a; }
+.mix-head .spath-btn-primary:focus:hover { background-color: #3e619c; }
+.mix-head .spath-btn:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+/* the panel: a label | control grid, capped so it never takes the column
+   over; a wide row (Mood) spans both columns, its label above it; one
+   column under a 420 px header */
+.mix-filters { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 8px 14px; align-items: center; max-height: 45vh; overflow-y: auto; }
+/* …nor runs the column past its foot where the header and 45vh don't fit
+   (a phone's column, a short window): the open panel then scrolls in what
+   the column leaves, and the list keeps two rows in sight, so a change is
+   seen landing */
+#browse-head:has(> .mix-filters:not(.super-hide)) { display: flex; flex-direction: column; flex-shrink: 1; min-height: 0; }
+#browse-head:has(> .mix-filters:not(.super-hide)) > .browse-head { flex: none; }
+#browse-head:has(> .mix-filters:not(.super-hide)) > .mix-filters { min-height: 0; }
+#browse-head:has(> .mix-filters:not(.super-hide)) ~ #filelist { flex-basis: 0; min-height: 112px; }
+.mix-filters .dj-filter-input, .mix-filters .dj-genre-mode { margin-top: 0; }
+.mix-filter-wide { grid-column: 1 / -1; }
+.mix-filter-label { font-size: 13px; line-height: 1.3; color: #8a919e; }
+.mix-filter-wide > .mix-filter-label { display: block; margin-bottom: 6px; }
+/* a row's label and control are the grid's own cells (a row hides whole) */
+.mix-filter-row { display: contents; }
+.mix-filter-row > .mix-filter-label { white-space: nowrap; }
+.mix-filters .toggle-sw, .mix-filters select.browser-default { justify-self: start; }
+/* Auto DJ's boxed controls: materialize sizes every select (100% × 3rem)
+   and the global select fill (!important) is a step lighter than the
+   fields beside it */
+.mix-filters select.browser-default { width: auto; height: auto; margin: 0; line-height: 1.15; background-color: #1a1d23 !important; }
+.mix-filters .dj-duration-num { margin-top: 4px; }
+.mix-filter-stack { min-width: 0; }
+.mix-filters .dj-filter-tags { margin: 0 0 6px; }
+.mix-filters .dj-filter-tags:empty { display: none; }
+.mix-filter-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mix-filter-line .dj-genre-mode { flex: 0 0 auto; align-self: center; }
+.mix-filter-line .dj-genre-combo { flex: 1 1 auto; min-width: 0; }
+.mix-filter-tol { display: flex; align-items: center; gap: 10px; }
+.mix-filter-value { font-size: 12px; color: #8c919a; white-space: nowrap; }
+/* …and Auto DJ's slider: materialize draws every range input its own way
+   (full width, a thin grey track, a teal thumb that glows on focus) */
+.mix-filters input.autodj-slider { width: 140px; height: 4px; margin: 0; border: 0; background-color: #444c56; }
+.mix-filters input.autodj-slider::-webkit-slider-runnable-track { height: 4px; background: transparent; }
+.mix-filters input.autodj-slider::-webkit-slider-thumb { width: 16px; height: 16px; margin-top: -6px; background-color: #fa832b; }
+.mix-filters input.autodj-slider::-moz-range-track { height: 4px; background: transparent; }
+.mix-filters input.autodj-slider::-moz-range-thumb { width: 16px; height: 16px; background-color: #fa832b; }
+.mix-filters .autodj-slider[type=range]:focus::-webkit-slider-thumb { box-shadow: none; }
+.mix-filters .autodj-slider[type=range]:focus::-moz-range-thumb { box-shadow: none; }
+.mix-filters .autodj-slider:focus-visible { outline: 2px solid #fa832b; outline-offset: 4px; }
+.mix-filters .dj-duration-inputs { flex-wrap: wrap; align-items: flex-end; }
+.mix-filters .dj-duration-field { flex: 0 0 auto; width: 120px; }
+.mix-filter-unknown { display: inline-flex; align-items: center; gap: 8px; min-height: 30px; }
+/* materialize paints a focused button teal: a pill, a mode or a chip's ×
+   the keyboard stays on keeps its face */
+.mix-filters .dj-vpath-pill:not(.on):focus { background-color: #1a1d23; }
+.mix-filters .dj-genre-mode-btn:not([aria-pressed="true"]):focus { background-color: transparent; }
+.mix-filters .dj-filter-tag-rm:focus { background-color: transparent; }
+.mix-filters .dj-filter-tag-rm:focus:hover { background-color: #fa832b; }
+@container (max-width: 419px) {
+  .mix-filters { grid-template-columns: minmax(0, 1fr); }
+}
+.mix-page.mix-busy .dpage-songs { opacity: .6; transition: opacity .15s .1s; }
 
 /* Keyboard Shortcuts modal (Layout > Keyboard Shortcuts) */
 .hotkeys-modal-window { max-width: 560px; }

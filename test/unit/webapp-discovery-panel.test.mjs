@@ -630,7 +630,8 @@ describe('Discover page: opening it', () => {
       assert.equal(el.tag, 'button');
       assert.ok(el.attrs['aria-label'] && el.attrs.title, `${el.attrs['data-dp']} is labelled`);
     }
-    assert.deepEqual(lib.map((el) => el.attrs.title), ['dpage.verb.playNow', 'dpage.verb.queue', 'dpage.verb.addToPlaylist']);
+    // the ⋯ is the song menu ("More": Instant Mix, then the playlists)
+    assert.deepEqual(lib.map((el) => el.attrs.title), ['dpage.verb.playNow', 'dpage.verb.queue', 'dpage.verb.more']);
     assert.deepEqual(peer.map((el) => el.attrs.title), ['dpage.verb.playNow', 'dpage.verb.queue', 'dpage.verb.more']);
     assert.equal(lib[2].attrs['data-file_location'], 'music/J/Seven.flac');
   });
