@@ -97,7 +97,9 @@
   "toast.albumQueued": "Album w Kolejce",
   "toast.albumQueuedMessage": {
     "one": "Dodano {{count}} utwór",
-    "other": "Dodano {{count}} utworów"
+    "few": "Dodano {{count}} utwory",
+    "many": "Dodano {{count}} utworów",
+    "other": "Dodano {{count}} utworu"
   },
   "toast.folderCreated": "Folder Utworzony",
   "toast.folderCreateFailed": "Nie udało się utworzyć folderu",
@@ -121,7 +123,9 @@
   "status.scanInProgress": "Skanowanie w Toku",
   "status.filesInDB": {
     "one": "{{count}} plik w DB",
-    "other": "{{count}} plików w DB"
+    "few": "{{count}} pliki w DB",
+    "many": "{{count}} plików w DB",
+    "other": "{{count}} pliku w DB"
   },
   "status.noArtistOrAlbumInfo": "Brak informacji o artyście lub albumie do wyszukiwania",
   "status.searching": "Wyszukiwanie...",
@@ -131,7 +135,9 @@
   "status.downloadingAudio": "Pobieranie audio...",
   "status.downloadingFiles": {
     "one": "Pobieranie {{count}} pliku...",
-    "other": "Pobieranie {{count}} plików..."
+    "few": "Pobieranie {{count}} plików...",
+    "many": "Pobieranie {{count}} plików...",
+    "other": "Pobieranie {{count}} pliku..."
   },
   "label.artist": "Artysta:",
   "label.album": "Album:",
@@ -217,7 +223,9 @@
   "error.genericError": "Wystąpił błąd. Odśwież stronę i spróbuj ponownie",
   "label.getLastSongs": {
     "one": "utwór",
-    "other": "utworów"
+    "few": "utworów",
+    "many": "utworów",
+    "other": "utworu"
   },
   "label.welcomeToMStream": "Witamy w mStream!",
   "label.preset": "Preset:",
@@ -528,23 +536,27 @@
   "stats.sub.deltaTimeDown": "−{{d}} vs {{versus}}",
   "stats.count.days": {
     "one": "{{count}} dzień",
-    "two": "{{count}} dni",
-    "other": "{{count}} dni"
+    "few": "{{count}} dni",
+    "many": "{{count}} dni",
+    "other": "{{count}} dnia"
   },
   "stats.count.plays": {
     "one": "{{count}} odtworzenie",
-    "two": "{{count}} odtworzenia",
-    "other": "{{count}} odtworzeń"
+    "few": "{{count}} odtworzenia",
+    "many": "{{count}} odtworzeń",
+    "other": "{{count}} odtworzenia"
   },
   "stats.count.tracks": {
     "one": "{{count}} utwór",
-    "two": "{{count}} utwory",
-    "other": "{{count}} utworów"
+    "few": "{{count}} utwory",
+    "many": "{{count}} utworów",
+    "other": "{{count}} utworu"
   },
   "stats.count.starts": {
     "one": "{{count}} rozpoczęcie w tym okresie",
-    "two": "{{count}} rozpoczęcia w tym okresie",
-    "other": "{{count}} rozpoczęć w tym okresie"
+    "few": "{{count}} rozpoczęcia w tym okresie",
+    "many": "{{count}} rozpoczęć w tym okresie",
+    "other": "{{count}} rozpoczęcia w tym okresie"
   },
   "stats.unit.minutes": "{{n}} min",
   "stats.unit.hours": "{{h}} godz.",

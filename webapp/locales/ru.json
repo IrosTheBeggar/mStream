@@ -97,7 +97,9 @@
   "toast.albumQueued": "Альбом добавлен в очередь",
   "toast.albumQueuedMessage": {
     "one": "{{count}} песня добавлена",
-    "other": "{{count}} песен добавлено"
+    "few": "{{count}} песни добавлены",
+    "many": "{{count}} песен добавлено",
+    "other": "{{count}} песни добавлено"
   },
   "toast.folderCreated": "Папка создана",
   "toast.folderCreateFailed": "Не удалось создать папку",
@@ -121,7 +123,9 @@
   "status.scanInProgress": "Сканирование выполняется",
   "status.filesInDB": {
     "one": "{{count}} файл в базе данных",
-    "other": "{{count}} файлов в базе данных"
+    "few": "{{count}} файла в базе данных",
+    "many": "{{count}} файлов в базе данных",
+    "other": "{{count}} файла в базе данных"
   },
   "status.noArtistOrAlbumInfo": "Нет информации об исполнителе или альбоме для поиска",
   "status.searching": "Поиск...",
@@ -131,7 +135,9 @@
   "status.downloadingAudio": "Скачивание аудио...",
   "status.downloadingFiles": {
     "one": "Скачивание {{count}} файла...",
-    "other": "Скачивание {{count}} файлов..."
+    "few": "Скачивание {{count}} файлов...",
+    "many": "Скачивание {{count}} файлов...",
+    "other": "Скачивание {{count}} файла..."
   },
   "label.artist": "Исполнитель:",
   "label.album": "Альбом:",
@@ -217,7 +223,9 @@
   "error.genericError": "Произошла ошибка. Обновите страницу и попробуйте снова",
   "label.getLastSongs": {
     "one": "песня",
-    "other": "песен"
+    "few": "песен",
+    "many": "песен",
+    "other": "песни"
   },
   "label.welcomeToMStream": "Добро пожаловать в mStream!",
   "label.preset": "Предустановка:",
@@ -528,23 +536,27 @@
   "stats.sub.deltaTimeDown": "−{{d}} по сравнению с {{versus}}",
   "stats.count.days": {
     "one": "{{count}} день",
-    "two": "{{count}} дня",
-    "other": "{{count}} дней"
+    "few": "{{count}} дня",
+    "many": "{{count}} дней",
+    "other": "{{count}} дня"
   },
   "stats.count.plays": {
     "one": "{{count}} прослушивание",
-    "two": "{{count}} прослушивания",
-    "other": "{{count}} прослушиваний"
+    "few": "{{count}} прослушивания",
+    "many": "{{count}} прослушиваний",
+    "other": "{{count}} прослушивания"
   },
   "stats.count.tracks": {
     "one": "{{count}} трек",
-    "two": "{{count}} трека",
-    "other": "{{count}} треков"
+    "few": "{{count}} трека",
+    "many": "{{count}} треков",
+    "other": "{{count}} трека"
   },
   "stats.count.starts": {
     "one": "{{count}} запуск за этот период",
-    "two": "{{count}} запуска за этот период",
-    "other": "{{count}} запусков за этот период"
+    "few": "{{count}} запуска за этот период",
+    "many": "{{count}} запусков за этот период",
+    "other": "{{count}} запуска за этот период"
   },
   "stats.unit.minutes": "{{n}} мин",
   "stats.unit.hours": "{{h}} ч",
