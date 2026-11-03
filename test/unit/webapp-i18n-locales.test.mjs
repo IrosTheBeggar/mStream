@@ -11,7 +11,8 @@
  *     placeholder (t() fills nothing else, so "{{ count }}" would show as
  *     typed); every data-i18n key of the four pages that load i18n.js that
  *     en.json has is a plain string with no placeholder (translatePage()
- *     passes no params);
+ *     passes no params); the retired Youtube DL tab's and old strip's keys
+ *     are in no file, and no value names "Youtube DL";
  *   - plural objects: each carries every form its own language's
  *     Intl.PluralRules picks for a whole number, plus `other`, and no form
  *     that language never picks (no `two` in Russian or Polish); a form
@@ -165,6 +166,25 @@ describe('the locale files', () => {
       const shape = Object.keys(DICTS[l]).filter((k) => isPlural(DICTS[l][k]) !== isPlural(EN[k]));
       assert.deepEqual(shape, [], `${l}.json keys that are a string where en has a plural object, or the other way`);
     });
+  });
+
+  test('the Upload window\'s Youtube DL tab and the old Downloading strip took their words with them; no file names "Youtube DL"', () => {
+    const retired = ['upload.tabYoutube', 'upload.ytdlDescription', 'upload.ytdlRequirement', 'upload.ytdlTranscodeWarning', 'upload.urlPlaceholder',
+      'upload.metaTitle', 'upload.metaArtist', 'upload.metaAlbum', 'upload.metaYear', 'upload.loadingMetadata', 'upload.downloadButton',
+      'fileExplorer.downloading', 'toast.youtubeUrlRequired', 'toast.invalidUrl', 'toast.downloadStarted', 'status.downloadingAudio',
+      'status.downloadingFiles', 'label.viewDownloads'];
+    LANGS.forEach((l) => {
+      assert.deepEqual(retired.filter((k) => hasOwn(DICTS[l], k)), [], `${l}.json`);
+      const named = Object.keys(DICTS[l]).filter((k) => (isPlural(DICTS[l][k]) ? Object.values(DICTS[l][k]) : [DICTS[l][k]]).some((s) => /youtube dl/i.test(s)));
+      assert.deepEqual(named, [], `${l}.json`);
+      // what the Upload window, the metadata window and every other
+      // failure toast still say
+      ['upload.tabFiles', 'upload.location', 'upload.chooseFiles', 'error.callFailed', 'toast.noMetadataFound'].forEach((k) => assert.ok(hasOwn(DICTS[l], k), `${l}.json ${k}`));
+    });
+    // A song Add from YouTube brought in, in the Downloads panel and the
+    // admin's Downloads tab
+    assert.equal(EN['downloads.plugin.ytdl'], 'YouTube');
+    assert.equal(EN['admin.dplugins.dl.plugin.ytdl'], 'YouTube');
   });
 
   test('every translation uses en\'s {{placeholders}}, form by form', () => {

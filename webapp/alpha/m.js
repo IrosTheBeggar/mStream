@@ -416,6 +416,9 @@ function setBrowserRootPanel(panelName, showBar) {
   // it again) — the page it tops held first, as it stands, in case the
   // panel's load fails (browseKeepBack).
   browseKeepReset(true);
+  // Add from YouTube's panel is a Vue instance in #filelist: it goes with
+  // the column (its draft stays for the next visit).
+  if (typeof YTDLUI !== 'undefined') { YTDLUI.unmountPanel(); }
 
   if(showBar === false) {
     document.getElementById('directory_bar').style.display = 'none';
@@ -431,6 +434,10 @@ function setBrowserRootPanel(panelName, showBar) {
   document.getElementById('local_search_btn').style.display = '';
   document.getElementById('upload_btn').classList.add('super-hide');
   document.getElementById('mkdir_btn').classList.add('super-hide');
+  // Add from YouTube here and its strip: the explorer shows them again
+  // for a folder (senddir, ytdlRefreshExplorer).
+  document.getElementById('ytdl_btn')?.classList.add('super-hide');
+  document.getElementById('ytdl_strip')?.classList.add('super-hide');
   // The Genres panel's switch; getAllGenres shows it when there's a choice.
   document.getElementById('genre_source')?.classList.add('super-hide');
   // The mood filters: Albums, Artists, Rated and Recently Added show them
@@ -497,12 +504,18 @@ async function senddir(root) {
       } else {
         mkdirBtn.classList.remove('super-hide');
       }
+      // Add from YouTube here: when this account may add files (hidden,
+      // never greyed — and shown later by the ping when it answers last)
+      document.getElementById('ytdl_btn')?.classList.toggle('super-hide', !(typeof ytdlAllowed === 'function' && ytdlAllowed()));
     } else {
       uploadBtn.classList.add('super-hide');
       mkdirBtn.classList.add('super-hide');
+      document.getElementById('ytdl_btn')?.classList.add('super-hide');
     }
 
     printdir(response);
+    // An add of this browser's into this folder: the strip under the bar.
+    if (typeof ytdlRefreshExplorer === 'function') { ytdlRefreshExplorer(); }
   } catch(err) {
     // a connected server that stopped answering: the folder it was on
     browseKeepBack(gen);
@@ -582,9 +595,12 @@ function handleDirClick(el){
 function boilerplateFailure(err) {
   console.log(err);
   let msg = t('error.callFailed');
-  // TODO: Check this
-  if (err.responseJSON && err.responseJSON.error) {
-    msg = err.responseJSON.error;
+  // The server's own words: api.js req() throws with the answer's body on
+  // err.body, the envelope { error: "<message>" }. No answer at all (a
+  // network failure) keeps Call Failed.
+  const body = err && err.body;
+  if (body && typeof body.error === 'string' && body.error) {
+    msg = body.error;
   }
 
   iziToast.error({
@@ -662,11 +678,15 @@ async function recursiveAddDir(el) {
 async function onFilePlaylistClick(el) {
   try {
     fileExplorerArray.push(el.getAttribute("data-directory"));
+    // `m3u`: the explorer shows a playlist's songs, no folder to add into
+    // (ytdlExplorerFolder) — Add from YouTube here and its strip go
     programState.push({
       state: 'fileExplorer',
+      m3u: true,
       previousScroll: document.getElementById('filelist').scrollTop,
       previousSearch: document.getElementById('search_folders').value
     });
+    if (typeof ytdlRefreshExplorer === 'function') { ytdlRefreshExplorer(); }
     const directoryString = getFileExplorerPath();
   
     document.getElementById('directoryName').innerHTML = escapeHtml('/' + directoryString.substring(0, directoryString.length - 1));
@@ -778,20 +798,13 @@ async function init() {
       document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`;
     });
 
-    if (response.supportedAudioFiles) {
-      const codecSelect = document.getElementById('ytdl_codec');
-      codecSelect.innerHTML = '';
-      Object.keys(response.supportedAudioFiles).forEach(format => {
-        if (response.supportedAudioFiles[format] === true) {
-          const option = document.createElement('option');
-          option.value = format;
-          option.textContent = format.toUpperCase();
-          codecSelect.appendChild(option);
-        }
-      });
-    }
-
     MSTREAMAPI.currentServer.noMkdir = response.noMkdir === true;
+    // Add from YouTube's gate (ytdlServerAllows): the server's upload
+    // switch and this account's, audio conversion (ffmpeg found and
+    // transcoding on), and the route's generation.
+    MSTREAMAPI.currentServer.noUpload = response.noUpload === true;
+    MSTREAMAPI.currentServer.transcode = !!response.transcode;
+    MSTREAMAPI.currentServer.ytdl = Number(response.ytdl) || 0;
     // The formats this server plays ({ mp3: true, … }): a connected
     // server's folder is counted, listed and played as a copy of it takes
     // its songs (the Keep a copy window's folder count).
@@ -822,15 +835,26 @@ async function init() {
         const admin = !!(info && info.user && info.user.admin === true);
         MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
         VUEPLAYERCORE.setAdmin(admin);
+        // The account's name ('mstream-user' in public mode): Add from
+        // YouTube keeps this browser's jobs and choices per account.
+        MSTREAMAPI.currentServer.username = info && info.user && typeof info.user.username === 'string' ? info.user.username : ytdlTokenUser();
+        ytdlStart(MSTREAMAPI.currentServer.username);
       })
-      .catch(() => { MSTREAMAPI.currentServer.admin = false; VUEPLAYERCORE.setAdmin(false); });
+      .catch(() => {
+        MSTREAMAPI.currentServer.admin = false;
+        VUEPLAYERCORE.setAdmin(false);
+        MSTREAMAPI.currentServer.username = ytdlTokenUser();
+        ytdlStart(MSTREAMAPI.currentServer.username);
+      });
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
     document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
-    // Downloads: what the discovery plug-ins brought in — the same flag as
-    // the "Get it" rows, so the panel exists only where a download can.
-    document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
+    // Downloads: what the discovery plug-ins and Add from YouTube brought
+    // in — the "Get it" rows' flag, or Add from YouTube's gate, so the
+    // panel (and its Remove) exists wherever a song can come in.
+    MSTREAMAPI.currentServer.discoveryPlugins = response.discoveryPlugins === true;
+    ytdlDownloadsEntry();
     // The Discover page (seeded by play history): its nav entry, its flags.
     applyDiscoveryPing(response);
 
@@ -844,6 +868,10 @@ async function init() {
       MSTREAMPLAYER.transcodeOptions.defaultCodec = response.transcode.defaultCodec;
       MSTREAMPLAYER.transcodeOptions.defaultBitrate = response.transcode.defaultBitrate;
     }
+
+    // Add from YouTube: its entries, hidden until now, show when this
+    // account may add files.
+    ytdlApplyGates();
   }catch (err) {
     console.error('init failed', err);
   }
@@ -1122,7 +1150,6 @@ function openHotkeysModal() {
 function switchUploadTab(tab) {
   const tabs = {
     upload:  { btn: document.getElementById('tab_upload'),  pane: document.getElementById('tab_content_upload'),  focus: null },
-    ytdl:    { btn: document.getElementById('tab_ytdl'),    pane: document.getElementById('tab_content_ytdl'),    focus: 'ytdl_url' },
     torrent: { btn: document.getElementById('tab_torrent'), pane: document.getElementById('tab_content_torrent'), focus: 'torrent_magnet' },
   };
   Object.entries(tabs).forEach(([name, t]) => {
@@ -1151,21 +1178,6 @@ function openUploadModal() {
 
   // Reset upload tab
   document.getElementById('upload_file_input').value = '';
-
-  // Reset ytdl tab
-  if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
-    document.getElementById('ytdl_transcode_warning').classList.remove('super-hide');
-    document.getElementById('ytdl_submit').disabled = true;
-  } else {
-    document.getElementById('ytdl_transcode_warning').classList.add('super-hide');
-    document.getElementById('ytdl_submit').disabled = false;
-  }
-  document.getElementById('ytdl_meta_loading').classList.add('super-hide');
-  document.getElementById('ytdl_metadata').classList.add('super-hide');
-  document.getElementById('ytdl_meta_title').textContent = '';
-  document.getElementById('ytdl_meta_artist').textContent = '';
-  document.getElementById('ytdl_meta_album').textContent = '';
-  document.getElementById('ytdl_meta_year').textContent = '';
 
   // Reset torrent tab
   document.getElementById('torrent_file_input').value = '';
@@ -1215,15 +1227,6 @@ async function submitMkdir() {
   }
 }
 
-function isYoutubeUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return parsed.hostname === 'youtube.com' || parsed.hostname.endsWith('.youtube.com') || parsed.hostname === 'youtu.be';
-  } catch (e) {
-    return false;
-  }
-}
-
 // Track manual edits to the torrent directory so a later file pick
 // doesn't clobber the user's typing, and refresh the destination
 // preview as they type.
@@ -1231,89 +1234,6 @@ document.getElementById('torrent_directory').addEventListener('input', function(
   e.target.dataset.autofilled = 'false';
   updateTorrentDestPreview();
 });
-
-var ytdlMetaTimeout = null;
-document.getElementById('ytdl_url').addEventListener('input', function() {
-  clearTimeout(ytdlMetaTimeout);
-  var url = this.value.trim();
-
-  document.getElementById('ytdl_metadata').classList.add('super-hide');
-  document.getElementById('ytdl_meta_loading').classList.add('super-hide');
-
-  if (!isYoutubeUrl(url)) { return; }
-
-  document.getElementById('ytdl_meta_loading').classList.remove('super-hide');
-
-  ytdlMetaTimeout = setTimeout(async function() {
-    try {
-      var res = await MSTREAMAPI.ytdlMetadata(url);
-      document.getElementById('ytdl_meta_loading').classList.add('super-hide');
-
-      var meta = res.data || res;
-      document.getElementById('ytdl_meta_title').textContent = meta.title || '';
-      document.getElementById('ytdl_meta_artist').textContent = meta.artist || '';
-      document.getElementById('ytdl_meta_album').textContent = meta.album || '';
-      document.getElementById('ytdl_meta_year').textContent = meta.year || '';
-
-      var thumb = document.getElementById('ytdl_meta_thumb');
-      if (meta.thumbnail) {
-        thumb.src = meta.thumbnail;
-        thumb.style.display = '';
-      } else {
-        thumb.style.display = 'none';
-      }
-
-      document.getElementById('ytdl_metadata').classList.remove('super-hide');
-    } catch(err) {
-      document.getElementById('ytdl_meta_loading').classList.add('super-hide');
-    }
-  }, 500);
-});
-
-async function submitYtdl() {
-  const url = document.getElementById('ytdl_url').value;
-  const outputCodec = document.getElementById('ytdl_codec').value;
-  const filepath = document.getElementById('upload_filepath').textContent;
-
-  try {
-    const parsed = new URL(url);
-    if (parsed.hostname !== 'youtube.com' && !parsed.hostname.endsWith('.youtube.com') && parsed.hostname !== 'youtu.be') {
-      return iziToast.warning({ title: t('toast.youtubeUrlRequired'), position: 'topCenter', timeout: 3500 });
-    }
-  } catch (e) {
-    return iziToast.warning({ title: t('toast.invalidUrl'), position: 'topCenter', timeout: 3500 });
-  }
-
-  // Collect user-edited metadata overrides
-  const metadata = {};
-  const metaTitle = document.getElementById('ytdl_meta_title').textContent.trim();
-  const metaArtist = document.getElementById('ytdl_meta_artist').textContent.trim();
-  const metaAlbum = document.getElementById('ytdl_meta_album').textContent.trim();
-  const metaYear = document.getElementById('ytdl_meta_year').textContent.trim();
-  if (metaTitle) { metadata.title = metaTitle; }
-  if (metaArtist) { metadata.artist = metaArtist; }
-  if (metaAlbum) { metadata.album = metaAlbum; }
-  if (metaYear) { metadata.year = metaYear; }
-
-  document.getElementById('ytdl_submit').disabled = true;
-
-  try {
-    await MSTREAMAPI.ytdl(url, outputCodec, filepath, metadata);
-    myModal.close();
-    document.getElementById('ytdl_url').value = '';
-    document.getElementById('ytdl_metadata').classList.add('super-hide');
-    iziToast.success({
-      title: t('toast.downloadStarted'),
-      position: 'topCenter',
-      timeout: 3000
-    });
-    startYtdlPolling();
-  } catch(err) {
-    boilerplateFailure(err);
-  } finally {
-    document.getElementById('ytdl_submit').disabled = false;
-  }
-}
 
 // ── Torrent tab ───────────────────────────────────────────────────────
 // The destination of a torrent is built from THREE pieces:
@@ -2453,49 +2373,6 @@ function _resetAddTorrentPanelForm() {
   }
 }
 
-var ytdlPollInterval = null;
-function startYtdlPolling() {
-  if (ytdlPollInterval) { return; }
-  updateYtdlIndicator();
-  ytdlPollInterval = setInterval(updateYtdlIndicator, 3000);
-}
-
-async function updateYtdlIndicator() {
-  try {
-    var res = await MSTREAMAPI.ytdlDownloads();
-    var downloads = (res.data || res).downloads || [];
-    var active = downloads.filter(function(d) { return d.status === 'downloading'; });
-    var completed = downloads.filter(function(d) { return d.status === 'complete'; });
-
-    var indicator = document.getElementById('ytdl_download_indicator');
-    var textEl = document.getElementById('ytdl_download_text');
-
-    if (active.length > 0) {
-      indicator.classList.remove('super-hide');
-      textEl.textContent = active.length === 1 ? t('status.downloadingAudio') : t('status.downloadingFiles', { count: active.length });
-    } else {
-      indicator.classList.add('super-hide');
-
-      // Stop polling when nothing is active
-      clearInterval(ytdlPollInterval);
-      ytdlPollInterval = null;
-    }
-
-    // Refresh the file list if a download completed in the current directory
-    if (completed.length > 0 && programState[0].state === 'fileExplorer' && fileExplorerArray.length > 0) {
-      var currentDir = getFileExplorerPath();
-      for (var i = 0; i < completed.length; i++) {
-        if (completed[i].directory === currentDir) {
-          senddir();
-          break;
-        }
-      }
-    }
-  } catch (e) {
-    // silently ignore polling errors
-  }
-}
-
 function openMetadataModal(metadata, fp) {
   if (metadata === null) {
     return iziToast.warning({
@@ -3053,7 +2930,7 @@ async function onPlaylistClick(el) {
     document.getElementById('filelist').innerHTML = files;
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
-    boilerplateFailure(response, error);
+    boilerplateFailure(err);
   }
 }
 
@@ -4233,7 +4110,8 @@ function openFileExplorerAt(parts) {
     fileExplorerArray.push(part);
     programState.push({ state: 'fileExplorer', previousScroll: 0, previousSearch: '' });
   }
-  senddir();
+  // (awaited by Add from YouTube's Show in folder, which rings the row)
+  return senddir();
 }
 
 function removeDiscoverDownload(el) {
@@ -4283,6 +4161,276 @@ function removeDiscoverDownload(el) {
     ],
   });
 }
+
+///////////////// Add from YouTube
+// The sidenav entry opens the panel (alpha/ytdl-ui.js: Vue components in
+// #filelist, its windows over the page); this section is its m.js half —
+// the gate the entries are hidden by, the panel's place among the
+// others, and the server's facts and account the panel reads.
+
+// Whether this server lets this account add from YouTube: uploads on (the
+// server's switch and the account's allow_upload), audio conversion ready
+// (the ping's `transcode`, false until ffmpeg is found), at least one
+// library, and a server whose ping says it has the route — every part
+// known only once the ping answered, so the entries start hidden. Hidden,
+// never greyed (spec §2).
+function ytdlServerAllows() {
+  const s = MSTREAMAPI.currentServer;
+  return s.ytdl >= 1 && s.noUpload !== true && s.transcode === true && Array.isArray(s.vpaths) && s.vpaths.length > 0;
+}
+
+// …and the app is on this server, not browsing a connected one (whose
+// library this isn't). The sidenav entry needs no such check: it is
+// local-only, hidden on a connected server by the body class.
+function ytdlAllowed() {
+  return !peerContext && ytdlServerAllows();
+}
+
+// The panel's view of the server: its facts as the ping gave them.
+function ytdlServerFacts() {
+  const s = MSTREAMAPI.currentServer;
+  return {
+    uploadsOff: s.noUpload === true,
+    convertOff: s.transcode !== true,
+    noMkdir: s.noMkdir === true,
+    supported: s.supportedAudioFiles || null,
+    vpaths: Array.isArray(s.vpaths) ? s.vpaths : [],
+    name: typeof location !== 'undefined' ? location.host : '',
+  };
+}
+
+// Show or hide the entries by the gate, and hand the panel the facts. From
+// init and after every re-ping: an open panel stays, with Add off and the
+// reason on screen (spec §8).
+function ytdlApplyGates() {
+  document.getElementById('nav-ytdl')?.classList.toggle('super-hide', !ytdlServerAllows());
+  ytdlDownloadsEntry();
+  if (typeof YTDLUI !== 'undefined') { YTDLUI.setServer(ytdlServerFacts()); }
+  ytdlRefreshExplorer();
+}
+
+// The Downloads entry: the panel where an added song is removed again
+// (Added rows have no Remove, decision 12). Shown where a discovery
+// plug-in can bring a song in (the ping's discoveryPlugins) or Add from
+// YouTube can — a server with no plug-ins on still has YouTube's songs.
+function ytdlDownloadsEntry() {
+  const shown = MSTREAMAPI.currentServer.discoveryPlugins === true || ytdlServerAllows();
+  document.getElementById('nav-discover-downloads')?.classList.toggle('super-hide', !shown);
+}
+
+// The ping asked again: an add refused with 403 (uploads off) or "FFmpeg
+// is not available yet", or a format or library the server no longer
+// has, may mean the facts changed under the page.
+async function ytdlRecheck() {
+  let response;
+  try { response = await MSTREAMAPI.ping(); } catch (_) { return; }
+  const s = MSTREAMAPI.currentServer;
+  if (Array.isArray(response.vpaths)) { s.vpaths = response.vpaths; }
+  s.noUpload = response.noUpload === true;
+  s.noMkdir = response.noMkdir === true;
+  s.transcode = !!response.transcode;
+  s.supportedAudioFiles = response.supportedAudioFiles || null;
+  ytdlApplyGates();
+}
+
+// The account's name from the session token ({ username }), when /api
+// didn't say; '' without one.
+function ytdlTokenUser() {
+  try {
+    const part = String(MSTREAMAPI.currentServer.token || '').split('.')[1];
+    if (!part) { return ''; }
+    const payload = JSON.parse(atob(part.replace(/-/g, '+').replace(/_/g, '/')));
+    return payload && typeof payload.username === 'string' ? payload.username : '';
+  } catch (_) {
+    return '';
+  }
+}
+
+// This browser's jobs for the account: they settle on any panel, and
+// keep their pill, whatever the gate says now.
+function ytdlStart(user) {
+  if (typeof YTDLUI === 'undefined' || !(MSTREAMAPI.currentServer.ytdl >= 1)) { return; }
+  YTDLUI.start({ origin: location.origin, user });
+}
+
+// The panel (the sidenav entry; changeView passes nothing). opts.link: a
+// YouTube link to fill in and look up at once.
+function ytdlPanel(opts) {
+  // This server's: from a connected server, home first (switchServer
+  // draws this panel again, with these opts — PANELS_BY_STATE reads
+  // `open` back, so a toast's Details still lands on Needs a look).
+  if (peerContext) {
+    programState = [opts ? { state: 'addFromYoutube', open: opts } : { state: 'addFromYoutube' }];
+    switchServer(null);
+    return;
+  }
+  programState = [{ state: 'addFromYoutube' }];
+  setBrowserRootPanel(t('panel.addFromYoutube'), false);
+  currentBrowsingList = [];
+  const list = document.getElementById('filelist');
+  list.innerHTML = '<div id="ytdl-panel-mount"></div>';
+  list.scrollTop = 0;
+  if (typeof YTDLUI === 'undefined') { return; }
+  YTDLUI.mountPanel(document.getElementById('ytdl-panel-mount'), opts);
+}
+
+// The panel opened from code — a paste, the strip's See all, a toast's
+// Details (opts.needsLook) — with its sidenav entry marked; on a phone the
+// column's tab comes forward (changeView leaves Now Playing up).
+function ytdlOpenPanel(opts) {
+  const nav = document.getElementById('nav-ytdl');
+  if (nav) { changeView(() => ytdlPanel(opts), nav); } else { ytdlPanel(opts); }
+  const tab = document.querySelector('.m-tab.panel_one_name');
+  if (tab) { toggleThing(tab, true); }
+}
+
+// The folder the explorer shows, when it is on screen and this server's:
+// '/Music/Daft Punk/', else null. programState alone can't say: Auto DJ,
+// Transcode, Apps, Sonic Path, Jukebox and Config leave it on the explorer
+// with the folder they left — but every one of them hides the bar. An
+// open .m3u (onFilePlaylistClick) is a playlist's songs, no folder.
+function ytdlExplorerFolder() {
+  if (peerContext || !programState[0] || programState[0].state !== 'fileExplorer' || fileExplorerArray.length === 0) { return null; }
+  if (programState[programState.length - 1].m3u === true) { return null; }
+  const bar = document.getElementById('directory_bar');
+  if (!bar || bar.style.display === 'none') { return null; }
+  return '/' + getFileExplorerPath();
+}
+
+// The bar's Add from YouTube here and the strip under it, for what the
+// column shows now: from the ping, the tracker (a job started, settled)
+// and every explorer listing.
+function ytdlRefreshExplorer() {
+  const folder = ytdlExplorerFolder();
+  document.getElementById('ytdl_btn')?.classList.toggle('super-hide', !(folder && ytdlServerAllows()));
+  if (typeof YTDLUI !== 'undefined') { YTDLUI.renderStrip(folder); }
+}
+
+// The file names the explorer lists for `dir` while it shows that folder
+// (the window's Right here, when a listing of it fails), else null.
+function ytdlShownNames(dir) {
+  const folder = ytdlExplorerFolder();
+  const key = (p) => String(p || '').split('/').filter(Boolean).join('/');
+  if (!folder || key(folder) !== key(dir)) { return null; }
+  return currentBrowsingList.filter((x) => x.type !== 'directory').map((x) => x.name);
+}
+
+// Add from YouTube here (the bar's button; a pasted link): the window for
+// the folder on screen, the keyboard back on the button after.
+function ytdlOpenWindow(link) {
+  const folder = ytdlExplorerFolder();
+  if (!folder || !ytdlServerAllows() || typeof YTDLUI === 'undefined') { return; }
+  YTDLUI.openHere(folder, { link, opener: document.getElementById('ytdl_btn') });
+}
+
+// A job of this browser's settled (the tracker's 'settled', in every tab):
+// when the song went into the folder on screen or below it, the folder
+// lists again — quietly: no spinner, the scroll and the filter's words as
+// they were (senddir would reset both) — and an added song's row is
+// ringed (its file, or the new subfolder it went into).
+async function ytdlSettled(job) {
+  const folder = ytdlExplorerFolder();
+  if (!folder || !job || typeof YTDLUI === 'undefined' || !YTDLUI.relistWanted(folder, job.directory)) { return; }
+  const dir = getFileExplorerPath();
+  const gen = browseGeneration;
+  const before = currentBrowsingList.slice();
+  let response;
+  try {
+    response = await MSTREAMAPI.dirparser(dir);
+  } catch (_) {
+    return;
+  }
+  // Another folder, panel or server meanwhile: nothing here to redraw.
+  if (gen !== browseGeneration || ytdlExplorerFolder() !== folder) { return; }
+  // The words and the scroll as they are now, not as they were when the
+  // listing was asked for (typed or scrolled meanwhile).
+  const list = document.getElementById('filelist');
+  const search = document.getElementById('localSearchBar');
+  const scroll = list.scrollTop;
+  const filter = search.value;
+  printdir(response);
+  if (filter) {
+    search.value = filter;
+    search.dispatchEvent(new Event('keyup'));
+  }
+  list.scrollTop = scroll;
+  if (job.state !== 'added') { return; }
+  const ring = YTDLUI.ringTarget({ folder, job, before, after: response });
+  if (ring) { ytdlRing(ring); }
+}
+
+// Ring a row of the explorer — { kind: 'file', value: its location } or
+// { kind: 'dir', value: its name } — 2 px teal for 2 s, then fading; in
+// view, never scrolled past. A filter that hides it rings nothing.
+function ytdlRing(ring) {
+  const file = !!ring && ring.kind === 'file';
+  const key = (p) => String(p || '').replace(/^\/+/, '');
+  const rows = document.querySelectorAll(file ? '#filelist .filez[data-file_location]' : '#filelist .dirz[data-directory]');
+  const hit = Array.from(rows).find((el) => key(el.getAttribute(file ? 'data-file_location' : 'data-directory')) === key(ring && ring.value));
+  const li = hit ? hit.closest('li') : null;
+  if (!li) { return; }
+  li.classList.add('ytdl-new-row');
+  if (typeof li.scrollIntoView === 'function') { li.scrollIntoView({ block: 'nearest' }); }
+  setTimeout(() => {
+    li.classList.add('is-fading');
+    setTimeout(() => { li.classList.remove('ytdl-new-row', 'is-fading'); }, 700);
+  }, 2000);
+}
+
+// The toast for an add this tab started (the tracker's onToast, once):
+// the house iziToast at the top — "Added “One More Time” to Daft Punk ›
+// Discovery", or "Couldn't add “…”" with Details (the panel, at Needs a
+// look). Its words are the user's titles and folder names: escaped.
+function ytdlToast(job) {
+  if (typeof YTDLUI === 'undefined') { return; }
+  const v = YTDLUI.toastView(job);
+  if (!v) { return; }
+  const words = t(v.label.key, v.label.params);
+  const title = escapeHtml(words);
+  // iziToast has no live region: the page's own says the words
+  if (typeof YTDLUI.announce === 'function') { YTDLUI.announce(words); }
+  if (v.tone === 'success') {
+    iziToast.success({ title, position: 'topCenter', timeout: 3500 });
+    return;
+  }
+  iziToast.warning({
+    title,
+    position: 'topCenter',
+    timeout: 6000,
+    buttons: [[`<button>${escapeHtml(t(v.details.key))}</button>`, (instance, toast) => {
+      instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+      ytdlOpenPanel({ needsLook: true });
+    }, true]],
+  });
+}
+
+// A paste outside any field (decision 5): a YouTube link opens Add from
+// YouTube with it filled in — the window over a writable explorer folder,
+// the panel anywhere else, either one already up taking it in place. Any
+// other paste, one into a field, and one under another window or modal
+// are left alone (no preventDefault: nothing of the page's is changed) —
+// any HystModal's (myModal, Quick Connect's own): hystmodal--active marks
+// the open one.
+function ytdlOnPaste(e) {
+  if (typeof YTDLUI === 'undefined' || !e || !e.clipboardData) { return; }
+  const other = Array.from(document.querySelectorAll('.dmodal-shadow')).some((el) => !el.closest('#ytdl-windows'));
+  const act = YTDLUI.pasteAction({
+    text: e.clipboardData.getData('text/plain'),
+    field: YTDLUI.isField(e.target),
+    blocked: other || myModal.isOpened === true || document.querySelector('.hystmodal--active') !== null,
+    allowed: ytdlAllowed(),
+    folder: ytdlExplorerFolder(),
+    panel: !!programState[0] && programState[0].state === 'addFromYoutube',
+    win: YTDLUI.windowOpen(),
+  });
+  if (!act) { return; }
+  if (act.to === 'window') {
+    YTDLUI.openHere(act.folder, { link: act.link, opener: document.getElementById('ytdl_btn') });
+  } else {
+    ytdlOpenPanel({ link: act.link });
+  }
+}
+document.addEventListener('paste', ytdlOnPaste);
 
 ///////////////// Discover page
 // The history-seeded Discover page (docs/discovery-page-plan.md §4.1): the
@@ -7672,6 +7820,8 @@ const PANELS_BY_STATE = {
   searchPanel: () => setupSearchPanel(),
   discoverDownloads: () => discoverDownloadsPanel(),
   discovery: () => discoveryPanel(),
+  // (opts a switch home carried: ytdlPanel from a connected server)
+  addFromYoutube: () => ytdlPanel(programState[0] && programState[0].state === 'addFromYoutube' ? programState[0].open : undefined),
 };
 
 // Which of those a federated server can actually answer: its library, and
@@ -9160,6 +9310,11 @@ function tglWaveformBar() {
 I18N.onChange(() => {
   if (programState[0] && programState[0].state === 'layout') {
     setupLayoutPanel();
+  }
+  // Add from YouTube's panel redraws its own words (alpha/ytdl-ui.js);
+  // its title is the column's, which translatePage() just reset.
+  if (programState[0] && programState[0].state === 'addFromYoutube') {
+    ([...document.getElementsByClassName('panel_one_name')]).forEach((el) => { el.textContent = t('panel.addFromYoutube'); });
   }
 });
 

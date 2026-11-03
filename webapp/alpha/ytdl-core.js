@@ -1398,7 +1398,8 @@
   // connection from a dropped one, a client timeout doesn't stop a job the
   // server took, and an unreadable 2xx did start — so the add may be
   // running, and is looked for rather than retried (a second POST is a
-  // second job).
+  // second job). A 504 is a proxy in front of mStream that stopped waiting
+  // for it, so the same.
   function classifyAdd(err, opts) {
     const o = opts || {};
     const a = answerOf(err);
@@ -1421,6 +1422,8 @@
         if (ffmpegNotReady(a)) { return failure('ffmpegNotReady', null, { text: a.message }); }
         if (bareServerError(a)) { return failure('serverError', null, { text: wordsOf(a) }); }
         break;
+      case 504:
+        return failure('startUnsure', null);
     }
     return otherOf(a, 'start');
   }
@@ -1553,9 +1556,11 @@
         case 'unavailable': return label('ytdl.reason.unavailable');
         case 'other': {
           const words = serverWords(f);
-          return words == null ? label('ytdl.row.failedUnknown') : label('ytdl.row.failedSaid', { text: words });
+          return words == null ? label('ytdl.row.failedServer') : label('ytdl.row.failedSaid', { text: words });
         }
-        default: return label('ytdl.row.failedUnknown');
+        // (no words at all: this server always sends some — the phone's
+        // hedge for older servers has no web twin)
+        default: return label('ytdl.row.failedServer');
       }
     }
     // A lookup's failure reads as one wherever it shows.
@@ -1624,7 +1629,8 @@
 
   // ── why Add is off ─────────────────────────────────────────────────────
   // The first reason that holds, in the phone's order (ytdl_draft.dart
-  // YtdlBlock), → 'none' | 'convertOff' (the button goes) | 'noLink' |
+  // YtdlBlock), → 'none' | 'convertOff' (the phone's button goes; the
+  // webapp's stays, off, spec §2) | 'noLink' |
   // 'offline' | 'unreachable' | 'ytdlpMissing' | 'lookingUp' (until found,
   // or "Enter details yourself") | 'uploadsOff' | 'alreadyAdding' |
   // 'invalidLayout' | 'yearInvalid' | 'mkdirBlocked'.
@@ -1707,7 +1713,7 @@
     'ytdl.err.addUnreachable',
     'ytdl.noMkdir.new', 'ytdl.noMkdir.unchecked',
     'ytdl.reason.exists', 'ytdl.reason.existsUnnamed', 'ytdl.reason.tooBig', 'ytdl.reason.tooLong', 'ytdl.reason.live', 'ytdl.reason.unavailable',
-    'ytdl.row.failedSaid', 'ytdl.row.failedUnknown', 'ytdl.row.didntStart', 'ytdl.row.startUnsure',
+    'ytdl.row.failedSaid', 'ytdl.row.failedServer', 'ytdl.row.didntStart', 'ytdl.row.startUnsure',
     'ytdl.alreadyAdding', 'ytdl.yearInvalid',
     'ytdl.add', 'ytdl.addHere', 'ytdl.addAnyway', 'ytdl.adding',
   ]);

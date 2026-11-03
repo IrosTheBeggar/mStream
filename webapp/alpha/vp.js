@@ -4788,7 +4788,10 @@ const VUEPLAYERCORE = (() => {
     if (!target || typeof target.tagName !== 'string') { return false; }
     const element = target.tagName.toLowerCase();
     if (element === 'input' || element === 'textarea' || element === 'select' || target.isContentEditable) { return true; }
-    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more') !== null;
+    // (and Add from YouTube's panel: its buttons, radios and menus are on
+    // the page, not in a window — and its bar button and strip, which
+    // Space presses)
+    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more, .ytdl-panel, .ytdl-bar-btn, .ytdl-strip') !== null;
   }
 
   window.addEventListener("keydown", (event) => {
@@ -5471,6 +5474,15 @@ const VUEPLAYERCORE = (() => {
     if (typeof fn !== 'function') { return () => {}; }
     discoverGateWatchers.push(fn);
     return () => { const at = discoverGateWatchers.indexOf(fn); if (at !== -1) { discoverGateWatchers.splice(at, 1); } };
+  };
+
+  // Add from YouTube's windows (alpha/ytdl-ui.js) hold the keyboard as this
+  // one does — the same Tab trap — and never stack on it: opening one
+  // closes this window first.
+  mstreamModule.dmTabbables = dmTabbables;
+  mstreamModule.dmTrapTarget = dmTrapTarget;
+  mstreamModule.closeDiscoverModal = () => {
+    if (playlistVue.discover.modal.open) { playlistVue.closeDiscoverModal(); }
   };
 
   return mstreamModule;

@@ -1219,14 +1219,6 @@ select {
   cursor: pointer;
 }
 
-#ytdl_codec {
-  display: block !important;
-  width: auto;
-  margin-left: auto;
-  padding: 4px 8px;
-  height: auto;
-}
-
 .custom-card-img img {
   max-height: 140px;
 }
@@ -3273,6 +3265,477 @@ body.on-federated-server .side-nav-note {
   .dm-seg-text { grid-column: 2; grid-row: 1; }
   .dm-seg-label { font-size: 13px; }
   .dm-seg-sub { font-size: 11.5px; line-height: 1.35; }
+}
+
+/* ── Add from YouTube (alpha/ytdl-ui.js) ────────────────────────────────
+   The sidenav entry's state pill, the left column's panel, and its two
+   windows ("Where new songs land", "Choose a folder"). The panel is on
+   the page, not in a .dmodal: it declares the window's tokens itself, and
+   the resets the window scopes to .dmodal; its focus ring is the page's
+   orange. The windows are .dmodal-shadow > .dmodal (the house sheet below
+   600 px). Teal --src is the accent; gold (a connected server) never
+   shows here. */
+
+/* The pill: glyph + number, outlined in its state's colour; the words in
+   its place are #nav-ytdl-sr (.dm-sr). #sidenav svg fills and stretches
+   every sidenav svg — not this one. */
+#sidenav .nav-ytdl-pill {
+  margin-left: auto; margin-right: 12px; flex: none; display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 6px;
+  box-sizing: border-box; border: 1px solid rgba(79, 184, 168, .55); border-radius: 9px; color: #4fb8a8;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif;
+  font-size: 11.5px; line-height: 1; font-weight: 700;
+}
+#sidenav .nav-ytdl-pill svg { display: block; flex: none; width: 11px; height: 11px; margin: 0; fill: none; }
+#sidenav .nav-ytdl-pill.is-failed { border-color: rgba(245, 160, 91, .55); color: #f5a05b; }
+#sidenav .nav-ytdl-pill.is-added { border-color: rgba(79, 194, 122, .55); color: #4fc27a; }
+
+/* The panel: the window's tokens on the page */
+.ytdl-panel {
+  --win: #2d333b; --card: #23282f; --well: #1a1e25; --btn: #363d47; --btn-h: #414957; --hover: #2c323c;
+  --div: #3a4149; --bord: #444c56; --field: #6b7482;
+  --t1: #f0f2f5; --t2: #dfe3ea; --t3: #b8bcc6; --t4: #a0a7b3;
+  --ink: #0f1216; --ok: #4fc27a; --warn: #f5a05b; --err: #e0616a; --errt: #ec8a90;
+  --src: #4fb8a8; --src-2: #5ec9b9;
+  display: flex; flex-direction: column; gap: 12px; padding: 0 12px 16px 6px;
+  color: var(--t2); font-size: 13px; line-height: 1.4; text-align: left;
+}
+/* Materialize styles bare <button>s, labels, headings and radios */
+.ytdl-panel button { -webkit-appearance: none; appearance: none; margin: 0; font-family: inherit; }
+.ytdl-panel :focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.ytdl-panel .ytp-label, .ytw .ytw-label {
+  display: block; margin: 0; font-size: 10.5px; line-height: 1.4; font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--t4); white-space: nowrap;
+}
+.ytdl-panel .ytp-input {
+  display: block; width: 100%; height: 32px; box-sizing: border-box; margin: 0; padding: 0 10px;
+  background: var(--well); border: 1px solid var(--bord); border-radius: 4px; box-shadow: none;
+  color: var(--t2); font-family: inherit; font-size: 13px; line-height: normal;
+}
+.ytdl-panel .ytp-input:focus { color: var(--t1); box-shadow: none; }
+.ytdl-panel .ytp-input::placeholder { color: var(--t4); opacity: 1; }
+.ytdl-panel .ytp-input.is-warn { border-color: var(--warn); }
+/* one height below 28 px for a row's buttons */
+.dm-btn.yt-btn-sm { height: 28px; }
+.yt-mono { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.yt-ic { display: block; flex: none; }
+
+/* The link field, and its one line when needed */
+.ytp-linkbox { display: flex; flex-direction: column; gap: 8px; }
+.ytp-link { position: relative; }
+.ytdl-panel .ytp-link-input { color: var(--t1); }
+.ytdl-panel .ytp-link-input.has-clear { padding-right: 38px; }
+.ytdl-panel .ytp-clear, .ytdl-panel .ytp-clear:focus {
+  position: absolute; right: 2px; top: 2px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--t4); cursor: pointer;
+}
+.ytdl-panel .ytp-clear:hover { background: var(--btn); color: var(--t1); }
+.ytp-note { display: flex; align-items: flex-start; gap: 6px; font-size: 12px; line-height: 16px; color: var(--t2); }
+.ytp-note-ic { display: flex; margin-top: 1px; }
+.ytp-note-text { min-width: 0; }
+.ytp-note.is-err, .ytp-note.is-err .ytp-note-ic { color: var(--errt); }
+.ytp-note.is-warn .ytp-note-ic { color: var(--warn); }
+.ytp-note.is-note { padding-left: 1px; color: var(--t4); }
+
+/* The card */
+.ytp-card { display: flex; flex-direction: column; gap: 12px; padding: 14px; background: var(--card); border-radius: 6px; }
+.ytp-card.ytp-card-wait { gap: 10px; }
+.ytp-card.ytp-card-slow { gap: 6px; }
+.ytp-reading { font-size: 12.5px; line-height: 18px; color: var(--t3); }
+.ytp-slow { display: flex; flex-wrap: wrap; align-items: center; column-gap: 2px; min-height: 32px; font-size: 12.5px; line-height: 18px; }
+.ytp-slow-text { margin-right: 2px; color: var(--t3); }
+.yt-bar { height: 4px; background: var(--well); border-radius: 2px; overflow: hidden; }
+.yt-bar.yt-bar-3 { height: 3px; }
+.yt-bar i { display: block; width: 35%; height: 100%; background: var(--src); border-radius: 2px; animation: yt-indet 1.4s ease-in-out infinite; }
+@keyframes yt-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+/* a line with a glyph: warnings (--warn glyph, --t2 words), errors
+   (--errt), and the quiet offline one */
+.ytp-line { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+.ytp-line-ic { flex: none; display: flex; margin-top: 1px; }
+.ytp-line-body { flex: 1 1 auto; min-width: 0; }
+.ytp-line-text { color: var(--t2); overflow-wrap: anywhere; }
+.ytp-line.is-warn .ytp-line-ic { color: var(--warn); }
+.ytp-line.is-err .ytp-line-ic, .ytp-line.is-err .ytp-line-text { color: var(--errt); }
+.ytp-line.is-muted .ytp-line-ic { color: var(--t4); }
+.ytp-line.is-muted .ytp-line-text { color: var(--t3); }
+.ytp-line-links { display: flex; flex-wrap: wrap; align-items: center; column-gap: 2px; margin-left: -8px; }
+.ytp-dot { flex: none; color: var(--t4); font-size: 12px; line-height: 1; }
+.ytp-retry { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.ytp-late { display: flex; align-items: center; gap: 8px; min-height: 32px; font-size: 12.5px; line-height: 1.45; }
+.ytp-late-ic { flex: none; display: flex; color: var(--t4); }
+.ytp-late-body { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; column-gap: 2px; }
+.ytp-late-text { margin-right: 2px; color: var(--t2); }
+.ytp-late-note { color: var(--t4); }
+/* the thumbnail (the video's, else flat blocks) and the four fields */
+.ytp-found { display: flex; gap: 12px; align-items: flex-start; }
+.ytp-thumb {
+  position: relative; width: 128px; height: 72px; flex: none; border-radius: 4px; overflow: hidden;
+  background: #2b313a center / cover no-repeat;
+}
+.ytp-thumb i, .ytp-rthumb i { position: absolute; left: 0; right: 0; bottom: 0; height: 38%; background: #20252c; }
+.ytp-thumb b, .ytp-rthumb b { position: absolute; left: 34%; top: 24%; width: 32%; height: 44%; border-radius: 3px; background: #3a414b; }
+.ytp-thumb.is-blank { background: var(--well); }
+.ytp-fields { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 72px; gap: 8px; }
+.ytp-field { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ytp-field.ytp-wide { grid-column: 1 / -1; }
+.ytdl-panel .ytp-fields .ytp-label { line-height: 14px; }
+.ytp-help { grid-column: 1 / -1; font-size: 12px; line-height: 16px; color: var(--t4); }
+/* where the tags came from; what the clean-up took out, to put back */
+.ytp-source { display: flex; align-items: center; gap: 6px; font-size: 12px; line-height: 16px; color: var(--t4); }
+.ytp-source-ic { display: flex; color: var(--t4); }
+.ytp-source.is-ok .ytp-source-ic { color: var(--ok); }
+.ytp-source.is-warn { color: var(--t2); }
+.ytp-source.is-warn .ytp-source-ic { color: var(--warn); }
+.ytp-cleaned { display: flex; flex-direction: column; gap: 6px; }
+.ytp-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding-left: 20px; }
+.ytdl-panel .ytp-chip, .ytdl-panel .ytp-chip:focus, .ytw .ytp-chip, .ytw .ytp-chip:focus {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px; box-sizing: border-box;
+  border: 1px solid var(--bord); border-radius: 4px; background: transparent; color: var(--t2);
+  font-size: 12px; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.ytdl-panel .ytp-chip:hover, .ytw .ytp-chip:hover { border-color: var(--t4); color: var(--t1); }
+.ytp-chip-ic { display: flex; color: var(--t4); }
+.ytp-div { height: 1px; background: var(--div); }
+/* SAVES TO: the crumbs with a NEW pill on each folder that will be made,
+   Change at the right; "about _.mp3 · letters…" under them */
+.ytp-saves { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; column-gap: 10px; row-gap: 2px; align-items: center; min-height: 32px; }
+.ytdl-panel .ytp-change { margin-right: -8px; }
+.ytp-saves-path { min-width: 0; font-size: 13px; line-height: 18px; color: var(--t2); }
+.ytp-letters { grid-column: 2 / 3; margin-top: -6px; font-size: 12px; line-height: 16px; color: var(--t4); }
+.ytp-letters .yt-mono { font-size: 11.5px; color: var(--t3); }
+.yt-crumbs { overflow-wrap: anywhere; }
+.yt-sep { margin: 0 5px; color: var(--t4); }
+/* each folder name its own bidi run: a right-to-left name keeps the ›
+   order (the text joins wrap each in an isolate, ytdl-ui.js crumbLine) */
+.yt-crumb, .ytw-tree-h b, .ytw-tree-h span { unicode-bidi: isolate; }
+.yt-crumb.is-trap { color: var(--warn); }
+.dm-tag.yt-new { margin-left: 6px; line-height: 1.4; vertical-align: 1px; }
+/* why Add is off, over the button */
+.ytp-reason { margin-bottom: -6px; font-size: 12px; line-height: 16px; color: var(--t3); text-align: right; }
+.ytp-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ytp-foot .ytp-add { flex: none; }
+
+/* The format menu (opens upward at the card's foot) and an Added row's ⋯:
+   the board's menu colours (there is no house menu) */
+.yt-fmt, .yt-more { position: relative; flex: none; }
+.dm-btn.yt-fmt-btn { position: relative; }
+.yt-fmt.is-open > .dm-btn, .yt-fmt.is-open > .dm-btn:focus { background: var(--btn-h); color: var(--t1); }
+.yt-menu {
+  position: absolute; z-index: 5; box-sizing: border-box; background: #2a2a2e; border: 1px solid #444444; border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .5);
+}
+.yt-fmt-menu { left: 0; width: 280px; max-width: calc(100vw - 32px); padding: 4px 0; }
+.yt-fmt-menu.is-up { bottom: calc(100% + 4px); }
+.yt-fmt-menu.is-down { top: calc(100% + 4px); }
+.yt-menu .yt-fmt-item, .yt-menu .yt-fmt-item:focus {
+  display: flex; align-items: flex-start; gap: 8px; width: 100%; margin: 0; padding: 6px 10px; box-sizing: border-box; border: 0;
+  background: transparent; font-family: inherit; text-align: left; white-space: nowrap; cursor: pointer;
+}
+.yt-menu .yt-fmt-item:hover, .yt-menu .yt-fmt-item:focus-visible, .yt-menu .yt-more-item:hover, .yt-menu .yt-more-item:focus-visible {
+  background: rgba(255, 255, 255, .1); outline: none;
+}
+/* the keyboard's item: the tint and a ring inside it (the panel's orange,
+   the window's white — the tint alone is 1.4:1) */
+.ytdl-panel .yt-menu .yt-fmt-item:focus-visible, .ytdl-panel .yt-menu .yt-more-item:focus-visible { box-shadow: inset 0 0 0 2px #fa832b; }
+.ytw .yt-menu .yt-fmt-item:focus-visible, .ytw .yt-menu .yt-more-item:focus-visible { box-shadow: inset 0 0 0 2px var(--t1); }
+.yt-fmt-check { flex: none; width: 14px; display: flex; margin-top: 3px; color: var(--src); }
+.yt-fmt-text { flex: 1 1 auto; min-width: 0; display: block; }
+.yt-fmt-name { display: block; font-size: 13px; line-height: 19.5px; color: #dddddd; }
+.yt-fmt-help { display: block; font-size: 11.5px; line-height: 16px; color: var(--t4); white-space: normal; }
+.yt-menu .yt-fmt-item:hover .yt-fmt-help, .yt-menu .yt-fmt-item:focus-visible .yt-fmt-help { color: var(--t3); }
+.yt-more { position: absolute; right: 6px; top: 50%; margin-top: -14px; }
+.ytdl-panel .yt-more-btn, .ytdl-panel .yt-more-btn:focus {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 4px;
+  background: transparent; color: var(--t2); cursor: pointer;
+}
+.ytdl-panel .yt-more-btn:hover, .yt-more.is-open .yt-more-btn, .yt-more.is-open .yt-more-btn:focus { background: var(--btn-h); color: var(--t1); }
+.yt-more-menu { right: 0; min-width: 150px; overflow: hidden; }
+.yt-more-menu.is-down { top: calc(100% + 4px); }
+.yt-more-menu.is-up { bottom: calc(100% + 4px); }
+.yt-menu .yt-more-item, .yt-menu .yt-more-item:focus {
+  display: block; width: 100%; margin: 0; padding: 6px 10px; box-sizing: border-box; border: 0; background: transparent;
+  font-family: inherit; font-size: 13px; line-height: 19.5px; color: #dddddd; text-align: left; white-space: nowrap; cursor: pointer;
+}
+
+/* The lists: Adding, Needs a look, Added */
+.ytp-sec { margin-top: 8px; }
+.ytp-sec-h { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; margin-bottom: 6px; }
+.ytp-hint { font-size: 11px; line-height: 1.4; font-style: italic; color: var(--t4); text-align: right; }
+.ytdl-panel .ytp-rows { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.ytp-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: var(--card); border-radius: 4px; }
+.ytp-row.ytp-row-top { align-items: flex-start; }
+.ytp-rthumb {
+  position: relative; width: 64px; height: 36px; flex: none; border-radius: 3px; overflow: hidden;
+  background: #2b313a center / cover no-repeat;
+}
+.ytp-rbody { flex: 1 1 auto; min-width: 0; display: block; }
+.ytp-rtitle { display: block; font-size: 13px; line-height: 18px; font-weight: 600; color: var(--t1); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* a row's folders cut at the start, so the last one stays ("… › Homework"):
+   the box runs right to left, its words (one left-to-right run) overflow
+   at its left */
+.ytp-rcrumbs {
+  display: block; font-size: 12px; line-height: 16px; color: var(--t4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  direction: rtl; text-align: left;
+}
+.ytp-rcrumbs > span { unicode-bidi: isolate; }
+.ytp-rstatus { margin-top: 2px; font-size: 12px; line-height: 16px; color: var(--t3); overflow-wrap: anywhere; }
+.ytp-rstatus .yt-mono { font-size: 11.5px; }
+.ytp-rside { flex: none; width: 132px; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.ytp-rside > .yt-bar { width: 100%; }
+.ytp-rside.ytp-rside-bar { width: 96px; padding-top: 8px; }
+.ytp-rstate { font-size: 12px; line-height: 16px; color: var(--t3); white-space: nowrap; }
+.ytp-look {
+  display: grid; grid-template-columns: 16px minmax(0, 1fr); column-gap: 10px; align-items: start;
+  padding: 8px 10px; background: var(--card); border-radius: 4px;
+}
+.ytp-look.ytp-look-inline { grid-template-columns: 16px minmax(0, 1fr) auto; }
+.ytp-look-ic { display: flex; margin-top: 1px; color: var(--warn); }
+.ytp-look-ic.is-unsure { color: var(--t3); }
+.ytp-look-acts { grid-column: 2 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 8px; }
+.ytp-look-inline .ytp-look-acts { grid-column: auto; align-self: center; margin-top: 0; }
+.ytp-added { position: relative; display: flex; }
+.ytdl-panel .ytp-added-btn, .ytdl-panel .ytp-added-btn:focus {
+  display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; margin: 0; padding: 8px 10px; box-sizing: border-box;
+  border: 0; border-radius: 4px; background: var(--card); font-family: inherit; text-align: left; cursor: pointer;
+}
+.ytdl-panel .ytp-added:hover .ytp-added-btn, .ytdl-panel .ytp-added:focus-within .ytp-added-btn { background: var(--hover); padding-right: 46px; }
+.ytdl-panel .ytp-added.is-missing .ytp-added-btn { background: var(--card); padding-right: 10px; cursor: default; }
+.ytp-added-ic { flex: none; display: flex; color: var(--ok); }
+.ytp-added.is-missing .ytp-added-ic { color: var(--t4); }
+.ytp-added.is-missing .ytp-rtitle { color: var(--t3); }
+.ytp-added-facts { flex: none; font-size: 12px; line-height: 16px; color: var(--t4); white-space: nowrap; }
+/* the ⋯ shows on hover or keyboard focus — always on a touch screen */
+.ytp-added .yt-more { opacity: 0; }
+.ytp-added:hover .yt-more, .ytp-added:focus-within .yt-more, .ytp-added .yt-more.is-open { opacity: 1; }
+@media (hover: none) {
+  .ytp-added .yt-more { opacity: 1; }
+  .ytdl-panel .ytp-added-btn, .ytdl-panel .ytp-added-btn:focus { padding-right: 46px; }
+}
+.ytp-earlier { margin-top: 6px; }
+
+/* The windows: Where new songs land, Choose a folder */
+.ytw-head { padding: 18px 52px 0 20px; }
+.ytw .dmodal-title { margin: 0; }
+.ytw-sub { margin-top: 3px; font-size: 13px; line-height: 1.4; color: var(--t3); }
+.ytw-body { display: grid; gap: 14px; padding: 14px 20px 16px; }
+.ytw-preview { display: flex; gap: 8px; align-items: flex-start; padding: 9px 10px 9px 12px; background: var(--well); border-radius: 6px; }
+.ytw-preview-ic { flex: none; display: flex; margin-top: 1px; }
+.ytw-preview-ic.is-src { color: var(--src); }
+.ytw-preview-ic.is-warn { color: var(--warn); }
+.ytw-preview-text { flex: 1 1 auto; min-width: 0; }
+.ytw-lands { margin-bottom: 1px; font-size: 11.5px; line-height: 1.4; color: var(--t4); }
+.ytw-path { font-size: 13px; line-height: 1.45; color: var(--t1); }
+.ytw-path .dm-tag.yt-new { background: var(--btn); color: var(--t3); }
+.ytw-fix { font-size: 12px; line-height: 1.45; color: var(--t3); }
+.ytw-line { display: flex; gap: 8px; align-items: flex-start; }
+.ytw-line-ic { flex: none; display: flex; margin-top: 1px; }
+.ytw-line.is-warn .ytw-line-ic { color: var(--warn); }
+.ytw-line.is-note .ytw-line-ic { color: var(--t4); }
+.ytw-line-text { flex: 1 1 auto; min-width: 0; font-size: 12.5px; line-height: 1.4; color: var(--t2); }
+.ytw-line.is-note .ytw-line-text { color: var(--t3); }
+.ytw-line-links { margin: 2px 0 0 -8px; }
+.ytw-group { display: grid; gap: 6px; }
+.ytw-libs { display: flex; flex-wrap: wrap; gap: 0 4px; margin: 0 -8px; }
+.ytw-lays { display: grid; gap: 0; margin: 0 -8px; }
+.ytw .ytw-opt { display: flex; align-items: center; gap: 10px; min-height: 32px; margin: 0; padding: 0 8px; box-sizing: border-box; border-radius: 4px; cursor: pointer; }
+.ytw .ytw-opt:hover { background: var(--hover); }
+.ytw .ytw-opt.is-off { opacity: .45; cursor: default; }
+.ytw .ytw-opt.is-off:hover { background: transparent; }
+/* the native radio, back from Materialize (it sits after its words in
+   the markup so Materialize's "+ span" circle never draws) */
+.ytw .ytw-opt .ytw-radio {
+  order: -1; position: static; flex: none; width: 16px; height: 16px; margin: 0; opacity: 1; pointer-events: auto;
+  accent-color: var(--src); cursor: pointer;
+}
+.ytw .ytw-opt.is-off .ytw-radio { cursor: default; }
+.ytw-opt-label { font-size: 12.5px; line-height: 1.35; white-space: nowrap; color: var(--t2); }
+.ytw-opt.is-on .ytw-opt-label { font-weight: 600; color: var(--t1); }
+.ytw-custom { display: grid; gap: 6px; margin-top: 2px; padding-left: 26px; }
+.ytw .dm-input.ytw-custom-input, .ytw .dm-input.ytw-custom-input[type="text"] {
+  display: block; width: 100%; height: 32px; padding: 0 10px; border-color: var(--bord); color: var(--t1);
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.ytw .dm-input.ytw-custom-input:focus { border-color: var(--src); }
+.ytw .dm-input.ytw-custom-input.is-err { border-color: var(--err); }
+/* the window's ring would draw round the field the teal border marks */
+.dmodal-shadow .dmodal.ytw .ytw-custom-input:focus-visible { outline: none; }
+.ytw-err { display: flex; gap: 6px; align-items: flex-start; font-size: 11.5px; line-height: 1.4; color: var(--errt); }
+.ytw-err-ic { flex: none; display: flex; margin-top: 2px; }
+.ytw-vars { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ytw .ytw-var, .ytw .ytw-var:focus {
+  display: inline-flex; align-items: center; gap: 5px; height: 32px; padding: 0 10px; box-sizing: border-box; border: 0; border-radius: 4px;
+  background: var(--btn); color: var(--t2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; cursor: pointer;
+}
+.ytw .ytw-var:hover { background: var(--btn-h); color: var(--t1); }
+.ytw-var-ic { display: flex; color: var(--src); }
+.ytw-foot { display: flex; align-items: center; gap: 8px; padding-top: 12px; border-top: 1px solid var(--div); }
+.ytw-foot.ytw-foot-end { justify-content: flex-end; }
+.ytw-kept { margin-right: auto; font-size: 11px; line-height: 1.4; color: var(--t4); }
+.ytw-tree { max-height: 308px; overflow-y: auto; background: var(--well); border: 1px solid var(--bord); border-radius: 4px; }
+.ytw-tree-h {
+  display: flex; flex-wrap: wrap; align-items: center; min-height: 32px; padding: 0 10px; box-sizing: border-box;
+  border-bottom: 1px solid var(--div); font-size: 11.5px; line-height: 1.4; color: var(--t3); overflow-wrap: anywhere;
+}
+.ytw-tree-h b { font-weight: 600; color: var(--t2); }
+.ytw-tree-h i { margin: 0 5px; font-style: normal; color: var(--t4); }
+.ytw .ytw-node, .ytw .ytw-node:focus {
+  display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 6px 10px; margin: 0; box-sizing: border-box;
+  border: 0; border-radius: 0; background: transparent; color: var(--t2); font-family: inherit; font-size: 12px; line-height: 1.3;
+  text-align: left; cursor: pointer;
+}
+.ytw .ytw-node:hover { background: var(--hover); }
+/* inside the tree's scroll box: the ring drawn inside the row (the house
+   destination tree's) */
+.dmodal-shadow .dmodal .ytw-node:focus-visible { outline-offset: -2px; }
+.ytw-node-ic { flex: none; display: flex; color: var(--t3); }
+.ytw-node-name { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.ytw-node-go { flex: none; display: flex; color: var(--t4); }
+.ytw-folder { display: block; flex: none; }
+.ytw-tree-empty { padding: 8px 10px; font-size: 11.5px; line-height: 1.4; font-style: italic; color: var(--t4); }
+.ytw-tree-wait { padding: 12px 10px; }
+.ytw-line.is-err .ytw-line-ic, .ytw-line.is-err .ytw-line-text { color: var(--errt); }
+
+/* The explorer's window, "Add from YouTube" for the folder on screen
+   (WebWindow): the link, the found card's 96 × 54 thumbnail and 2 × 2
+   fields, then INTO — the folder, or the subfolder radios in its place —
+   and the format and Add here at its foot */
+.yth-body { display: flex; flex-direction: column; gap: 12px; padding: 14px 20px 14px; }
+.yth-body:last-child { padding-bottom: 16px; }
+.yth-linkbox { display: flex; flex-direction: column; gap: 8px; }
+.yth-link { position: relative; }
+.ytw .dm-input.yth-input, .ytw .dm-input.yth-input[type="text"] {
+  display: block; flex: none; width: 100%; height: 28px; padding: 0 8px; border-color: var(--bord); color: var(--t2); font-size: 12.5px;
+}
+.ytw .dm-input.yth-link-input, .ytw .dm-input.yth-link-input[type="text"] { height: 32px; padding: 0 10px; color: var(--t1); font-size: 13px; }
+.ytw .dm-input.yth-link-input.has-clear { padding-right: 38px; }
+.ytw .dm-input.yth-input::placeholder { color: var(--t4); opacity: 1; }
+.ytw .dm-input.yth-input:focus { border-color: var(--src); color: var(--t1); }
+.ytw .dm-input.yth-input.is-warn { border-color: var(--warn); }
+/* the teal border marks the focused field; the window's ring would too */
+.dmodal-shadow .dmodal.ytw .yth-input:focus-visible { outline: none; }
+.ytw .yth-clear, .ytw .yth-clear:focus {
+  position: absolute; right: 2px; top: 2px; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  padding: 0; border: 0; border-radius: 4px; background: transparent; color: var(--t4); cursor: pointer;
+}
+.ytw .yth-clear:hover { background: var(--btn); color: var(--t1); }
+.yth-wait { display: flex; flex-direction: column; gap: 8px; }
+.yth-found { display: flex; gap: 12px; align-items: flex-start; }
+.ytp-thumb.yth-thumb { width: 96px; height: 54px; }
+.yth-fields { flex: 1 1 auto; min-width: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.yth-field { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.ytw .yth-field .ytw-label { line-height: 14px; }
+.yth-into { display: grid; gap: 8px; padding: 10px 20px 16px; border-top: 1px solid var(--div); }
+.yth-into-row { display: flex; align-items: center; gap: 10px; min-height: 32px; }
+.yth-into-row .ytw-label { flex: none; }
+.yth-crumbs { flex: 1 1 auto; min-width: 0; font-size: 13px; line-height: 18px; color: var(--t2); }
+.ytw .yth-sort { flex: none; margin-right: -8px; }
+.yth-path { font-size: 13px; line-height: 1.45; color: var(--t2); }
+.yth-path .dm-tag.yt-new { background: var(--btn); color: var(--t3); }
+.yth-letters { font-size: 12px; line-height: 16px; color: var(--t4); }
+.yth-letters .yt-mono { font-size: 11.5px; color: var(--t3); }
+.yth-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.yth-foot .yth-add { flex: none; }
+
+/* The explorer bar's Add from YouTube here: a real button among the bar's
+   bare icons, in their look (white, #999 under the pointer) */
+#directory_bar > .ytdl-bar-btn {
+  flex-shrink: 0; width: 32px; height: 32px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 4px; cursor: pointer;
+}
+#directory_bar > .ytdl-bar-btn:focus { background-color: transparent; }
+#directory_bar > .ytdl-bar-btn:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+#directory_bar > .ytdl-bar-btn svg { display: block; }
+#directory_bar > .ytdl-bar-btn svg path { fill: #fff; transition: fill .15s; }
+#directory_bar > .ytdl-bar-btn:hover svg path { fill: #999; }
+
+/* The strip in the slot under the bar while an add into this folder runs:
+   teal words, a turning arc, "See all" — no box, no left border */
+.ytdl-strip {
+  display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 14px 0 12px; box-sizing: border-box;
+  font-size: 13px; line-height: 18px; color: #4fb8a8;
+}
+.ytdl-strip-ic { flex: none; display: flex; }
+.ytdl-strip-ic svg { display: block; animation: ytdl-turn 1s linear infinite; }
+@keyframes ytdl-turn { to { transform: rotate(360deg); } }
+.ytdl-strip-text { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ytdl-strip-dot { flex: none; color: #a0a7b3; }
+.ytdl-strip .ytdl-strip-all, .ytdl-strip .ytdl-strip-all:focus {
+  -webkit-appearance: none; appearance: none; flex: none; margin: 0; padding: 0; border: 0; background: transparent;
+  color: #4fb8a8; font-family: inherit; font-size: 13px; font-weight: 600; line-height: 18px;
+  text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.ytdl-strip .ytdl-strip-all:hover { color: #5ec9b9; }
+.ytdl-strip .ytdl-strip-all:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+
+/* The row an add just put in the folder on screen: a 2 px teal ring over
+   it (the row's !important background and borders stay), fading after
+   2 s (m.js ytdlRing) */
+#filelist .collection-item.ytdl-new-row::after {
+  content: ''; position: absolute; inset: 0; z-index: 2; box-shadow: inset 0 0 0 2px #4fb8a8; pointer-events: none;
+  transition: opacity .6s ease;
+}
+#filelist .collection-item.ytdl-new-row.is-fading::after { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .yt-bar i { animation: none; margin-left: 32%; }
+  .ytdl-strip-ic svg { animation: none; }
+  #filelist .collection-item.ytdl-new-row::after { transition: none; }
+}
+
+/* Below 600 px the panel fills the File Explorer tab and a window is the
+   house sheet: 40 px controls (the boards'), the close 44 */
+@media (max-width: 600px) {
+  .ytdl-panel { padding: 0 12px 16px; }
+  .ytdl-panel .ytp-input { height: 40px; }
+  .ytdl-panel .ytp-link-input.has-clear { padding-right: 44px; }
+  .ytdl-panel .ytp-clear, .ytdl-panel .ytp-clear:focus { right: 0; top: 0; width: 40px; height: 40px; }
+  .ytp-card { padding: 12px; gap: 10px; }
+  .ytp-thumb { width: 96px; height: 54px; }
+  /* one field a row, Title beside the thumbnail (WebNarrow), as the
+     explorer's window below */
+  .ytp-found { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px 12px; align-items: end; }
+  .ytp-fields { display: contents; }
+  .ytp-field, .ytp-help { grid-column: 1 / -1; }
+  .ytp-field.ytp-f-title { grid-column: 2; }
+  .ytp-field.ytp-year { width: 120px; }
+  .ytp-saves { grid-template-columns: minmax(0, 1fr) auto; }
+  .ytp-saves-label { grid-column: 1 / -1; }
+  .ytp-letters { grid-column: 1 / -1; margin-top: 0; }
+  .ytdl-panel .dm-btn, .ytdl-panel .dm-link, .ytdl-panel .dm-link:focus, .ytdl-panel .ytp-chip, .ytdl-panel .ytp-chip:focus,
+  .ytw .dm-btn, .ytw .dm-link, .ytw .dm-link:focus, .ytw .ytp-chip, .ytw .ytp-chip:focus { height: 40px; }
+  .yt-menu .yt-fmt-item, .yt-menu .yt-fmt-item:focus, .yt-menu .yt-more-item, .yt-menu .yt-more-item:focus { min-height: 40px; align-items: center; }
+  .yt-menu .yt-more-item, .yt-menu .yt-more-item:focus { display: flex; }
+  .yt-fmt-check { margin-top: 0; }
+  .ytp-foot .ytp-add { flex: 1 1 0; }
+  .ytdl-panel .yt-more-btn, .ytdl-panel .yt-more-btn:focus { width: 40px; height: 40px; }
+  .yt-more { margin-top: -20px; }
+  .ytdl-panel .ytp-added-btn, .ytdl-panel .ytp-added-btn:focus,
+  .ytdl-panel .ytp-added:hover .ytp-added-btn, .ytdl-panel .ytp-added:focus-within .ytp-added-btn { padding-right: 58px; }
+  .ytw-head { padding: 12px 52px 0 16px; }
+  .ytw-body { padding: 12px 16px 16px; }
+  .ytw .ytw-opt { min-height: 44px; }
+  .ytw .ytw-var, .ytw .ytw-var:focus, .ytw .ytw-node, .ytw .ytw-node:focus { min-height: 40px; height: auto; }
+  .ytw .dm-input.ytw-custom-input, .ytw .dm-input.ytw-custom-input[type="text"] { height: 40px; }
+  .ytw-foot > .dm-btn { flex: 1 1 0; }
+  .ytw-kept { flex-basis: 100%; }
+  .ytw-foot { flex-wrap: wrap; }
+  /* the explorer's window: one field a row, Title beside the thumbnail;
+     INTO above its folder */
+  .yth-body { gap: 10px; padding: 10px 16px 12px; }
+  .ytw .dm-input.yth-input, .ytw .dm-input.yth-input[type="text"], .ytw .dm-input.yth-link-input, .ytw .dm-input.yth-link-input[type="text"] {
+    height: 40px; padding: 0 10px; font-size: 13px;
+  }
+  .ytw .dm-input.yth-link-input.has-clear { padding-right: 44px; }
+  .ytw .yth-clear, .ytw .yth-clear:focus { right: 0; top: 0; width: 40px; height: 40px; }
+  .yth-found { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 10px 12px; align-items: end; }
+  .yth-fields { display: contents; }
+  .yth-field:not(.yth-f-title) { grid-column: 1 / -1; }
+  .yth-field.yth-f-year { width: 120px; }
+  .yth-into { padding: 10px 16px 12px; }
+  .yth-into-row { flex-wrap: wrap; gap: 8px; min-height: 40px; }
+  .yth-into-row .ytw-label { flex-basis: 100%; }
+  .yth-foot .yth-add { flex: 1 1 0; }
+  .ytdl-strip { min-height: 40px; }
+  .ytdl-strip .ytdl-strip-all, .ytdl-strip .ytdl-strip-all:focus { min-height: 40px; margin: 0 -8px; padding: 0 8px; }
 }
 
 /* ── The Discover page (m.js discoveryPanel) ─────────────────────────────

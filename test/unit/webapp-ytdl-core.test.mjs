@@ -1513,6 +1513,10 @@ describe('failures: the add', () => {
     [Object.assign(new Error('x'), { timedOut: true }), ['startUnsure', null]],
     [unreadable(), ['startUnsure', null]],
     [{ status: 0 }, ['startUnsure', null]],
+    // A proxy's gateway timeout: the add reached mStream, or may have (a
+    // deliberate difference from the phone, which quoted the status).
+    [bare(504), ['startUnsure', null]],
+    [said(504, 'Gateway Timeout'), ['startUnsure', null]],
     // Not a request failure at all: nothing to quote.
     [new RangeError('bug'), ['other', null]],
     [null, ['other', null]],
@@ -1736,7 +1740,10 @@ describe('failures in words, and their ways on', () => {
       [entry('live', 'x'), { key: 'ytdl.reason.live' }],
       [entry('unavailable', 'x'), { key: 'ytdl.reason.unavailable' }],
       [entry(null, 'Sign in to confirm you’re not a bot.'), { key: 'ytdl.row.failedSaid', params: { text: 'Sign in to confirm you’re not a bot.' } }],
-      [entry(null, null), { key: 'ytdl.row.failedUnknown' }],
+      [entry(null, null), { key: 'ytdl.row.failedServer' }],
+      // no words of its own: plain, never the phone's older-server hedge
+      // (its limits, its "common causes")
+      [entry(null, 'HTTP 502'), { key: 'ytdl.row.failedServer' }],
     ];
     for (const [f, want] of rows) {
       for (const surface of ['panel', 'window', 'row', 'lookup']) { assert.deepEqual(Y.failureLabel(f, { surface }), want, `${f.problem} ${surface}`); }
