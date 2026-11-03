@@ -188,6 +188,18 @@ describe('mood filters: the panel', () => {
     assert.equal(S.moodFilterBody('autodj'), null, "the browse lists' filters are untouched");
   });
 
+  test("Instant Mix's form: Auto DJ's (no handlers), with no Clear of its own (clear: false) and no Sort; its filter the page's", () => {
+    const { S } = makeSandbox();
+    S.MOODS.filters.mix = { valence: 'happy', tags: ['acoustic'], level: 'strict' };
+    const html = S.moodPanelHtml('mix', S.MOODS.filters.mix, { clear: false });
+    assert.doesNotMatch(html, /onclick=|data-dp=/, 'its panel listens on the row');
+    assert.doesNotMatch(html, /mood-clear/, "the panel's own Clear covers every row");
+    assert.doesNotMatch(html, /data-mood-sort/);
+    assert.deepEqual(pressed(html), ['moods.happy', 'moods.acoustic', 'moods.strict']);
+    assert.match(S.moodPanelHtml('mix'), /class="mood-clear"/, 'Clear is left out only when asked');
+    assert.deepEqual(S.moodFilterBody('mix'), { valence: 'happy', tags: ['acoustic'], threshold: 0.7 });
+  });
+
   test("Discover's buttons carry data-dp actions, not handlers", () => {
     const { S } = makeSandbox();
     const html = S.moodPanelHtml('discover');

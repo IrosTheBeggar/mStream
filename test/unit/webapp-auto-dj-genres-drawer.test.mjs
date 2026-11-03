@@ -130,7 +130,7 @@ const MIXED_SORTED = ['Ambient', 'Hip Hop', 'house', 'jazz', 'Rock'];
 const numbered = (n) => Array.from({ length: n }, (_, i) => `G${String(i).padStart(3, '0')}`);
 
 const PANEL_FNS = ['escapeHtml', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'autoDjSeedArtUrl', 'autoDjSecToMin',
-  'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
+  'ratingOptionsHtml', 'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
   'autoDjApplySonicDim', 'autoDjRenderTiles', 'autoDjRenderToggle', 'autoDjPanel'];
 // Every function of the Genres drawer and of the drawers' shell.
 const DRAWER_FNS = [...SRC.matchAll(/^(?:async )?function ((?:autoDjGenres|onAutoDjGenres|autoDjDrawer)\w*)\(/gm)].map((m) => m[1]);
