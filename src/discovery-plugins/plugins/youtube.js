@@ -480,12 +480,12 @@ async function run(ctx) {
   if (warning) { winston.warn(`youtube: yt-dlp exited unhappily but left a file (${warning})`); }
 
   try {
-    // 3. Tags from the recommendation (YouTube's own are unreliable), the
-    // cover where yt-dlp could not embed it.
+    // 3. Tags from the recommendation (YouTube's own are unreliable), then
+    // the cover where yt-dlp could not embed it (that order keeps an Ogg
+    // cover: writeTagsAndCover).
     ctx.progress(0.93, 'tagging');
     const meta = { title: rec.title, artist: rec.artist, album: rec.album, year: rec.year };
-    await ytdlp.embedThumbnailIfMissing(filePath, { codec: settings.codec, thumbnailUrl: chosen.thumbnail, ffmpegPath: ffmpegBin(), log: 'youtube' });
-    await ytdlp.writeTags(filePath, { codec: settings.codec, meta, source: SOURCE, ffmpegPath: ffmpegBin(), log: 'youtube' });
+    await ytdlp.writeTagsAndCover(filePath, { codec: settings.codec, meta, source: SOURCE, thumbnailUrl: chosen.thumbnail, ffmpegPath: ffmpegBin(), log: 'youtube' });
 
     // 4. Where it goes: the destination's layout from those tags — and the
     // recommendation's album credit (`albumArtist`) for {{ALBUMARTIST}},

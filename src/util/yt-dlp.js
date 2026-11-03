@@ -487,3 +487,15 @@ export async function writeTags(filePath, { codec, meta = {}, source = 'ytdl', f
     return false;
   }
 }
+
+// The tags, then the cover where yt-dlp could not embed one — in that
+// order. ffmpeg reads an Ogg cover (OGG / Opus: a METADATA_BLOCK_PICTURE
+// comment) back as a picture stream, and writeTags' stream copy into Ogg
+// keeps only the audio: a cover embedded first was silently dropped by the
+// tag pass, so the song came in with no album art. embedThumbnailIfMissing
+// carries the file's tags through its own pass. MP3 / M4A covers (embedded
+// by yt-dlp) and FLAC's attached picture survive writeTags either way.
+export async function writeTagsAndCover(filePath, { codec, meta = {}, source = 'ytdl', thumbnailUrl, ffmpegPath, log = 'yt-dlp' } = {}) {
+  await writeTags(filePath, { codec, meta, source, ffmpegPath, log });
+  await embedThumbnailIfMissing(filePath, { codec, thumbnailUrl, ffmpegPath, log });
+}
