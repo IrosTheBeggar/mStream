@@ -75,6 +75,23 @@ describe('federation route allowlist', () => {
       assert.equal(isFederationPathAllowed(req(m, p)), false, `${m} ${p} should be refused`);
     }
   });
+
+  // The music map is local-library only (docs/music-map-plan.md §3.8.1):
+  // its routes never join the allowlist, and the handlers refuse a key again
+  // behind the wall. Pinned so a later edit to ALLOWED_EXACT cannot open them.
+  test('refuses every music-map route and its admin rebuild', () => {
+    for (const [m, p] of [
+      ['GET', '/api/v1/discovery/map'],
+      ['GET', '/api/v1/discovery/map/overlay'],
+      ['POST', '/api/v1/discovery/map/tracks'],
+      ['POST', '/api/v1/discovery/map/search'],
+      ['POST', '/api/v1/discovery/map/region'],
+      ['POST', '/api/v1/discovery/map/neighbours'],
+      ['POST', '/api/v1/admin/discovery/map/rebuild'],
+    ]) {
+      assert.equal(isFederationPathAllowed(req(m, p)), false, `${m} ${p} should be refused`);
+    }
+  });
 });
 
 describe('federation disabled gate', () => {

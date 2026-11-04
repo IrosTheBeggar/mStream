@@ -222,6 +222,13 @@ const scanOptions = Joi.object({
   // runBudget and re-enqueues while a backlog remains — this just bounds
   // one batch. Mirrors analyzeBpmPerRun.
   discoveryPerRun: Joi.number().integer().min(1).max(10000).default(50),
+  // The music map (src/db/map-layout.mjs): a layout of the analysed songs for
+  // /api/v1/discovery/map. Needs collectDiscoveryData; false stops the pass and
+  // answers the map routes 403 (the rollback lever — data is kept).
+  musicMap: Joi.boolean().default(true),
+  // Cap on the songs one map fit holds in memory (the rest are placed by kNN).
+  // Unset = derived from the machine's memory (map-lib.js mapFitBudget).
+  mapMaxFitTracks: Joi.number().integer().min(1000).max(20000).optional(),
   // Which ONNX Runtime build the embedding worker uses (src/db/embedding-
   // runtime.js). 'auto': the native onnxruntime-node addon where it loads,
   // else the WebAssembly build shipped with mStream; standalone bundles

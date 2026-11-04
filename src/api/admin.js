@@ -555,6 +555,20 @@ export function setup(mstream) {
     res.json({});
   });
 
+  // Rebuild the music map now (src/db/map-layout.mjs). Clears the pass's
+  // failure latch first — this is the operator's retry after it stopped on
+  // repeated failures — then queues a forced rebuild from the current
+  // vectors (one with none yet does nothing). No body; no UI in v1. 403 with
+  // the discovery routes' message while collection or the map is off.
+  mstream.post("/api/v1/admin/discovery/map/rebuild", (req, res) => {
+    const opts = config.program.scanOptions;
+    if (opts.collectDiscoveryData !== true || opts.musicMap === false || !discoveryDb.openDiscoveryDbIfExists()) {
+      throw new WebError('Discovery is disabled', 403);
+    }
+    dbQueue.requestMapRebuild();
+    res.json({});
+  });
+
   // Tracks embedded per discovery pass (bounds how long one batch holds the
   // serial task slot; the worker also caps wall-clock and re-enqueues a
   // backlog). Takes effect on the next pass.

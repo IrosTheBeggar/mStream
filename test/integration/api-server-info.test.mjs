@@ -135,6 +135,8 @@ describe('layered /api/ server info', () => {
     assert.equal(j.features.discovery, false);
     assert.equal(j.features.discoveryP2p, false);
     assert.equal(j.features.flowOrder, 1, 'flow ordering is a version fact, on with discovery off');
+    assert.equal(j.features.discoveryMap, 1,
+      'the music map is a version fact: 1 unless scanOptions.musicMap is off (clients also need discovery)');
     assert.ok('transcode' in j.features, 'transcode capability is a server fact');
     assert.equal(typeof j.features.supportedAudioFiles, 'object');
     assert.equal(j.user.username, 'pleb');
@@ -234,6 +236,7 @@ describe('layered /api/ server info', () => {
       'the velvet-only allowYoutubeDownload field left with the velvet UI');
     assert.equal(discoveryPath, ping.discovery,
       'ping still carries discoveryPath, identical to discovery as always');
+    assert.equal(ping.discoveryMap, 1, 'the music map generation rides on ping too');
     assert.deepEqual(pingRest, { ...userHalf, ...capsHalf },
       'ping is exactly the two shared builders flattened — any drift is a bug');
   });

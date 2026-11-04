@@ -92,8 +92,9 @@ function toManifestEntry(row) {
 }
 
 // If-None-Match may carry several entity tags, each optionally weak
-// (`W/"…"`). Ours is strong; match on the tag value alone.
-function matchesEtag(header, revision) {
+// (`W/"…"`). Ours is strong; match on the tag value alone. Exported for the
+// music map's GET (api/discovery-map.js), which answers 304 the same way.
+export function matchesEtag(header, revision) {
   if (!header) { return false; }
   return header.split(',').some((tag) =>
     tag.trim().replace(/^W\//, '').replace(/^"|"$/g, '') === revision);

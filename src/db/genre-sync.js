@@ -38,6 +38,11 @@ import winston from 'winston';
 import * as config from '../state/config.js';
 import * as db from './manager.js';
 import * as discoveryDb from './discovery-db.js';
+import { tracksByCanonicalHash } from './track-hashes.js';
+
+// Moved to track-hashes.js (the map worker needs it without this module's
+// singletons); re-exported so mood-sync.js and older importers keep working.
+export { tracksByCanonicalHash };
 
 // Parse one genre_tags JSON payload into [{ name, parent }] entries —
 // both hierarchy levels, deduped, junk-hardened (the format is also
@@ -67,20 +72,6 @@ export function parseGenreTags(json) {
     }
   }
   return [...out.values()];
-}
-
-// canonical hash → [track ids]: duplicate files share one canonical hash
-// and all get the same data. One pass instead of per-row COALESCE lookups
-// (which can't use the hash indexes). Shared with mood-sync.js.
-export function tracksByCanonicalHash(mainDb) {
-  const tracksByHash = new Map();
-  for (const t of mainDb.prepare(
-    'SELECT id, COALESCE(audio_hash, file_hash) AS h FROM tracks WHERE audio_hash IS NOT NULL OR file_hash IS NOT NULL'
-  ).all()) {
-    if (!tracksByHash.has(t.h)) { tracksByHash.set(t.h, []); }
-    tracksByHash.get(t.h).push(t.id);
-  }
-  return tracksByHash;
 }
 
 /**

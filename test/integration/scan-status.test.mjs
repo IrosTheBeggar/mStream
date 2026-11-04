@@ -82,7 +82,7 @@ describe('GET /api/v1/scan/status', () => {
     assert.equal(r.status, 401);
   });
 
-  test('reports the queue snapshot and all six passes', async () => {
+  test('reports the queue snapshot and all seven passes', async () => {
     const body = await getStatus(adminJwt);
 
     assert.deepEqual(body.queue, { scanning: false, activeTask: null, queued: [] },
@@ -91,7 +91,7 @@ describe('GET /api/v1/scan/status', () => {
 
     assert.deepEqual(
       body.enrichment.map((p) => p.pass),
-      ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid']);
+      ['waveform', 'albumart', 'lyrics', 'discovery', 'map', 'audioanalysis', 'acoustid']);
     for (const p of body.enrichment) {
       for (const key of ['enabled', 'disabledReason', 'state', 'progress', 'lastRun', 'coverage']) {
         assert.ok(key in p, `'${p.pass}' entry must carry '${key}'`);
@@ -101,9 +101,10 @@ describe('GET /api/v1/scan/status', () => {
 
   test('config-disabled passes surface state=disabled with reason=config', async () => {
     const body = await getStatus(adminJwt);
-    // The server helper forces autoAlbumArt + collectDiscoveryData off;
-    // lyrics backfill, analyzeBpm and analyzeAcoustid default off.
-    for (const kind of ['albumart', 'lyrics', 'audioanalysis', 'discovery', 'acoustid']) {
+    // The server helper forces autoAlbumArt + collectDiscoveryData off (and
+    // the music map with it); lyrics backfill, analyzeBpm and
+    // analyzeAcoustid default off.
+    for (const kind of ['albumart', 'lyrics', 'audioanalysis', 'discovery', 'map', 'acoustid']) {
       const p = body.enrichment.find((e) => e.pass === kind);
       assert.equal(p.enabled, false, `${kind} should be disabled in the test config`);
       assert.equal(p.disabledReason, 'config');
@@ -147,6 +148,8 @@ describe('GET /api/v1/scan/status', () => {
 
     // Discovery has never been enabled → no discovery.db → no coverage.
     assert.equal(byPass.discovery.coverage, null);
+    // The music map has no coverage builder: a layout is all or nothing.
+    assert.equal(byPass.map.coverage, null);
   });
 
   test('library-scoped coverage is filtered by the caller\'s access', async () => {

@@ -59,6 +59,7 @@ export async function maybeRunWorker(argv = process.argv) {
     case 'audioanalysis':  await import('../db/audio-analysis-backfill.mjs'); break;
     case 'acoustid':       await import('../db/acoustid-backfill.mjs'); break;
     case 'discovery':      await import('../db/discovery-backfill.mjs'); break;
+    case 'map':            await import('../db/map-layout.mjs'); break;
     case 'backup':         await import('../backup/worker.mjs'); break;
     case 'image-compress': await import('../db/image-compress-script.js'); break;
     case 'discovery-export': await import('../db/discovery-export-script.mjs'); break;

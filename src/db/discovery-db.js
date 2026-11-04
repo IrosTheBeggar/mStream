@@ -36,6 +36,11 @@ import { resolveJournalMode, ensureDbFile, setJournalMode } from './journal-mode
 // Independent version line — this is NOT mstream.db's SCHEMA_VERSION.
 export const DISCOVERY_SCHEMA_VERSION = 4;
 
+// The music map's tables live BESIDE that version line (ensureMapTables
+// below), on a line of their own: a change of their shape bumps this, and
+// "migrating" them is dropping them for the next map pass to rebuild.
+export const MAP_SCHEMA = 1;
+
 // Contract constants for the embedding column. Declared here (and copied
 // into discovery_meta + every export snapshot) so a consumer never has to
 // guess how to read the BLOBs. The model id / version / dimension are NOT
@@ -180,6 +185,86 @@ const MIGRATIONS = [
   { version: 4, sql: SCHEMA_V4 },
 ];
 
+// The music map (src/db/map-layout.mjs writes, src/api/discovery-map.js
+// reads). Library-specific, rebuildable, never exported — the P2P export is
+// an allowlist (discovery-export.js). Created by ensureMapTables(), NOT by
+// a numbered migration: a V5 would make every older build turn discovery
+// off entirely (runMigrations refuses a newer file) — Discover, sonic Auto
+// DJ, the mood and genre syncs — to protect a cache the next pass rebuilds.
+// Older builds ignore unknown tables, so a rollback costs only the map.
+//
+// Foreign keys are never enabled on this file: every cleanup is an explicit
+// DELETE, and a layout always goes in this order — its map_points, its
+// map_regions, then its map_layouts row.
+//
+// discovery_meta keys of the map: map_schema and map_epoch (ensureMapTables),
+// map_version (bumped in the same transaction as any write to the serving
+// layout's rows here — part of the map routes' rev), map_recent_after (the
+// recent baseline: set once, kept across map-table resets, refits and model
+// changes), map_next_key (the counter behind new 't:'/'c:' region keys).
+// Map writes never touch row_seq or index_epoch: those drive the P2P
+// auto-publish and the similarity-index rebuild.
+const MAP_TABLES_SQL = `
+  CREATE TABLE IF NOT EXISTS map_layouts (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    state         TEXT    NOT NULL CHECK (state IN ('building','ready')),
+    model_id      TEXT    NOT NULL,           -- the layout's identity is (model_id, layoutVersion, dim)
+    model_version TEXT,                       -- informational: discovery_meta.embedding_model_version at rebuild
+    method        TEXT    NOT NULL CHECK (method IN ('umap','pca2')),
+    params        TEXT    NOT NULL,           -- JSON {layoutVersion, nNeighbors, minDist, seed, epochs, learningRate, warmFrom, nFitMax, runtime}
+    dim           INTEGER NOT NULL,           -- embedding dimension, read from the blobs (never from the model registry)
+    k             INTEGER NOT NULL,           -- PCA components kept: min(50, dim, nSample − 1); 0 for a one-song library
+    pca_mean      BLOB    NOT NULL,           -- dim × f32le
+    pca_axes      BLOB    NOT NULL,           -- k × dim × f32le, row-major, sign-normalised
+    affine        TEXT    NOT NULL,           -- JSON [a,b,c,d,e,f]: map = (a·rx + b·ry + c, d·rx + e·ry + f)
+    frame         INTEGER NOT NULL,           -- bumps when the affine is re-fitted (clients reset their view)
+    aspect        REAL    NOT NULL,           -- width / height of the fitted box
+    land_levels   TEXT    NOT NULL,           -- JSON {sigma, coast, mid, high}
+    n_fit         INTEGER NOT NULL,           -- points in the UMAP fit set (landmarks when n > nFitMax)
+    n_points      INTEGER NOT NULL,           -- hashes placed
+    dirty         INTEGER NOT NULL DEFAULT 0, -- 1 while a place run's point chunks are ahead of its region update
+    created_at    INTEGER NOT NULL,           -- epoch ms
+    fitted_at     INTEGER NOT NULL,           -- epoch ms of the last rebuild or warm refit in this lineage
+    placed_at     INTEGER                     -- epoch ms of the last placement batch
+  );
+  -- A rowid table: rows are ~320 B (two 32-char hashes, pca at k × 4 = 200 B, scalars),
+  -- past SQLite's ~1/20-page guidance for WITHOUT ROWID tables.
+  CREATE TABLE IF NOT EXISTS map_points (
+    id         INTEGER PRIMARY KEY,
+    layout_id  INTEGER NOT NULL,
+    audio_hash TEXT    NOT NULL,              -- canonical hash (= COALESCE(audio_hash, file_hash))
+    dot        TEXT    NOT NULL,              -- opaque near-duplicate group label; re-keys never touch it
+    x          REAL    NOT NULL,              -- the DOT's position: every member of a group carries the group's values
+    y          REAL    NOT NULL,              -- map units; [0,1] after fitBox, at most 0.02 outside after a warm refit
+    placed     TEXT    NOT NULL CHECK (placed IN ('fit','knn','pca2')),   -- 'fit' = in the UMAP fit set (a landmark)
+    region0    INTEGER NOT NULL,              -- per-layout province id 0..254 (the dot's)
+    region1    INTEGER NOT NULL,              -- per-layout town id 0..254 (the dot's)
+    central0   REAL    NOT NULL,              -- −‖z − mean(province)‖ in PCA space (higher = more central; the dot's)
+    central1   REAL    NOT NULL,              -- the same against the town
+    pca        BLOB    NOT NULL,              -- k × f32le, THIS member's own projection (saves re-reading 1280-d vectors)
+    UNIQUE (layout_id, audio_hash)
+  );
+  CREATE INDEX IF NOT EXISTS idx_map_points_hash ON map_points(audio_hash);   -- hash-transition re-keys
+  CREATE TABLE IF NOT EXISTS map_regions (
+    layout_id INTEGER NOT NULL,
+    level     INTEGER NOT NULL CHECK (level IN (0,1)),
+    id        INTEGER NOT NULL CHECK (id BETWEEN 0 AND 254),               -- fits the payload's u8 (255 = none)
+    key       TEXT    NOT NULL,              -- stable across refits: 'g:<Genre>' | 't:<n>' | 'c:<n>'
+    parent    INTEGER,                       -- province id, for a town
+    label     TEXT,                          -- display name; NULL when no member has a style
+    style     TEXT,                          -- raw 'Genre---Style' (town) or the genre (province)
+    hue       INTEGER NOT NULL,              -- 0..359; towns carry their province's hue
+    x REAL NOT NULL, y REAL NOT NULL,        -- town: k-means centre; province: centroid of its dots
+    anchor_x  REAL NOT NULL, anchor_y REAL NOT NULL,
+    extent    REAL NOT NULL,                 -- 80th-percentile member distance from the centroid
+    size      INTEGER NOT NULL,              -- dots, library-wide
+    mix       TEXT NOT NULL,                 -- JSON array of ≤ 64 dot labels in walk order
+    land      BLOB,                          -- land-v1, provinces only
+    PRIMARY KEY (layout_id, level, id)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_map_regions_key ON map_regions(layout_id, key);
+`;
+
 export function discoveryDbPath() {
   return path.join(config.program.storage.dbDirectory, 'discovery.db');
 }
@@ -218,6 +303,7 @@ export function initDiscoveryDb(dbPath) {
     }
     runMigrations();
     seedMeta();
+    ensureMapTables(db);
   } catch (err) {
     // Don't leave a half-initialized handle behind — callers treat
     // isDiscoveryDbOpen() as "ready to use".
@@ -345,6 +431,110 @@ function seedMeta() {
   seed.run('export_salt', crypto.randomBytes(32).toString('hex'));
   seed.run('embedding_dtype', EMBEDDING_DTYPE);
   seed.run('embedding_normalization', EMBEDDING_NORMALIZATION);
+}
+
+// The music map's tables, beside the versioned schema (see MAP_TABLES_SQL).
+// Run by initDiscoveryDb after the migrations, so the server and every
+// worker that opens the file get them.
+//
+// While discovery_meta.map_schema equals MAP_SCHEMA this only runs the
+// IF-NOT-EXISTS DDL. Otherwise — a fresh file, an upgrade into the map, or
+// a build with another table shape — one IMMEDIATE transaction drops the
+// three tables, deletes the map_* meta keys except map_recent_after (the
+// recent baseline outlives every map generation), recreates the tables and
+// stamps map_schema plus a fresh map_epoch: 16 random hex characters naming
+// THIS generation of map tables. mstream.db's serving pointer copies it, so
+// a pointer left from a deleted or replaced discovery.db, or from before a
+// reset, never reads new layout ids (AUTOINCREMENT restarts after a DROP).
+// The schema is re-read inside the transaction: a second process opening
+// the file at the same moment must not drop what the first just built. A
+// current file whose map_epoch went missing (hand-edited meta) gets a fresh
+// one, so no pointer can ever validate against nothing.
+//
+// `handle` is for callers holding a connection that is not the singleton;
+// defaults to it. Returns { reset } — true when the tables were (re)built.
+export function ensureMapTables(handle = getDiscoveryDb()) {
+  const readSchema = handle.prepare("SELECT value FROM discovery_meta WHERE key = 'map_schema'");
+  const newEpoch = () => crypto.randomBytes(8).toString('hex');
+  let previous = null;
+  let reset = false;
+  if (readSchema.get()?.value !== String(MAP_SCHEMA)) {
+    handle.exec('BEGIN IMMEDIATE');
+    try {
+      previous = readSchema.get()?.value ?? null;
+      if (previous !== String(MAP_SCHEMA)) {
+        handle.exec(`
+          DROP TABLE IF EXISTS map_points;
+          DROP TABLE IF EXISTS map_regions;
+          DROP TABLE IF EXISTS map_layouts;
+        `);
+        handle.prepare(
+          "DELETE FROM discovery_meta WHERE substr(key, 1, 4) = 'map_' AND key <> 'map_recent_after'"
+        ).run();
+        handle.exec(MAP_TABLES_SQL);
+        const put = handle.prepare('INSERT INTO discovery_meta (key, value) VALUES (?, ?)');
+        put.run('map_schema', String(MAP_SCHEMA));
+        put.run('map_epoch', newEpoch());
+        reset = true;
+      }
+      handle.exec('COMMIT');
+    } catch (err) {
+      try { handle.exec('ROLLBACK'); } catch (_e) { /* not in a transaction */ }
+      throw err;
+    }
+  }
+  if (!reset) {
+    handle.exec(MAP_TABLES_SQL);
+    handle.prepare("INSERT OR IGNORE INTO discovery_meta (key, value) VALUES ('map_epoch', ?)").run(newEpoch());
+  } else if (previous !== null) {
+    winston.info(`Music map tables reset (map schema v${previous} → v${MAP_SCHEMA}); the next map pass rebuilds them`);
+  }
+  return { reset };
+}
+
+// The map's counters are upserts, not UPDATEs: a reset deletes their keys,
+// and an UPDATE of a missing key changes nothing — map_version would then
+// never move again and the map routes would answer stale revisions. Both
+// run on the caller's connection, inside the caller's write transaction.
+
+/** Bump map_version (the serving layout's rows here changed); returns the new value. */
+export function bumpMapVersion(handle = getDiscoveryDb()) {
+  return handle.prepare(
+    "INSERT INTO discovery_meta (key, value) VALUES ('map_version', '1') " +
+    'ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + 1 ' +
+    'RETURNING CAST(value AS INTEGER) AS v'
+  ).get().v;
+}
+
+/**
+ * Reserve `count` numbers for new 't:' / 'c:' region keys (map_next_key,
+ * one counter for both). Returns the first; the block is [first, first +
+ * count). Numbers are never reused within a generation of map tables.
+ */
+export function reserveMapKeys(count, handle = getDiscoveryDb()) {
+  if (!Number.isInteger(count) || count < 0) {
+    throw new RangeError(`reserveMapKeys needs a count >= 0, got ${count}`);
+  }
+  // CAST(? AS INTEGER): node:sqlite binds every JS number as REAL, and
+  // INTEGER + REAL would store '5.0'.
+  return handle.prepare(
+    "INSERT INTO discovery_meta (key, value) VALUES ('map_next_key', ?) " +
+    'ON CONFLICT(key) DO UPDATE SET value = CAST(value AS INTEGER) + CAST(? AS INTEGER) ' +
+    'RETURNING CAST(value AS INTEGER) AS next'
+  ).get(String(count), count).next - count;
+}
+
+/**
+ * The recent baseline (map_recent_after, a tracks.created_at string): set
+ * once, by the first ready layout, and never moved again — it survives
+ * map-table resets, refits and model changes. An empty value is not a
+ * baseline and is not stored. Returns true when this call set it.
+ */
+export function initMapRecentAfter(value, handle = getDiscoveryDb()) {
+  if (value === null || value === undefined || value === '') { return false; }
+  return handle.prepare(
+    "INSERT OR IGNORE INTO discovery_meta (key, value) VALUES ('map_recent_after', ?)"
+  ).run(String(value)).changes > 0;
 }
 
 export function getMeta(key) {
@@ -588,8 +778,23 @@ export function updateDiscoveryIdentity(audioHash, recordingMbid, acoustidId) {
 // roulette of applying pairs one at a time. One transaction for the
 // whole apply: a mid-apply crash re-applies cleanly from the intact
 // ledger instead of leaving a half-re-keyed table.
+//
+// The music map's points follow in the same transaction, in every layout
+// that holds them (the serving one and the previous one): each source's
+// rows take the target hash, and a source row whose layout already has a
+// point at the target is dropped (that point serves the target's tracks
+// from now on). The point keeps its position — no re-placement, no jump —
+// and `dot` / `mix` are left alone: group labels are opaque and every
+// member row carries its dot's values, so re-keying a group's label member,
+// or a singleton's own hash, moves nothing and loses no track from the
+// mirror. The next map pass (the queue enqueues one after the applier)
+// reconciles track_map.hash. Map rows are no similarity-index input, so
+// they never publish an index epoch.
+//
+// Returns { moved, dropped } for discovery_tracks plus { pointsMoved,
+// pointsDropped } for map_points rows.
 export function applyHashTransitionGroups(groups) {
-  const out = { moved: 0, dropped: 0 };
+  const out = { moved: 0, dropped: 0, pointsMoved: 0, pointsDropped: 0 };
   if (!groups || groups.length === 0) { return out; }
   const ddb = getDiscoveryDb();
   // Rowversions for the moves are reserved as ONE block inside the
@@ -611,6 +816,11 @@ export function applyHashTransitionGroups(groups) {
     lookDel: ddb.prepare('DELETE FROM discovery_lookups WHERE audio_hash = ?'),
     lookMove: ddb.prepare(
       'UPDATE discovery_lookups SET audio_hash = ? WHERE audio_hash = ?'),
+    // Both index-backed by idx_map_points_hash. OR IGNORE skips the rows
+    // whose layout already has a point at the target (UNIQUE (layout_id,
+    // audio_hash)); the DELETE then removes exactly those leftovers.
+    pointMove: ddb.prepare('UPDATE OR IGNORE map_points SET audio_hash = ? WHERE audio_hash = ?'),
+    pointDel: ddb.prepare('DELETE FROM map_points WHERE audio_hash = ?'),
   };
   ddb.exec('BEGIN');
   try {
@@ -638,6 +848,11 @@ export function applyHashTransitionGroups(groups) {
           stmts.lookMove.run(target, lookups[0].audio_hash);
           for (const r of lookups.slice(1)) { stmts.lookDel.run(r.audio_hash); }
         }
+      }
+      for (const source of sources) {
+        if (source === target) { continue; }   // never: the DELETE would take the target's own points
+        out.pointsMoved += stmts.pointMove.run(target, source).changes;
+        out.pointsDropped += stmts.pointDel.run(source).changes;
       }
     }
     ddb.exec('COMMIT');

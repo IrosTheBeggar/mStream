@@ -824,6 +824,167 @@ components:
           properties:
             id: { type: integer, description: "The federation_peers row id on THIS server." }
             name: { type: string }
+    DiscoveryMap:
+      type: object
+      description: |
+        The caller's music map (`GET /api/v1/discovery/map`): one dot per sound for every
+        placed song the caller can see, and the provinces and towns the dots sit in.
+        Copies of a song, and near-duplicates (cosine ≥ 0.99), share a dot.
+
+        A dot answers to its **representative id**: the lowest track id among its songs
+        that the caller can see. Every map route answers in these ids, so a client joins
+        each answer to the points by id (the points are sorted by it: binary search).
+
+        **`points.data`** is base64 of `cols-v1`: n points sorted by id ascending, 11·n
+        bytes, little-endian.
+
+        | Offset | Type | Field |
+        |---|---|---|
+        | 0 | `u32[n]` | representative track id |
+        | 4n | `u16[n]` | x: map x × 65535 |
+        | 6n | `u16[n]` | y: map y × 65535 (down) |
+        | 8n | `u8[n]` | province id (255 = none) |
+        | 9n | `u8[n]` | town id (255 = none) |
+        | 10n | `u8[n]` | flags: bit 0 recent; bits 1–7 are 0 in v1 |
+
+        Every column starts aligned to its element size, so a decoder can view a fresh
+        `ArrayBuffer` directly (`Uint32Array(buf, 0, n)`, `Uint16Array(buf, 4n, n)`, …).
+        The province and town ids are the regions' `id`s. **Recent**: the first of the
+        dot's songs the caller could see was added after 00:00 UTC thirty days ago, and is
+        newer than every song the library held when its first map was made (a fresh
+        server marks nothing recent).
+
+        **`land-v1`** (one blob per province, in `regions[].land`):
+
+        ```text
+        repeat 3 times (coast, mid, high):
+          u16 ringCount
+          repeat ringCount: u16 vertexCount (≥ 3), then vertexCount × (u16 x, u16 y)   // closed implicitly
+        ```
+
+        Fill even-odd per terrace, in the order coast → mid → high. Decoders reject a blob
+        whose counts run past its end or leave bytes over.
+
+        A `points.format` or `layout.landFormat` the client does not know is a newer
+        server's map: treat the map as unavailable.
+      required: [state, model, rev, layout, regions, points]
+      properties:
+        state:
+          type: string
+          enum: [ready, building, failed, empty]
+          description: |
+            `ready`: a layout is serving; a caller who can see none of it gets 0 points and
+            no regions. The other three have no layout yet, so `model` and `layout` are
+            null, `regions` is empty and `points` is `{n: 0, format: cols-v1, data: ""}`.
+            `building`: a map pass is queued or running, or songs are analysed and no map
+            pass has finished since the server started. `failed`: songs are analysed and
+            the last map pass did not complete, or the pass stopped after repeated failures
+            (the `map` pass of `GET /api/v1/scan/status`). `empty`: nothing is analysed yet.
+        model:
+          type: object
+          nullable: true
+          description: The embedding model the serving layout was built from. During a model switch the previous model's map keeps serving until the new one is built.
+          properties:
+            id: { type: string, example: effnet-discogs }
+            version: { type: string, nullable: true }
+        rev:
+          type: string
+          description: The map's revision, 16 hex characters; the `ETag` header carries it quoted. An overlay names the map it is for by it.
+          example: 3f9c0a1b2c4d5e6f
+        layout:
+          type: object
+          nullable: true
+          properties:
+            id: { type: integer, description: "The serving layout; a rebuild or a refit makes a new one." }
+            method: { type: string, enum: [umap, pca2], description: "`pca2` for a library of fewer than 50 analysed songs." }
+            frame: { type: integer, description: "Bumps when the map's frame is re-fitted: reset the view to the whole map." }
+            aspect: { type: number, description: "Width / height of the fitted box." }
+            landFormat: { type: string, enum: [land-v1] }
+        regions:
+          type: array
+          description: Provinces, then towns, each in `id` order.
+          items: { $ref: "#/components/schemas/DiscoveryMapRegion" }
+        points:
+          type: object
+          required: [n, format, data]
+          properties:
+            n: { type: integer, minimum: 0, description: "Dots." }
+            format: { type: string, enum: [cols-v1] }
+            data: { type: string, format: byte, description: "Base64 `cols-v1`; empty when `n` is 0." }
+    DiscoveryMapRegion:
+      type: object
+      description: |
+        A place on the music map: a province (`level` 0, a genre the discovery model
+        predicts) or a town (`level` 1, a style, inside a province). Only places holding
+        a dot the caller can see are sent, and a town only with its province. A province
+        keeps its library-wide outline (`land`) when the caller sees only part of it;
+        `size` counts only their dots.
+      required: [key, level, id, parent, label, hue, anchor, size]
+      properties:
+        key:
+          type: string
+          description: |
+            Stable across refits and rebuilds: `g:<genre>` for a genre province, `t:<n>` for
+            a town, `c:<n>` for a province when no song has a predicted genre (its `label`
+            is then null). Send it to `POST /api/v1/discovery/map/region`.
+          example: "g:Hip Hop"
+        level: { type: integer, enum: [0, 1], description: "0 = province, 1 = town." }
+        id:
+          type: integer
+          minimum: 0
+          maximum: 254
+          description: This layout's number for the place, the byte the points carry in their province or town column. It changes between layouts; `key` does not.
+        parent: { type: integer, nullable: true, description: "A town's province `id`; null for a province." }
+        label:
+          type: string
+          nullable: true
+          description: The name to show (a Discogs genre or style; data, not a UI string). Null when none of the place's songs has one; clients show no name and no place card for it.
+        hue: { type: integer, minimum: 0, maximum: 359, description: "The province's colour, in degrees; a town carries its province's." }
+        anchor:
+          type: array
+          minItems: 2
+          maxItems: 2
+          items: { type: integer, minimum: 0, maximum: 65535 }
+          description: Where the name sits, `[x, y]` in the points' u16 units (y down).
+        size: { type: integer, minimum: 1, description: "Dots in the place that the caller can see." }
+        land:
+          type: string
+          format: byte
+          description: Provinces only. Base64 `land-v1` (see `DiscoveryMap`); three empty terraces when none was stored.
+    DiscoveryMapOverlay:
+      type: object
+      description: |
+        One layer over the caller's map, in its point order (the map `rev` names):
+        `data` describes point i of `cols-v1` at position i.
+
+        - **`mood`**: a bitset of ⌈n/8⌉ bytes. Point i is bit `(i & 7)` (LSB first) of
+          byte `i >> 3`. 1 = the dot's representative song passes the filter, by the
+          predicate the filtered song lists use; a song without mood scores is 0. No
+          filter: every bit is 1.
+        - **`plays`**: `u8[n]`, the caller's plays per dot (its near-duplicates summed),
+          capped at 255.
+      required: [rev, layer, n]
+      properties:
+        rev: { type: string, description: "The map revision this layer is for." }
+        layer: { type: string, enum: [mood, plays] }
+        n: { type: integer, minimum: 0, description: "The caller's `points.n`; 0 while no map is built." }
+        moods: { $ref: "#/components/schemas/MoodEcho" }
+        data:
+          type: string
+          format: byte
+          description: Base64, as above. A `mood` answer without `moods` has no `data` either — this server has no mood scores to filter by — and clients hide their mood filters.
+    DiscoveryMapTrackRow:
+      type: object
+      description: >
+        A song as the map routes answer it: the standard lite
+        `{filepath, metadata}` envelope (queues without translation) plus its
+        track `id`. The songs a route picks itself (a region's centre and mix,
+        neighbours) carry their dot's representative id, the id in `cols-v1`.
+      required: [id, filepath, metadata]
+      properties:
+        id: { type: integer }
+        filepath: { type: string, description: "vpath-form path in one of the caller's own libraries." }
+        metadata: { $ref: "#/components/schemas/MetadataLite" }
     TasteRequest:
       type: object
       description: >
@@ -1758,6 +1919,18 @@ paths:
                           `moods` (a MoodFilter). A version fact: show the
                           page on `discovery === true && discoveryTaste >= 1`;
                           absent on older servers.
+                      discoveryMap:
+                        type: integer
+                        description: >
+                          The music map generation: this server answers the
+                          `/api/v1/discovery/map` routes. An integer like
+                          `discoveryTaste` (a later format or body key ships
+                          as 2, so gate on `>= n`); 0 while
+                          `scanOptions.musicMap` is off. A version fact, on
+                          with discovery off too: show the map on
+                          `discovery === true && discoveryMap >= 1`, never on
+                          a peer. Whether a layout exists yet is the map's
+                          own `state`. Absent on older servers.
                       moodFilters:
                         type: boolean
                         description: >
@@ -1869,6 +2042,7 @@ paths:
                   discoveryPlugins: true
                   discoveryOwned: true
                   discoveryTaste: 2
+                  discoveryMap: 1
                   moodFilters: true
                   sync: true
                   flowOrder: 1
@@ -1933,6 +2107,12 @@ paths:
                     description: >
                       The Discover page generation — the same fact as
                       `features.discoveryTaste` on `GET /api`. Absent on
+                      older servers.
+                  discoveryMap:
+                    type: integer
+                    description: >
+                      The music map generation — the same fact as
+                      `features.discoveryMap` on `GET /api`. Absent on
                       older servers.
                   moodFilters:
                     type: boolean
@@ -2052,8 +2232,8 @@ paths:
       summary: Enrichment scan status
       description: >
         One snapshot of every post-scan enrichment pass (waveforms, album-art
-        download, lyrics backfill, BPM/key analysis, discovery embeddings,
-        AcoustID identification): whether it is enabled (and why not), its
+        download, lyrics backfill, BPM/key analysis, discovery embeddings, the
+        music map, AcoustID identification): whether it is enabled (and why not), its
         live queue state and progress, a summary of its last run, and durable
         done/remaining/outcome coverage counts. Track- and album-scoped
         coverage is filtered to the caller's accessible libraries; hash-keyed
@@ -2092,12 +2272,16 @@ paths:
                       properties:
                         pass:
                           type: string
-                          enum: [waveform, albumart, lyrics, audioanalysis, discovery, acoustid]
+                          enum: [waveform, albumart, lyrics, audioanalysis, discovery, map, acoustid]
                         enabled: { type: boolean }
                         disabledReason:
                           type: string
                           nullable: true
-                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, binary-generation-mismatch, runtime-unavailable, null]
+                          enum: [config, no-ffmpeg, no-api-key, no-binary, binary-unsupported, binary-generation-mismatch, runtime-unavailable, failing, null]
+                          description: |
+                            `failing` is the map pass's alone: it stopped after three failed passes in a row,
+                            until a restart or `POST /api/v1/admin/discovery/map/rebuild`. The map pass is
+                            `config` while discovery collection or `scanOptions.musicMap` is off.
                         state:
                           type: string
                           enum: [idle, queued, running, disabled]
@@ -2123,12 +2307,19 @@ paths:
                             counts:
                               type: object
                               nullable: true
-                              description: The worker's completion counters (per-pass vocabulary, e.g. generated/updated/analyzed/matched, notFound, errors).
-                              additionalProperties: { type: integer }
+                              description: |
+                                The worker's completion counters (per-pass vocabulary, e.g. generated/updated/analyzed/matched, notFound, errors).
+                                Integers, except the map pass's `mode` (`empty`, `mirror`, `rebuild`, `refit` or `place`) and
+                                `method` (`umap` or `pca2`; null after an `empty` run); its integers are `fitted`, `placed`,
+                                `removed`, `dots`, `regions`, `ms` and `peakRssMB`.
+                              additionalProperties:
+                                oneOf:
+                                  - { type: integer }
+                                  - { type: string, nullable: true }
                         coverage:
                           type: object
                           nullable: true
-                          description: Durable library-wide counts (null when the pass's data source does not exist yet, e.g. discovery.db before first enable).
+                          description: Durable library-wide counts (null when the pass's data source does not exist yet, e.g. discovery.db before first enable; always null for the map pass).
                           properties:
                             scope:
                               type: string
@@ -3397,6 +3588,329 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { description: "Discovery is disabled on this server." }
         "404": { description: "An end does not resolve in the caller's libraries (uniform)." }
+
+  /api/v1/discovery/map:
+    get:
+      tags: [Discovery]
+      summary: The music map — your library laid out by sound
+      description: |
+        The Atlas map of the caller's local library: the analysed songs they can see,
+        placed by their discovery embeddings (a song analysed since the last map pass
+        joins at the next), in provinces (the model's genres) and towns (its styles).
+        The server does all the geometry; the answer is ids, u16
+        coordinates and regions (`DiscoveryMap` gives the byte layouts). The points take
+        11 bytes a dot: 1.1 MB at 100,000 dots, 1.47 MB as base64 (`compression.mode` is
+        `none` by default).
+
+        Every answer carries a strong `ETag` (`"<rev>"`) and `Cache-Control: private,
+        no-cache`. Send the tag back as `If-None-Match` to get a 304 before anything is
+        built. The tag follows the map's `state`, the serving layout and its rows, deleted
+        songs, region updates, the caller's libraries and, only while some song is
+        recent, the day: callers who see the same libraries share bytes and tag. No
+        per-user data rides in the map.
+
+        Six routes make up the map, behind one gate: this one; the overlay, the only one
+        tied to the point order (by `rev`); and four lookups that answer in
+        representative ids (`tracks`, `search`, `region`, `neighbours`). Their request
+        bodies and the overlay's query are strict: an unknown key is a 400, the `token`
+        slot included, so send the token in the `x-access-token` header or cookie there.
+        This route takes no query and ignores any.
+
+        Local library only: the routes are never on the federation allowlist, and refuse
+        a federation key or guest token behind it too. Any account may read the map, a
+        jukebox session and public-access mode included. Feature flag:
+        `discovery === true && discoveryMap >= 1`, never on a peer.
+      parameters:
+        - in: header
+          name: If-None-Match
+          required: false
+          schema: { type: string }
+          description: A previously returned `rev`, quoted as the `ETag` header carried it. A list of tags, weak ones included, matches on any of them.
+      responses:
+        "200":
+          description: The map. The `ETag` header carries its `rev`.
+          headers:
+            ETag:
+              schema: { type: string, example: '"3f9c0a1b2c4d5e6f"' }
+            Cache-Control:
+              schema: { type: string, example: "private, no-cache" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryMap" }
+        "304":
+          description: The map in `If-None-Match` is still current. The same `ETag` and `Cache-Control`, no body.
+          headers:
+            ETag:
+              schema: { type: string }
+            Cache-Control:
+              schema: { type: string }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            `Discovery is disabled`: discovery collection or `scanOptions.musicMap` is off,
+            discovery.db cannot be opened, or nothing can ever be drawn here (no layout, no
+            analysed song, and the embedding pass cannot run on this install: no ffmpeg or
+            no ML runtime). One message for all, so a probe cannot tell configuration from
+            failure; clients hide the map. `Forbidden`: a federation key or guest token.
+
+  /api/v1/discovery/map/overlay:
+    get:
+      tags: [Discovery]
+      summary: A mood or plays layer over the music map
+      description: |
+        One layer in the point order of the map that `rev` names (`DiscoveryMapOverlay`
+        gives the bytes). Send the `rev` of the map the client holds: when it is not the
+        caller's current map the answer is 409 `Map changed`, and the client refetches
+        `GET /api/v1/discovery/map` (with `If-None-Match`) and asks once more.
+
+        `mood` dims by a `MoodFilter`, judged exactly as the filtered song lists judge
+        it. While this server has no mood scores the answer has neither `moods` nor
+        `data`: hide the mood filters. `plays` is the caller's own play history, refused
+        without an account and to a jukebox session. Answers carry `Cache-Control:
+        private, no-cache` and no map ETag: a weak `ETag` on an answer is the server's
+        hash of that body, not the map's `rev`, and must not be used as one.
+      parameters:
+        - { name: layer, in: query, required: true, schema: { type: string, enum: [mood, plays] } }
+        - name: rev
+          in: query
+          required: true
+          schema: { type: string, minLength: 1, maxLength: 32 }
+          description: The `rev` of the map the client holds.
+        - name: moods
+          in: query
+          required: false
+          schema: { type: string, maxLength: 512 }
+          description: "`mood` only: a `MoodFilter` as JSON, at most 512 characters. Left out, every bit is 1. Ignored for `plays`."
+          example: '{"energy":"relaxed","threshold":0.7}'
+      responses:
+        "200":
+          description: The layer.
+          headers:
+            Cache-Control:
+              schema: { type: string, example: "private, no-cache" }
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/DiscoveryMapOverlay" }
+        "400": { description: "Request validation failed: no `layer`, or one that is not mood or plays; no `rev`, or one over 32 characters; an unknown query parameter (`token` included: authenticate by header or cookie); or `Invalid moods parameter`, a `moods` that is not one valid MoodFilter." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "As `GET /api/v1/discovery/map`. For `plays` also: no account (`Forbidden`), or a jukebox session (`not available in a jukebox session`)." }
+        "409": { description: "`Map changed`: `rev` is not the caller's current map." }
+
+  /api/v1/discovery/map/tracks:
+    post:
+      tags: [Discovery]
+      summary: Map ids to songs, or songs to their dots
+      description: |
+        Exactly one of:
+
+        - **`ids`** → `tracks`: each id's lite row, aligned with the request. An unknown
+          id and one the caller cannot see are the same `null`. Answers whether or not a
+          map is built.
+        - **`filepaths`** → `ids`: each song's dot as the caller's representative id,
+          aligned with the request (a copy or a near-duplicate answers its dot's id). A
+          path the caller cannot open, and a song with no dot (not analysed or not placed
+          yet), are `null`, never a 404: this is a batch. All `null` while no map is
+          built. Paths with and without a leading `/` both resolve.
+
+        At most 500 per call.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Exactly one of the two keys.
+              minProperties: 1
+              maxProperties: 1
+              additionalProperties: false
+              properties:
+                ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { type: integer, minimum: 1 }
+                filepaths:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { type: string, minLength: 1, maxLength: 4096 }
+                  description: vpath-form paths in the caller's own libraries.
+            example: { filepaths: ["Music/Artist/Album/01 Song.mp3"] }
+      responses:
+        "200":
+          description: One entry per requested item, in request order.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: object
+                    required: [tracks]
+                    properties:
+                      tracks:
+                        type: array
+                        description: The answer to `ids`.
+                        items:
+                          type: object
+                          nullable: true
+                          allOf:
+                            - { $ref: "#/components/schemas/DiscoveryMapTrackRow" }
+                  - type: object
+                    required: [ids]
+                    properties:
+                      ids:
+                        type: array
+                        description: The answer to `filepaths`.
+                        items: { type: integer, nullable: true }
+        "400": { description: "Request validation failed: neither or both of `ids` and `filepaths`, an empty list or one over 500, an id under 1, an empty or over-long path, or an unknown key." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "As `GET /api/v1/discovery/map`." }
+
+  /api/v1/discovery/map/search:
+    post:
+      tags: [Discovery]
+      summary: Find songs, artists and albums on the music map
+      description: |
+        Title, artist and album matches as dots, for search-to-fly. Matched the way
+        `POST /api/v1/db/search` matches by default (`combo`: FTS5 prefix terms, a
+        leading `-` excludes one; a substring match where FTS5 refuses the query or is
+        missing). Titles match from 2 characters, artists and albums from 3, and all of a
+        matched artist's or album's songs count. Up to 2,000 titles, 50 artists and 100
+        albums are taken; their songs are capped at 20,000 before they are grouped into
+        dots, and the answer at 5,000 ids. `capped` says either cap cut.
+
+        `ids` are representative ids, ascending. `best` is the representative id of the
+        top title match that has a dot (what Enter selects), null when none has. An empty
+        answer while no map is built.
+
+        At most two searches run at once and eight wait; past that the answer is 429.
+        Clients debounce (300 ms).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [q]
+              additionalProperties: false
+              properties:
+                q: { type: string, minLength: 2, maxLength: 128, description: "Trimmed before the length check." }
+      responses:
+        "200":
+          description: The matches.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ids, best, capped]
+                properties:
+                  ids:
+                    type: array
+                    maxItems: 5000
+                    items: { type: integer }
+                  best: { type: integer, nullable: true }
+                  capped: { type: boolean }
+        "400": { description: "Request validation failed: no `q`, one under 2 characters once trimmed or over 128, or an unknown key." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "As `GET /api/v1/discovery/map`." }
+        "429": { description: "Too many map searches in progress (two run at once, eight may wait); try again shortly." }
+
+  /api/v1/discovery/map/region:
+    post:
+      tags: [Discovery]
+      summary: A place on the music map — its centre and its mix
+      description: |
+        For a province or town by `key` (from the map's `regions`): `centre`, its most
+        central song the caller can see (the seed for "Auto DJ from here"), and `songs`,
+        its mix: up to `limit` songs spread across the place's sound, in the order of a
+        walk from its centre and the same on every call for one layout, topped up with
+        the next most central songs when fewer of the mix are visible. Lite rows: they
+        queue without translation. An unknown key, a place the caller sees nothing of and
+        a map not built yet are one answer: 404.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              additionalProperties: false
+              properties:
+                key: { type: string, minLength: 1, maxLength: 64, example: "g:Hip Hop" }
+                limit: { type: integer, minimum: 1, maximum: 50, default: 50 }
+      responses:
+        "200":
+          description: The place.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [region, centre, songs]
+                properties:
+                  region:
+                    type: object
+                    properties:
+                      key: { type: string }
+                      level: { type: integer, enum: [0, 1] }
+                      label: { type: string, nullable: true }
+                  centre: { $ref: "#/components/schemas/DiscoveryMapTrackRow" }
+                  songs:
+                    type: array
+                    maxItems: 50
+                    items: { $ref: "#/components/schemas/DiscoveryMapTrackRow" }
+        "400": { description: "Request validation failed: no `key`, `limit` outside 1–50, or an unknown key." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "As `GET /api/v1/discovery/map`." }
+        "404": { description: "`Region not found` (uniform: unknown, invisible and not yet built alike)." }
+
+  /api/v1/discovery/map/neighbours:
+    post:
+      tags: [Discovery]
+      summary: The songs nearest one song on the music map
+      description: |
+        The songs that sound most like `id`, ranked by the similarity index as
+        `POST /api/v1/discovery/local/similar/tracks` ranks them, keeping only songs with
+        a dot the caller can see: one per dot, never the seed's own, so every neighbour
+        can be lit and named on the map. The walk is bounded (`max(limit × 50, 2000)`
+        candidates); `capped: true` says it stopped there short of `limit`. During a
+        model switch a seed with no vector in the new model yet answers
+        `notAnalyzed: true` and no neighbours. 404 `Track not found` for an id the caller
+        cannot see, one with no dot, and while no map is built.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              additionalProperties: false
+              properties:
+                id: { type: integer, minimum: 1, description: "The seed's track id, as the map gives it." }
+                limit: { type: integer, minimum: 1, maximum: 16, default: 8 }
+      responses:
+        "200":
+          description: The neighbours, nearest first (or the notAnalyzed answer).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [seed, notAnalyzed, neighbours]
+                properties:
+                  seed: { $ref: "#/components/schemas/DiscoveryMapTrackRow" }
+                  notAnalyzed: { type: boolean }
+                  capped: { type: boolean, description: "Absent on the notAnalyzed answer." }
+                  neighbours:
+                    type: array
+                    maxItems: 16
+                    items:
+                      allOf:
+                        - { $ref: "#/components/schemas/DiscoveryMapTrackRow" }
+                        - type: object
+                          properties:
+                            similarity: { type: number, description: "Cosine vs the seed, 4 decimals; clients don't show it." }
+        "400": { description: "Request validation failed: no `id`, an id under 1, `limit` outside 1–16, or an unknown key." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "As `GET /api/v1/discovery/map`, or the similarity index is unavailable (`Discovery is disabled`)." }
+        "404": { description: "`Track not found` (uniform: unknown, invisible, no dot, or no map built yet)." }
 
   /api/v1/discovery/p2p/similar:
     post:
@@ -7376,6 +7890,21 @@ paths:
                 type: object
                 properties:
                   fileCount: { type: integer }
+        "405": { $ref: "#/components/responses/AdminLocked" }
+
+  /api/v1/admin/discovery/map/rebuild:
+    post:
+      tags: [Admin - Scanner]
+      summary: Rebuild the music map now
+      description: |
+        Queues a rebuild of the music map from the current model's embeddings (with none
+        yet it changes nothing), after clearing the map pass's failure latch: three failed
+        passes in a row stop the pass (`disabledReason: failing` in
+        `GET /api/v1/scan/status`) until a restart or this call. Answers at once; follow
+        the `map` pass in the scan status. Takes no body. No UI in v1.
+      responses:
+        "200": { $ref: "#/components/responses/EmptySuccess" }
+        "403": { description: "`Discovery is disabled`: discovery collection or `scanOptions.musicMap` is off, or discovery.db cannot be opened. Also a caller who is not an admin (`Admin access required`)." }
         "405": { $ref: "#/components/responses/AdminLocked" }
 
   # ── Admin - Users ────────────────────────────────────────────────────────

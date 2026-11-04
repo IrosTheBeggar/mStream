@@ -4,7 +4,7 @@
  * GET /api/v1/scan/status.
  *
  * What gets pinned:
- *   - the initial snapshot: all six passes present, config gates mapped
+ *   - the initial snapshot: all seven passes present, config gates mapped
  *     to enabled/disabledReason/state (including the environment reasons
  *     'no-api-key' and 'no-ffmpeg', which are deterministic here because
  *     nothing in this process ever runs ensureFfmpeg);
@@ -35,7 +35,7 @@ let dbManager;
 let taskQueue;
 let libId;
 
-const KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid'];
+const KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'map', 'audioanalysis', 'acoustid'];
 
 function statusOf(kind) {
   const entry = taskQueue.getEnrichmentStatus().find((p) => p.pass === kind);
@@ -121,7 +121,7 @@ beforeEach(async () => {
 });
 
 describe('enrichment status: initial snapshot and gates', () => {
-  test('reports all six passes with the full field set', () => {
+  test('reports all seven passes with the full field set', () => {
     const all = taskQueue.getEnrichmentStatus();
     assert.deepEqual(all.map((p) => p.pass), KINDS);
     for (const p of all) {
@@ -144,8 +144,28 @@ describe('enrichment status: initial snapshot and gates', () => {
         // over 'idle'.
         audioanalysis: [false, 'no-ffmpeg', 'disabled'],
         discovery:     [false, 'no-ffmpeg', 'disabled'],
+        // The map reads embeddings already written: no ffmpeg or ONNX
+        // runtime of its own, so collection on (the default) is enough.
+        map:           [true,  null,        'idle'],
         acoustid:      [false, 'config',    'disabled'],
       });
+  });
+
+  test('the music map follows collection and its own switch', () => {
+    const opts = config.program.scanOptions;
+    try {
+      opts.musicMap = false;
+      assert.deepEqual([statusOf('map').enabled, statusOf('map').disabledReason, statusOf('map').state],
+        [false, 'config', 'disabled']);
+      opts.musicMap = true;
+      opts.collectDiscoveryData = false;
+      assert.deepEqual([statusOf('map').enabled, statusOf('map').disabledReason], [false, 'config'],
+        'no collection, no map');
+    } finally {
+      opts.musicMap = true;
+      opts.collectDiscoveryData = true;
+    }
+    assert.deepEqual([statusOf('map').enabled, statusOf('map').state], [true, 'idle']);
   });
 
   test('gate flips are reflected live, with reasons ordered config-first', () => {

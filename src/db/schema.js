@@ -104,7 +104,10 @@ import { mergeAlbumInto, backfillAlbumAggregates } from './album-merge.js';
 // taxonomy's two-level hierarchy. See SCHEMA_V79.
 // V80 adds track_moods — the discovery model's mood/character scores per
 // track, synced from discovery.db by src/db/mood-sync.js. See SCHEMA_V80.
-export const SCHEMA_VERSION = 80;
+// V81 adds track_map + track_map_meta — the music map's double-buffered
+// per-track mirror of discovery.db map_points and its serving pointer,
+// written by the map worker through src/db/map-sync.js. See SCHEMA_V81.
+export const SCHEMA_VERSION = 81;
 
 // The schema version at which the SCANNER'S WRITE CONTRACT last changed —
 // the columns / identity rules a rust-parser binary must know to write rows
@@ -3391,6 +3394,62 @@ export const SCHEMA_V80 = `
   );
 `;
 
+// ── Music map mirror ────────────────────────────────────────────────────────
+//
+// The music map's per-track mirror of discovery.db map_points, written only
+// by the map worker (src/db/map-layout.mjs) through src/db/map-sync.js, so
+// the map routes can apply libraryFilter and JOIN track_moods /
+// user_metadata in one query. The truth (positions keyed by audio hash, the
+// layouts and regions) lives in discovery.db's map tables.
+//
+// Double-buffered: at most two generations (layout_id) coexist — the one
+// track_map_meta.active_layout serves, and during a rebuild the next one,
+// written in short chunks while invisible and switched on by one tiny
+// transaction (one 100k-row transaction would hold the write lock for
+// seconds on Pi / NAS storage). Routes read the pointer, then filter
+// track_map on it.
+//
+// track_map_meta is the switch, one row: the serving layout, the
+// discovery_meta.map_epoch of the tables that layout lives in (layout ids
+// alone repeat after a discovery.db purge or a map-table reset), a
+// revision counter bumped by every transaction that changes the serving
+// generation, and MAX(tracks.created_at) over that generation.
+//
+// The scanners rewrite track rows and know nothing of this; a deleted
+// track takes its rows along (idx_track_map_track serves the cascade). A
+// future tracks table-swap migration must back up and restore track_map
+// like every REFERENCES tracks(id) child (V24's pattern).
+//
+// NOT rescanRequired, and no scanner contract bump: nothing comes from tags.
+export const SCHEMA_V81 = `
+  CREATE TABLE IF NOT EXISTS track_map (
+    layout_id INTEGER NOT NULL,              -- the discovery.db layout this generation mirrors
+    track_id  INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    hash      TEXT    NOT NULL,              -- this track's canonical hash (= user_metadata.track_hash)
+    dot       TEXT    NOT NULL,              -- the dot's group label (copies and near-duplicates share it)
+    x         INTEGER NOT NULL,              -- u16: round(clamp(dot.x, 0, 1) × 65535)
+    y         INTEGER NOT NULL,
+    region0   INTEGER NOT NULL,              -- the dot's
+    region1   INTEGER NOT NULL,
+    central0  REAL    NOT NULL,              -- the dot's
+    central1  REAL    NOT NULL,
+    PRIMARY KEY (layout_id, track_id)
+  );
+  CREATE INDEX IF NOT EXISTS idx_track_map_track ON track_map(track_id);
+  CREATE INDEX IF NOT EXISTS idx_track_map_dot   ON track_map(layout_id, dot);
+  CREATE INDEX IF NOT EXISTS idx_track_map_hash  ON track_map(layout_id, hash);
+  CREATE INDEX IF NOT EXISTS idx_track_map_r0    ON track_map(layout_id, region0, central0);
+  CREATE INDEX IF NOT EXISTS idx_track_map_r1    ON track_map(layout_id, region1, central1);
+  CREATE TABLE IF NOT EXISTS track_map_meta (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    active_layout INTEGER,                   -- the serving generation; NULL = none
+    map_epoch     TEXT,                      -- discovery_meta.map_epoch of the tables that layout lives in
+    rev           INTEGER NOT NULL DEFAULT 0,-- bumped by every transaction that changes the serving generation
+    added_max     TEXT                       -- MAX(tracks.created_at) over the serving generation
+  );
+  INSERT OR IGNORE INTO track_map_meta (id) VALUES (1);
+`;
+
 export const MIGRATIONS = [
   { version: 1,  sql: SCHEMA_V1  },
   { version: 2,  sql: SCHEMA_V2  },
@@ -3700,4 +3759,8 @@ export const MIGRATIONS = [
   // V80: track_moods, the per-track mirror of the discovery model's mood
   // scores. A new table; nothing comes from tags. See SCHEMA_V80.
   { version: 80, sql: SCHEMA_V80 },
+  // V81: track_map + track_map_meta, the music map's double-buffered
+  // per-track mirror and its serving pointer. New tables; nothing comes
+  // from tags. See SCHEMA_V81.
+  { version: 81, sql: SCHEMA_V81 },
 ];

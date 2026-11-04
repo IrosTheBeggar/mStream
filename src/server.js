@@ -17,6 +17,7 @@ import * as syncApi from './api/sync.js';
 import * as statsApi from './api/stats.js';
 import { startRetentionSweep, stopRetentionSweep } from './stats/retention.js';
 import * as discoveryApi from './api/discovery.js';
+import * as discoveryMapApi from './api/discovery-map.js';
 import * as searchApi from './api/search.js';
 import * as randomApi from './api/random.js';
 import * as flowApi from './api/flow.js';
@@ -639,6 +640,7 @@ export async function serveIt(configFile, { relisten = null } = {}) {
   adminApi.setup(mstream);
   irohApi.setup(mstream);
   discoveryApi.setup(mstream);
+  discoveryMapApi.setup(mstream);
   discoveryP2pApi.setup(mstream);
   discoveryFederationApi.setup(mstream);
   discoveryPluginsApi.setup(mstream);
