@@ -3402,7 +3402,15 @@ body.on-federated-server .side-nav-note {
 .ytp-saves-path { min-width: 0; font-size: 13px; line-height: 18px; color: var(--t2); }
 .ytp-letters { grid-column: 2 / 3; margin-top: -6px; font-size: 12px; line-height: 16px; color: var(--t4); }
 .ytp-letters .yt-mono { font-size: 11.5px; color: var(--t3); }
-.yt-crumbs { overflow-wrap: anywhere; }
+.yt-crumbs { overflow-wrap: break-word; }
+/* A narrow column (a 600–1024 px window, a long label in German): the
+   label goes over the path before a folder name has to break. */
+.ytdl-panel { container-type: inline-size; }
+@container (max-width: 420px) {
+  .ytp-saves { grid-template-columns: minmax(0, 1fr) auto; }
+  .ytp-saves-label { grid-column: 1 / -1; }
+  .ytp-letters { grid-column: 1 / -1; margin-top: 0; }
+}
 .yt-sep { margin: 0 5px; color: var(--t4); }
 /* each folder name its own bidi run: a right-to-left name keeps the ›
    order (the text joins wrap each in an isolate, ytdl-ui.js crumbLine) */
