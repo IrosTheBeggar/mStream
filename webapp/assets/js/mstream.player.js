@@ -64,6 +64,14 @@ const MSTREAMPLAYER = (() => {
   let statsRetryTimer = null;
   let lastCheckpointAt = 0;
   const CHECKPOINT_EVERY_MS = 5000;
+  // This page's finished plays, newest first (RECENT_PLAYS_MAX at most):
+  // what the music map's DJ trail folds (alpha/music-map.js), the plays
+  // still in the outbox included. Each is the play as posted
+  // (MSTREAMPLAYSESSION.finish) plus `federated` — the song lived on a
+  // connected server (song.federation), whose path names nothing here.
+  const RECENT_PLAYS_MAX = 50;
+  const recentPlays = [];
+  let playSessionFederated = false;
 
   function statsEnabled() {
     return typeof MSTREAMPLAYSESSION !== 'undefined' && typeof MSTREAMAPI !== 'undefined';
@@ -103,6 +111,7 @@ const MSTREAMPLAYER = (() => {
       console.warn('[stats] could not open a play session', err);
       return;
     }
+    playSessionFederated = !!song.federation;
     lastCheckpointAt = Date.now();
     statsOutboxFor().checkpoint(playSession);
     const notice = { filePath: playSession.filePath, sessionId: playSession.sessionId };
@@ -119,6 +128,8 @@ const MSTREAMPLAYER = (() => {
     box.clearCheckpoint();
     const play = MSTREAMPLAYSESSION.finish(session, outcome);
     if (!play) { return; }
+    recentPlays.unshift(Object.assign({}, play, { federated: playSessionFederated }));
+    if (recentPlays.length > RECENT_PLAYS_MAX) { recentPlays.length = RECENT_PLAYS_MAX; }
     box.enqueue(play);
     box.flush(flushOpts || {}).catch(() => {});
   }
@@ -151,11 +162,13 @@ const MSTREAMPLAYER = (() => {
   if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('pagehide', () => { endPlaySession('stopped', { keepalive: true }); });
   }
-  // For the console and the smoke tests.
+  // For the console and the smoke tests; recentPlays() for the music map's
+  // DJ trail (copies, newest first).
   mstreamModule.stats = {
     enabled: statsEnabled,
     session: () => playSession,
     outbox: () => statsOutboxFor(),
+    recentPlays: () => recentPlays.map((p) => Object.assign({}, p)),
   };
 
   // The audioData looks like this

@@ -2853,6 +2853,141 @@ select {
 }
 .discover-footer { border-top: 1px solid #21252d; margin-top: 4px; padding-top: 5px; }
 
+/* ── The music map (m.js mapPanel; alpha/music-map.js) ────────────────────
+   The Atlas map in #browser beside Now Playing (docs/music-map-plan.md §4):
+   its head (#map-head: Search, Filters, Plays heat) above the scroller, the
+   plate in #filelist. Its colours are tokens on .mmap, as the window's are
+   on .dmodal; a province's colours come from the payload's hue, written
+   inline. Everything over the plate stays under #pop-f's z-index (100), so
+   the song menu opens over the card. The class names are mapPanel's
+   contract (m.js). */
+.mmap {
+  --sea: #171a1f; --page: #1e2228; --plate-edge: #2a2f37;
+  --lit: #f5f7fa; --ring: #e6e8ec; --pin: #fa832b;
+  --ctl: #2d333b; --ctl-edge: #444c56; --ctl-hover: #363d47; --ctl-on: #31353d;
+  --title: #ffffff; --sub: #d0d3da; --muted: #a0a7b3; --ink: #111111;
+}
+/* The column while the map is up: the plate fills it and nothing scrolls
+   (beats #filelist's own overflow-y: auto !important). */
+#filelist.mmap-on { overflow: hidden !important; position: relative; }
+/* The board's split (680 / 520 at 1440) from 1200 px, while the map is up;
+   narrower windows keep the 50 / 50 columns. */
+@media (min-width: 1200px) {
+  body.map-open #browser.m6 { width: 56.7%; }
+  body.map-open #playlist.m6 { width: 43.3%; }
+}
+/* The nav entry is focusable (role=link, tabindex=0). */
+#nav-map:focus { outline: none; }
+#nav-map:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+/* Every svg is painted white (svg { fill: #FFF }); inside the map an icon's
+   own fill stands: the stroked ones stay hollow, the filled ones take the
+   button's colour. */
+.mmap svg[fill="none"] { fill: none; }
+.mmap svg[fill="currentColor"] { fill: currentColor; }
+
+/* The head: the board's 44 px icon buttons, a field the Search button
+   reveals, the Filters panel (moodPanelHtml) under the bar. */
+#map-head { flex-shrink: 0; }
+.mmap-bar { display: flex; align-items: center; gap: 2px; min-height: 48px; padding: 2px 4px 2px 8px; }
+.mmap-hbtn { flex: none; width: 44px; height: 44px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--ring); cursor: pointer; }
+.mmap-hbtn:hover { background-color: var(--ctl-hover); }
+/* materialize paints every focused button teal (button:focus) */
+.mmap-hbtn:focus { background-color: transparent; }
+.mmap-hbtn:focus:hover { background-color: var(--ctl-hover); }
+.mmap-hbtn[aria-expanded="true"], .mmap-hbtn[aria-expanded="true"]:focus { background-color: var(--ctl-on); }
+.mmap-hbtn[aria-pressed="true"] { color: var(--pin); }
+.mmap-hbtn:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+.mmap-head .mood-filter-btn { width: 44px; height: 44px; margin: 0; }
+.mmap-search { flex: 0 1 260px; min-width: 0; height: 34px; margin: 0 6px; padding: 0 12px; box-sizing: border-box; border: 1px solid var(--ctl-edge); border-radius: 17px; background: var(--sea); color: var(--lit); font: inherit; font-size: 14px; }
+.mmap-search::placeholder { color: var(--muted); }
+.mmap-search:focus { outline: 2px solid #fa832b; outline-offset: -1px; }
+.mmap-head .mmap-moods { margin: 0 8px 8px 12px; }
+
+/* The plate: the sea, its 1 px edge, radius 8; the canvas fills it. */
+.mmap-plate { position: absolute; top: 4px; right: 0; bottom: 12px; left: 12px; overflow: hidden; background: var(--sea); border: 1px solid var(--plate-edge); border-radius: 8px; color: var(--ring); font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; -webkit-user-select: none; user-select: none; }
+.mmap-plate:focus { outline: none; }
+.mmap-plate:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+.mmap-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: grab; }
+/* Names, lit songs and neighbour titles: real buttons over the drawing,
+   each placed by its top-left corner (left / top inline). A drag or a pinch
+   that starts on one is the map's, as on the canvas. */
+.mmap-layer { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.mmap-layer > * { pointer-events: auto; touch-action: none; }
+.mmap-name, .mmap-title, .mmap-song { position: absolute; margin: 0; padding: 0; border: 0; background: transparent; white-space: nowrap; line-height: 1; cursor: pointer; -webkit-appearance: none; appearance: none; }
+.mmap-name:focus, .mmap-title:focus, .mmap-song:focus { background-color: transparent; }
+.mmap-name, .mmap-title { text-shadow: 0 0 3px var(--sea), 0 0 3px var(--sea), 0 0 3px var(--sea); }
+.mmap-name-p { font-family: 'Jura', sans-serif; font-weight: 700; text-transform: uppercase; letter-spacing: .16em; }
+.mmap-name-t { font-size: 12.5px; font-weight: 500; font-style: italic; }
+.mmap-title { font-size: 12px; font-weight: 500; color: var(--ring); }
+.mmap-song { border-radius: 50%; }
+.mmap-tip { position: absolute; z-index: 2; max-width: 280px; padding: 5px 8px; box-sizing: border-box; border: 1px solid var(--ctl-edge); border-radius: 4px; background: var(--ctl); box-shadow: 0 4px 12px rgba(0, 0, 0, .35); color: var(--lit); font-size: 12px; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
+
+/* The controls, top-right: Follow, then Zoom (+ over −). Pressed = the
+   orange border and icon. */
+.mmap-ctrls { position: absolute; top: 12px; right: 12px; z-index: 3; display: flex; flex-direction: column; gap: 8px; }
+.mmap-ctrl, .mmap-zoom { box-sizing: border-box; width: 40px; border: 1px solid var(--ctl-edge); border-radius: 6px; background: var(--ctl); }
+.mmap-ctrl { height: 40px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; color: var(--ring); cursor: pointer; }
+.mmap-zoom { height: 80px; display: flex; flex-direction: column; overflow: hidden; }
+.mmap-zoom > button { flex: 1 1 0; min-height: 0; width: 100%; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; background: transparent; color: var(--ring); cursor: pointer; }
+.mmap-zoom-div { flex: 0 0 1px; height: 1px; background: var(--ctl-edge); }
+.mmap-ctrl:focus { background-color: var(--ctl); }
+.mmap-zoom > button:focus { background-color: transparent; }
+.mmap-ctrl:hover, .mmap-ctrl:focus:hover, .mmap-zoom > button:hover { background-color: var(--ctl-hover); }
+.mmap-ctrl[aria-pressed="true"] { border-color: var(--pin); color: var(--pin); }
+.mmap-ctrl svg, .mmap-zoom svg { width: 18px; height: 18px; }
+/* The pin off screen: a chevron on the plate's edge. */
+.mmap-chevron { position: absolute; z-index: 2; width: 32px; height: 32px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--ctl-edge); border-radius: 50%; background: var(--ctl); box-shadow: 0 2px 8px rgba(0, 0, 0, .35); color: var(--pin); cursor: pointer; }
+.mmap-chevron:focus { background-color: var(--ctl); }
+
+/* The card, docked bottom-left: the song (506), a place or a path (420). */
+.mmap-card { position: absolute; left: 12px; bottom: 12px; z-index: 4; box-sizing: border-box; max-width: calc(100% - 24px); padding: 3px 3px 7px 13px; border: 1px solid var(--ctl-edge); border-radius: 6px; background: var(--ctl); box-shadow: 0 6px 18px rgba(0, 0, 0, .35); color: var(--ring); cursor: default; }
+.mmap-card-song { width: 506px; }
+.mmap-card-place, .mmap-card-path { width: 420px; padding-bottom: 11px; }
+/* A place has a fourth verb (Auto DJ): its card grows to keep the verbs on
+   one row, as the path card's three are (they wrap only on a narrow plate). */
+.mmap-card-place { width: max-content; }
+.mmap-card-head { display: flex; align-items: flex-start; gap: 8px; }
+.mmap-card-text { flex: 1 1 auto; min-width: 0; padding-top: 12px; }
+.mmap-card-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mmap-card-glyph { flex: 0 0 12px; width: 12px; height: 12px; }
+.mmap-card-title { min-width: 0; font-size: 15px; font-weight: 700; line-height: 18px; color: var(--title); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mmap-card-sub { font-size: 13px; line-height: 18px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mmap-card-song .mmap-card-sub { padding-left: 20px; }
+.mmap-close { flex: 0 0 40px; width: 40px; height: 40px; margin: 0; padding: 0; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 6px; background: transparent; color: var(--ring); cursor: pointer; }
+.mmap-close:focus { background-color: transparent; }
+.mmap-close:hover, .mmap-close:focus:hover { background-color: var(--ctl-hover); }
+.mmap-verbs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
+.mmap-card-place .mmap-verbs, .mmap-card-path .mmap-verbs { margin-top: 4px; }
+.mmap-pill { height: 36px; margin: 0; padding: 0 14px 0 12px; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--ctl-edge); border-radius: 18px; background: transparent; color: var(--ring); font-family: inherit; font-size: 14px; font-weight: 600; line-height: 1; white-space: nowrap; cursor: pointer; }
+.mmap-pill:focus { background-color: transparent; }
+.mmap-pill:hover, .mmap-pill:focus:hover { background-color: var(--ctl-hover); }
+.mmap-pill-pri, .mmap-pill-pri:focus, .mmap-pill-pri:hover, .mmap-pill-pri:focus:hover { border-color: var(--pin); background-color: var(--pin); color: var(--ink); }
+.mmap-pill-pri:hover { filter: brightness(1.08); }
+.mmap-pill-icon { width: 32px; padding: 0; justify-content: center; border-color: transparent; border-radius: 6px; color: #c9ced6; }
+.mmap-pill svg { flex: none; }
+.mmap-pill-icon svg { fill: currentColor; }
+
+/* A state over the plate: one line (and Try again), or the spinner. */
+.mmap-state { position: absolute; inset: 0; z-index: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; box-sizing: border-box; text-align: center; }
+.mmap-line { max-width: 360px; font-size: 14px; line-height: 1.45; color: var(--muted); }
+.mmap-state .spinner { width: 48px; height: 48px; }
+
+/* One focus ring for every control on the plate. */
+.mmap-plate button:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+.mmap-zoom > button:focus-visible { outline-offset: -3px; }
+
+/* Phones (§4.9): the card spans the plate; touch-sized controls. */
+@media (max-width: 600px) {
+  .mmap-plate { top: 0; left: 8px; right: 8px; bottom: 8px; }
+  .mmap-card, .mmap-card-song, .mmap-card-place, .mmap-card-path { right: 12px; width: auto; }
+}
+@media (pointer: coarse) {
+  .mmap-ctrl { width: 44px; height: 44px; }
+  .mmap-zoom { width: 44px; height: 88px; }
+  .mmap-pill { height: 44px; border-radius: 22px; }
+  .mmap-pill-icon { width: 44px; }
+}
+
 /* ── Sonic Path panel (side-nav view) ───────────────────────────────── */
 .spath-panel { max-width: 640px; padding: 14px 16px; }
 .spath-hint { font-size: 12.5px; opacity: 0.6; margin-bottom: 16px; }

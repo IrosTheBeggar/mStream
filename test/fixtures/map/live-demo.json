@@ -1,0 +1,266 @@
+{
+ "about": "Real answers captured from a Phase 1 server on the demo library (104 dots, three provinces, five towns; effnet-discogs), 2026-11-03, for test/unit/webapp-music-map.test.mjs. map = the GET /api/v1/discovery/map 200 body, verbatim. overlays = GET /map/overlay for that rev: moodAll (no filter), moodHappy ({valence: happy}), plays (public mode, nothing played). search = POST /map/search for q the and zzzz. neighbours = POST /map/neighbours {id: 75}, metadata trimmed to title and artist.",
+ "map": {
+  "state": "ready",
+  "model": {
+   "id": "effnet-discogs",
+   "version": "1"
+  },
+  "rev": "50ef05011e5222eb",
+  "layout": {
+   "id": 1,
+   "method": "umap",
+   "frame": 1,
+   "aspect": 0.9997829925077457,
+   "landFormat": "land-v1"
+  },
+  "regions": [
+   {
+    "key": "g:Hip Hop",
+    "level": 0,
+    "id": 0,
+    "parent": null,
+    "label": "Hip Hop",
+    "hue": 0,
+    "anchor": [
+     41917,
+     16934
+    ],
+    "size": 51,
+    "land": "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"
+   },
+   {
+    "key": "g:Rock",
+    "level": 0,
+    "id": 1,
+    "parent": null,
+    "label": "Rock",
+    "hue": 180,
+    "anchor": [
+     7979,
+     56097
+    ],
+    "size": 34,
+    "land": "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"
+   },
+   {
+    "key": "g:Electronic",
+    "level": 0,
+    "id": 2,
+    "parent": null,
+    "label": "Electronic",
+    "hue": 90,
+    "anchor": [
+     55124,
+     7632
+    ],
+    "size": 19,
+    "land": "AQBIAG69rieRvWYmzL2kJRXA4SB1wMIflsDrHm3Awh0Ov64Z5r5SGBS/pBZmv7gV+b+kFM3CXBGFxOEOacbiCnXHOQnhyAoI1smXB8zKUwdmzDEHcNBAB+DSzgYR17oFzt3CBEbfwgQU4R4FZeLMBVjjowbu43EHeOSFCI7lcwzc5S8N4eYZDp/quRAy7CISYO4AFS/vZhbt7zMYR/CuGWLwHxvJ7wofve97IJrv5CBu7YMjtuyOJP3pLSmH6cUpyehjKuvn2Srg5isr1uOGK9bhhCut31gr1t3tKhTcJSqZ1eUlo9SbJa3TjyVf0vUlMtHVJujPXyg0zSYsPcxRLdbLZS3gyUYtmcTKLczC1S1bwXMt7r+mLJ6+USv2vTUqkL32KAIAWwCjwM0mTMEAJeHDuB9OxHseZsSkHR7EhRxjwh8ZO8IUGGPCHxfPwikWQsOFFdbFpBKbx0gQ5Mn/C07KggsCyx8LrcvxClHM8wpHzTAL4M+UDLjQ0gxK1CEKr9VjCaPWFAn2194IaNyFCOzdbAge35UIUuAlCd7g1QkS4bgK9+B7C2fg1wwU36QOCN/2DirfcQ9p4OgPgOaIEYrohxLC6XET4eqkFOvrKRau7KQXOO2PGUbtpBoY7ZsbpeyaHOPrph226I8grugUISPpzSQW6UglregfJhfonyY15+8mM+b3JlvjwSbb4RAnAOGjJz7ggCg437kqBd8MK6jeOSsy3bEqetvVKZnV5SXi1Kwlr9JUJXXTjySh0wckaNM9Ix7TBSPM0vQiJtJUI5LROCR60cIktNGZJZzRCybP0E4nGtAfKCvP0CgEzmApo8zRKaPJYypwx7oqR8XlKj3E2ipJw6QqosHRKRDBLSm0wGgoEABeznsYX87XF/bOKRaIzx0VFNDlFLjQRBVK0TIW0NGaF+7RjxjI0WQZmdG/GRLRRxp60HMacs8tGvXOtRmVzh8ZAgAnAPXBeCcCwjMmz8IfJFTG6x3ExvYc3sZpHM3G/RuaxrEbJsUvGk/EEhkGxBQYGcQvF3fEXhbfxNkVGMi0EsHKpA9vywoPmcsKD8XLUg8jzLgQd8zNEo7MPRQ8zAoWUstIGUXLFBo7zAcbwNDSHULRRB6G0c0exM9xI5TO/SW1zT4n28wDKHDLzihwyW8p68XNKQnEkikUwyUpVsJwKDcAx9KPEubSMxGb048OT9QADSTV6wub1YYLntb7CrfXxArL2NYKxNkiC4bamguy2kgMq9p7DujahQ+828UQotx1Edbd4xH/3gcS4OQiElHmgxLJ5zYTeumdFIHq5xVT63EXy+viGNzrHhqu61IbSOvxG6PqiBwU6tQcR+kJHXDlaB2j5M8d6+OHHknidiIA4Y8kdt+7JnneoCju3RsqhN3DKszcnCoz27YpntcSJ/PVeSW31fYkENYAJN/VuCJD1aQhntOZHy3TzR730gAe/dIzHc7TABqt01IY1dJmEw=="
+   },
+   {
+    "key": "t:0",
+    "level": 1,
+    "id": 0,
+    "parent": 0,
+    "label": "Instrumental Hip-Hop",
+    "hue": 0,
+    "anchor": [
+     41917,
+     16934
+    ],
+    "size": 19
+   },
+   {
+    "key": "t:1",
+    "level": 1,
+    "id": 1,
+    "parent": 0,
+    "label": "Jazzy Hip-Hop",
+    "hue": 0,
+    "anchor": [
+     48320,
+     25414
+    ],
+    "size": 19
+   },
+   {
+    "key": "t:2",
+    "level": 1,
+    "id": 2,
+    "parent": 0,
+    "label": "Gangsta",
+    "hue": 0,
+    "anchor": [
+     55875,
+     12251
+    ],
+    "size": 13
+   },
+   {
+    "key": "t:3",
+    "level": 1,
+    "id": 3,
+    "parent": 1,
+    "label": "Alternative Rock",
+    "hue": 180,
+    "anchor": [
+     7979,
+     56097
+    ],
+    "size": 34
+   },
+   {
+    "key": "t:4",
+    "level": 1,
+    "id": 4,
+    "parent": 2,
+    "label": "Dubstep",
+    "hue": 90,
+    "anchor": [
+     55124,
+     7632
+    ],
+    "size": 19
+   }
+  ],
+  "points": {
+   "n": 104,
+   "format": "cols-v1",
+   "data": "AQAAAAIAAAADAAAABAAAAAUAAAAGAAAABwAAAAgAAAAJAAAACgAAAAsAAAAMAAAADQAAAA4AAAAPAAAAEAAAABEAAAASAAAAEwAAABQAAAAVAAAAFgAAABcAAAAYAAAAGQAAABoAAAAbAAAAHAAAAB0AAAAeAAAAHwAAACAAAAAhAAAAIgAAACMAAAAkAAAAJQAAACYAAAAnAAAAKAAAACkAAAAqAAAAKwAAACwAAAAuAAAALwAAADAAAAAxAAAAMgAAADMAAAA0AAAANQAAADYAAAA3AAAAOAAAADkAAAA6AAAAPAAAAD0AAAA+AAAAPwAAAEEAAABCAAAAQwAAAEQAAABFAAAARgAAAEcAAABIAAAASQAAAEsAAABMAAAATQAAAE4AAABPAAAAUAAAAFEAAABSAAAAUwAAAFYAAABYAAAAWQAAAFoAAABcAAAAXQAAAF4AAABfAAAAYAAAAGEAAABiAAAAYwAAAGQAAABlAAAAZgAAAGcAAABoAAAAaQAAAGoAAABrAAAAbAAAAG0AAABuAAAAbwAAAHAAAAAwskoOdy1/yyEVeSfppsvqmBXwyK8vWyLltkyjYSviHfoNPb+3FSsfYzqOwReoqzARD423B7i5Gt8qbgx2D8CxM7CbICc05cKWLc0gvaO5wkUSwLx+GFQSYiCa1E+SShSPw3ULa9VVx0QK6ek1uKIdJpcqyMy2bspbzEbKRDbi4ZnvYKDUlLLwgsXK1fut2NzG0fwZGed0JR3VxtOw1kWcgd6dug7acs611YibXeZD2t/NOcRU17v1UtycpIql0eOC3/Srgtvypi+ryputnsrCN2y50ajcmAxWxxfZmEkvGybeVmej0FmwUVvMV3XjL+ja2ENtHvIh277Z7jgLYc7i2OfuQjJpstLbyfrAE+pXUpYqq9dG5lRpOe7C9SZCEGLdv0Zj2PQltz/vBi6ePw3pa1LfxeIqfFvUv30zNExmugREgCLUQwAVuFYJJkbWCRaGMt1Ob01aKHFHNhNAZPgfoGCqxKEVG+AuSzBkhAu/VpYbtVXVFi05GETpTeEk2y/2HlEY0B32M+dGzS/VTgYzPQqAOiInETiORvY/WjoCKAABAQIBAQACAQABAQAAAQEBAAEBAQAAAQEAAAEBAQEAAAEBAAEBAAABAAEBAQAAAQABAAABAAABAAIAAgACAQIAAAAAAAIAAgABAgEAAAIAAgACAAAAAgACAgIAAAAAAAIAAgAAAAACAQMDBAMDAAQDAQMDAQADAwMBAwMDAgEDAwABAwMDAwEAAwMBAwMAAQMBAwMDAgADAQMCAQMCAQMABAAEAQQDBAIAAAIBBAEEAQMEAwIBBAAEAQQCAgAEAgQEBAICAAACBAAEAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+  }
+ },
+ "overlays": {
+  "moodAll": {
+   "rev": "50ef05011e5222eb",
+   "layer": "mood",
+   "n": 104,
+   "moods": {},
+   "data": "/////////////////w=="
+  },
+  "moodHappy": {
+   "rev": "50ef05011e5222eb",
+   "layer": "mood",
+   "n": 104,
+   "moods": {
+    "valence": "happy"
+   },
+   "data": "VeAgxWgCQxACAApQAg=="
+  },
+  "plays": {
+   "rev": "50ef05011e5222eb",
+   "layer": "plays",
+   "n": 104,
+   "data": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  }
+ },
+ "search": {
+  "the": {
+   "ids": [
+    54,
+    62,
+    65,
+    75,
+    79,
+    81,
+    98,
+    100
+   ],
+   "best": 75,
+   "capped": false
+  },
+  "zzzz": {
+   "ids": [],
+   "best": null,
+   "capped": false
+  }
+ },
+ "neighbours": {
+  "id": 75,
+  "answer": {
+   "seed": {
+    "id": 75,
+    "filepath": "demo/Boukmanflow/The Hangout.mp3",
+    "metadata": {
+     "title": "The Hangout",
+     "artist": "Boukmanflow"
+    }
+   },
+   "notAnalyzed": false,
+   "capped": false,
+   "neighbours": [
+    {
+     "id": 27,
+     "filepath": "demo/Boukmanflow/Business as usual.mp3",
+     "metadata": {
+      "title": "Business as usual",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.7951
+    },
+    {
+     "id": 40,
+     "filepath": "demo/Boukmanflow/Hi Kick.mp3",
+     "metadata": {
+      "title": "Hi Kick",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.7294
+    },
+    {
+     "id": 39,
+     "filepath": "demo/ALM/Voyage à l'Ancienne Orléans/Swing.mp3",
+     "metadata": {
+      "title": "Swing",
+      "artist": "ALM"
+     },
+     "similarity": 0.7118
+    },
+    {
+     "id": 14,
+     "filepath": "demo/ALM/Voyage à l'Ancienne Orléans/Love of this key.mp3",
+     "metadata": {
+      "title": "Love of this key",
+      "artist": "ALM"
+     },
+     "similarity": 0.683
+    },
+    {
+     "id": 36,
+     "filepath": "demo/Boukmanflow/TRAILBLAZERS.mp3",
+     "metadata": {
+      "title": "TRAILBLAZERS",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.6774
+    },
+    {
+     "id": 13,
+     "filepath": "demo/Boukmanflow/Trouble in paradise.mp3",
+     "metadata": {
+      "title": "Trouble in paradise",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.675
+    },
+    {
+     "id": 42,
+     "filepath": "demo/Boukmanflow/Guard Up!.mp3",
+     "metadata": {
+      "title": "Guard Up!",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.6735
+    },
+    {
+     "id": 94,
+     "filepath": "demo/Boukmanflow/Crystalstair.mp3",
+     "metadata": {
+      "title": "Crystalstair",
+      "artist": "Boukmanflow"
+     },
+     "similarity": 0.6727
+    }
+   ]
+  }
+ }
+}

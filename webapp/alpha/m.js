@@ -437,6 +437,10 @@ function setBrowserRootPanel(panelName, showBar) {
   // again (showMoodFilters), with the panel closed — hidden by default on
   // every visit.
   hideMoodFilters();
+  // The music map: its mount, its head and its hold on the column go
+  // (mapHide). Guarded: the unit tests run this function in sandboxes
+  // without the map.
+  typeof mapHide === 'function' && mapHide();
 
   // Inside a peer view every panel says whose library it is showing.
   const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
@@ -833,6 +837,8 @@ async function init() {
     document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
     // The Discover page (seeded by play history): its nav entry, its flags.
     applyDiscoveryPing(response);
+    // The music map (mapPanel): its nav entry, on the same ping.
+    applyMapPing(response);
 
     // Federation: is there another server to point this app at? The flag
     // means "federation is on AND at least one peer is paired" — no probing.
@@ -2877,6 +2883,9 @@ async function onBackButton() {
   } else if (backState.state === 'discovery') {
     // An album opened from the Discover page: back to the page as it was.
     discoveryPanel({ keep: true });
+  } else if (backState.state === 'map' && typeof mapPanel === 'function') {
+    // An album or artist opened over the map: the map again (a new visit).
+    mapPanel();
   }
 
   // Fill in Search Bar
@@ -3360,7 +3369,7 @@ const MOODS = {
   // How sure every group must be — the server's `threshold`. Standard is
   // its default, left off the wire (and a filter's `level` left unset).
   levels: [['strict', 0.7], ['standard', 0.5], ['loose', 0.3]],
-  filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {} },
+  filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {}, map: {} },
   // The song lists' order: 'list' — their own (rating, date added) — or
   // 'match'. Per list for the visit, and not part of the filter.
   sort: { rated: 'list', recent: 'list' },
@@ -3389,12 +3398,14 @@ function moodFilterBody(list, f = MOODS.filters[list] || {}) {
 // One pressed value per scale (pressed again, it lets go), any number of
 // tags, and Clear while anything is set. The lists' buttons call their
 // handlers; Discover's carry data-dp actions for its own dispatcher (and
-// its focus restore after a redraw); Auto DJ's carry none — its panel
-// listens on the row and keeps the filter itself ([f]).
+// its focus restore after a redraw), the map's data-mmh ones for its head
+// (mapPickMood); Auto DJ's carry none — its panel listens on the row and
+// keeps the filter itself ([f]).
 function moodPanelHtml(list, f = MOODS.filters[list] || {}) {
   const dp = list === 'discover';
+  const mm = list === 'map';
   const dj = list === 'autodj';
-  const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : dj ? '' : `onclick="${handler}"`);
+  const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : mm ? `data-mmh="${act}" data-v="${v}"` : dj ? '' : `onclick="${handler}"`);
   const scale = ([group, values, label]) => `<div class="mood-seg" role="group" aria-label="${escapeHtml(t(label))}">${values.map((v) =>
     `<button type="button" class="mood-seg-btn" data-mood-group="${group}" data-mood-value="${v}" aria-pressed="${f[group] === v}" ${on(`pickMood('${group}', '${v}')`, 'mood', `${group}:${v}`)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
   const tags = `<div class="mood-tags" role="group" aria-label="${escapeHtml(t('moods.tagsGroup'))}">${MOODS.tags.map((tag) =>
@@ -3787,6 +3798,13 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
   if (under && under.state === 'discovery') {
     document.getElementById('directory_bar').style.display = '';
     discoveryHideHead();
+  }
+  // The map holds the column (its head, #filelist's overflow, the split):
+  // an album opened over it (the now-playing card's) takes the column
+  // back, with the bar, so Back returns to the map (onBackButton).
+  if (under && under.state === 'map' && typeof mapHide === 'function') {
+    document.getElementById('directory_bar').style.display = '';
+    mapHide();
   }
   browseKeepReset(true);
   document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
@@ -7216,6 +7234,796 @@ async function autoDjPanel() {
   _syncVpathsToLegacy();
 }
 
+///////////////// Music map
+// The Atlas sound map (docs/music-map-plan.md §4): this library laid out
+// by sound, drawn on a canvas in #filelist beside Now Playing. The
+// drawing, its gestures and its cards are alpha/music-map.js
+// (window.MUSICMAP), mounted with `deps` (mapDeps) and holding no globals;
+// this part is the panel around it — the nav entry, the head (#map-head:
+// Search, Filters, Plays heat), the column, the teardown and the verbs.
+// Local-only: the nav entry is .local-only, the state is never
+// peer-capable, and mapPanel() on a connected server goes home first.
+const mapView = {
+  mount: null,       // the map on screen: { token, gen, alive, inst, listeners, vue, onVisible }
+  seq: 0,            // one token per mount
+  off: false,        // a 403 took the map away for the session (deps.disable)
+  playsOff: false,   // a 403 on the plays overlay took Plays heat away for the session
+  heat: false,       // Plays heat pressed (this visit)
+  searchOpen: false, // the head's search field shown (this visit)
+  moodsOpen: false,  // the head's Filters panel open (this visit)
+  filtersOff: false, // the last mood overlay said this server has no scores to filter by
+  searchTimer: null, // the search field's 300 ms debounce
+};
+
+const MAP_ICONS = {
+  search: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>',
+  // the Most Played trend line, stroked (the boards' Plays heat)
+  heat: '<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8M15 7h6v6"/></svg>',
+  // the bar's Filters funnel and its "a filter is set" dot (mood-filter-btn)
+  moods: '<svg xmlns="http://www.w3.org/2000/svg" height="22" width="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg>',
+  // a browse row's ▾ (createMusicFileHtml), exactly: class pop-f on the
+  // svg and its path keeps #pop-f open through their mouseup (vp.js)
+  menu: '<svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362" aria-hidden="true"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>',
+};
+
+// The ping's flag (init()): the nav entry shows on `discovery === true &&
+// discoveryMap >= 1` (an integer generation, like discoveryTaste) — unless
+// a 403 took the map away for the session.
+function applyMapPing(response) {
+  const r = response || {};
+  MSTREAMAPI.currentServer.discoveryMap = r.discovery === true && Number(r.discoveryMap) >= 1;
+  document.getElementById('nav-map')?.classList.toggle('super-hide', !MSTREAMAPI.currentServer.discoveryMap || mapView.off);
+}
+
+// The nav entry is a focusable link (role=link, tabindex=0): Enter and
+// Space open it, as a click does. Space stops here — on window it is the
+// player's play/pause.
+function mapNavKey(ev, el) {
+  if (!ev || (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar')) { return; }
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (ev.repeat) { return; }
+  changeView(mapPanel, el);
+}
+
+// The map is the page: its root panel, nothing opened over it.
+function mapOnScreen() {
+  return programState.length === 1 && !!programState[0] && programState[0].state === 'map';
+}
+
+/**
+ * mapPanel() — the nav click, a server switch landing on the map, Back from
+ * a page opened over it. In this order: programState first (so
+ * switchServer(null)'s keep logic lands back here), the peer guard, a
+ * browseGeneration bump (a load still out for the page left must not draw
+ * over the map), setBrowserRootPanel (which tears any previous mount down
+ * through mapHide), the head (#map-head), the column's classes, then
+ * MUSICMAP.mount(filelist, deps). The map's own awaits live in the
+ * controller; every one of them goes through deps.api, whose answers are
+ * dropped once the browseGeneration this mount was drawn under has moved on
+ * (deps.live), and a 403 from GET /map is deps.disable(): the nav entry goes
+ * for the session and the File Explorer takes over (the Sonic Path pattern).
+ *
+ * THE CONTRACT: MUSICMAP.mount(host, deps) → { update(state), destroy() }.
+ * `host` is #filelist (position: relative, overflow hidden while the map is
+ * up: #filelist.mmap-on). mount() draws one root, <div class="mmap
+ * mmap-plate">, in it; the .mmap class is also hotkeysSkip's scope (vp.js):
+ * a button inside it that the keyboard brought focus to keeps every key
+ * (Space and Enter press it), while the plate stops its own keys (the
+ * arrows, + = − and Esc) itself, so Space on the plate or on a button a
+ * click left focused is still the player's play / pause. m.js never
+ * calls update(): everything from outside the host reaches the controller
+ * through the subscriptions below. destroy() (called by mapHide on the way
+ * out) cancels rAF and the building timer, disconnects the ResizeObserver
+ * and removes the controller's own window / document listeners; the
+ * subscriptions taken through deps are dropped by mapHide itself.
+ *
+ * A `row` is a song as the map's routes answer it: { filepath, metadata }
+ * (lite metadata; filepath in the vpath form, no leading slash).
+ *
+ * deps = {
+ *   t(key, params)        the i18n lookup (window.t)
+ *   escapeHtml(s)         for any markup built from a title, an artist or a label
+ *   spinnerHtml           the app's indeterminate spinner (getLoadingSvg()), for `building`
+ *   reducedMotion()       prefers-reduced-motion: reduce, read at call time (jump, don't ease)
+ *   generation()          browseGeneration now
+ *   live()                this mount is still the map on screen (its browseGeneration, the
+ *                         map panel, not torn down) — check it after every await
+ *   disable()             a 403 on GET /map (or an unknown points.format / landFormat): the
+ *                         nav entry goes for the session and, on the next tick, the File
+ *                         Explorer takes the column (this mount is destroyed then)
+ *   api: {                status-preserving wrappers (MSTREAMAPI.discoveryMap*): a 2xx body,
+ *                         { disabled: true } on 403, { notFound: true } on 404, { stale: true }
+ *                         on 409, { busy: true } on 429, null on anything else (network, timeout).
+ *                         An answer landing after live() went false never settles.
+ *     map()                         GET  /api/v1/discovery/map (revalidated via the HTTP cache, ETag)
+ *     overlay(layer, rev, moods)    GET  …/map/overlay — layer 'mood' | 'plays'; moods = the
+ *                                   filter's wire form (deps.moods.filter()), null for none
+ *     tracks(body)                  POST …/map/tracks  { ids: [..] } | { filepaths: [..] } (≤ 500)
+ *     search(q)                     POST …/map/search  q: 2..128 characters
+ *     region(key)                   POST …/map/region  (limit 50)
+ *     neighbours(id)                POST …/map/neighbours  (limit 8)
+ *   }
+ *   head: {               the toolbar m.js draws in #map-head
+ *     onSearch(fn)        fn(q) 300 ms after the last keystroke: the field's trimmed text when it
+ *                         holds 2+ characters, else '' ('' at once when the field empties or
+ *                         closes) — '' clears the search highlight
+ *     onSearchEnter(fn)   fn(q) on Enter in the field (the pending debounce is dropped): search q
+ *                         now if it is not the answer on screen, then select its `best` — or, while
+ *                         a song pick is armed (capture.armed()), answer the pick with it
+ *     onPlaysHeat(fn)     fn(on) when the user presses Plays heat (aria-pressed already flipped)
+ *     setPlaysHeat(on)    set the pressed state, firing nothing
+ *     hidePlaysHeat()     a 403 on the plays overlay: Plays heat goes for the session (unpressed)
+ *     showFilters(on)     false when a mood overlay answer carried no `moods` (no scores here):
+ *                         Filters hides (its panel closes); true brings it back
+ *     (each on* returns its unsubscribe)
+ *   }
+ *   moods: {
+ *     available()         this server filters by mood (the ping; songListMoods()) — Filters shows
+ *     filter()            MOODS.filters.map in the wire form (moodFilterBody('map')), or null
+ *     subscribe(fn)       fn(filter) after each change of what it would send; → unsubscribe
+ *   }
+ *   nowPlaying: {
+ *     path()              the playing song's filepath (vpath form, no leading slash), or null:
+ *                         nothing plays, or it is a connected server's song
+ *                         (discoveryNowPlayingPath)
+ *     title()             its title (the file name when untagged), '' when path() is null — the
+ *                         off-screen chevron's {{title}}
+ *     startedAt()         when the playing song started (its play session, epoch ms), or null:
+ *                         the DJ trail's 30-minute gap counts back from there, so a long song or
+ *                         a long pause never empties a trail that ends at now playing
+ *     subscribe(fn)       fn(path) on each change of MSTREAMPLAYER.playerStats.metadata.filepath
+ *                         (one Vue watcher per mount); → unsubscribe
+ *   }
+ *   trail: {              the DJ trail's sources (§4.5), raw: the controller folds them
+ *     sessionId()         this tab's play-session id (MSTREAMPLAYSESSION.tabSessionId(); it
+ *                         survives reloads), null without one
+ *     recentPlays()       MSTREAMPLAYER.stats.recentPlays(): this page's finished plays, newest
+ *                         first, at most 50, unposted ones included — each the play as posted,
+ *                         { id (the history item's id once posted), filePath (as the queue held
+ *                         it: a leading slash is possible), startedAt, endedAt (ISO), playedMs,
+ *                         durationMs?, outcome, source, pauseCount, sessionId?, peerId?,
+ *                         track? }, plus `federated` (a connected server's song)
+ *     history()           GET /api/v1/stats/history?limit=50&origin=local, through the api
+ *                         contract ({ items, next } | { disabled: true } | null) — once per visit
+ *   }
+ *   capture: {            a song pick armed anywhere (VUEPLAYERCORE.songCapture): the map's own
+ *                         Sonic Path end pick, or another panel's (Sonic Path's "Pick from
+ *                         library…", Discover's "Add a song…") — the next dot answers it first
+ *     armed()             a pick is waiting
+ *     mine()              the waiting pick is the map's own (verbs.sonicPath)
+ *     answer(row)         answer it with this row, as a browse row's click does (onFileClick):
+ *                         taken at once (armed() is false after it), answered on the next tick;
+ *                         → true when one was waiting. Another panel's pick then takes the user
+ *                         back to that panel (this mount is destroyed then)
+ *     cancel()            drop the map's own pick and its banner (Esc, the sea or the card's ×
+ *                         while it waits); another panel's pick stays armed
+ *   }
+ *   verbs: {              the cards' verbs, built from the existing ones (§4.4)
+ *     play(row)           Play: after the current song, and start (queueRow … positionCache.val + 1)
+ *     queue(row)          Queue: to the end (queueRow)
+ *     songMenuGlyph       the ▾ glyph (a browse row's, exactly: svg and path classed pop-f)
+ *     songMenu(el)        ▾: the row's playlist menu (createPopper3) anchored on `el`, which must
+ *                         carry data-file_location (the row's filepath) and class pop-f
+ *     autoDj(row)         Auto DJ from here: sonic mode on (kept on, the user's preference), the
+ *                         row as the DJ's seed, the DJ started (toggleAutoDJ) or kicked
+ *                         (autoDjKick); the current song and the queued rows play first
+ *     sonicPath(start, { onPath, onCancel })
+ *                         Sonic Path: `start` is the start; arms the end pick with the pick
+ *                         banner, no navigation. Its answer (a dot through capture.answer, or
+ *                         Enter) builds the path (MSTREAMAPI.discoveryPath, SONICPATH.length
+ *                         stops), written into SONICPATH so the Sonic Path panel lists the same
+ *                         journey; then onPath({ start, end, rows, notAnalyzed: { start, end } }),
+ *                         or onPath(null) when it failed (toasted; a 403 also hides Sonic Path).
+ *                         The banner's Cancel drops the pick and calls onCancel()
+ *     playAll(rows)       place / path Play: replaces the queue and starts row 0 — one synchronous
+ *                         block (clearPlaylist, row 0 autoplay on, the rest off); fetch first
+ *     queueAll(rows)      place / path Queue all: appended, then the "queued" toast
+ *     saveAsPlaylist(rows) place / path Save as playlist: the name-a-playlist modal
+ *   }
+ *   visible: {
+ *     now()               the page is visible (document.visibilityState)
+ *     subscribe(fn)       fn() each time the page becomes visible again; → unsubscribe
+ *   }
+ * }
+ *
+ * CSS hooks (spa.css, "The music map"), all inside .mmap (its tokens:
+ * --sea #171a1f, --page #1e2228, --plate-edge #2a2f37, --lit #f5f7fa,
+ * --ring #e6e8ec, --pin #fa832b, --ctl #2d333b, --ctl-edge #444c56,
+ * --title #ffffff, --sub #d0d3da, --muted #a0a7b3). Every box in the plate
+ * is placed by its top-left corner (inline left / top in px); z-index stays
+ * under #pop-f's 100:
+ *   .mmap-plate     the root: absolute in #filelist, the sea, its 1 px edge, radius 8
+ *   .mmap-canvas    the <canvas role="img">: fills the plate, touch-action: none
+ *   .mmap-layer     the button layer over it (pointer-events only on its buttons, which are
+ *                   touch-action: none: a drag, a pinch or the wheel from a name is the map's)
+ *   .mmap-name      a place name (button; colour inline): .mmap-name-p a province
+ *                   (Jura 700 uppercase, tracking .16em; size inline 13/12/11 px),
+ *                   .mmap-name-t a town (system 500 italic 12.5 px); aria-pressed
+ *   .mmap-song      a lit song's hit target over its mark (transparent; size inline)
+ *   .mmap-title     a neighbour's title (system 500 12 px, --ring), a button
+ *   .mmap-tip       the hover tooltip "Title · Artist"
+ *   .mmap-ctrls     the controls' column, top-right: .mmap-ctrl (40 × 40; aria-pressed
+ *                   orange), .mmap-zoom (the + / − group, 40 × 80, .mmap-zoom-div between)
+ *   .mmap-chevron   the off-screen pin's button on the plate edge
+ *   .mmap-card      the docked card, bottom-left (.mmap-card-song 506 px, .mmap-card-place
+ *                   and .mmap-card-path 420 px; full width on a phone): .mmap-card-head
+ *                   holds .mmap-card-text (.mmap-card-line: the song's .mmap-card-glyph and
+ *                   the .mmap-card-title; then .mmap-card-sub) and .mmap-close (40 × 40);
+ *                   then .mmap-verbs, the .mmap-pill buttons (36 px; .mmap-pill-pri the
+ *                   orange Play, .mmap-pill-icon the icon-only ▾, which also carries pop-f)
+ *   .mmap-state     a state's one line over the plate (.mmap-line, its Try again a
+ *                   .mmap-pill), or the building spinner (deps.spinnerHtml)
+ *   .dm-sr          the visually hidden live region (role="status")
+ * Icons: spa.css paints every svg white (svg { fill: #FFF }); inside .mmap
+ * an svg's own fill="none" (stroked) or fill="currentColor" (filled) stands.
+ */
+function mapPanel() {
+  programState = [{ state: 'map' }];
+  if (peerContext) {
+    // Local-only: home first (switchServer draws the map again).
+    switchServer(null);
+    return;
+  }
+  // What the column was still loading belongs to the page left: its answer
+  // must not land over the map (every loader drops a superseded one).
+  browseGeneration++;
+  setBrowserRootPanel(t('panel.map'), false);
+  currentBrowsingList = [];
+  const m = {
+    token: ++mapView.seq,
+    gen: browseGeneration,
+    alive: true,
+    inst: null,
+    vue: null,
+    onVisible: null,
+    listeners: { search: new Set(), searchEnter: new Set(), heat: new Set(), moods: new Set(), nowPlaying: new Set(), visible: new Set() },
+  };
+  mapView.mount = m;
+  mapView.heat = false;
+  mapView.searchOpen = false;
+  mapView.moodsOpen = false;
+  mapView.filtersOff = false;
+  mapRenderHead();
+  const filelist = document.getElementById('filelist');
+  filelist.classList.add('mmap-on');
+  document.body.classList.add('map-open');
+  document.getElementById('nav-map')?.setAttribute('aria-current', 'page');
+  filelist.innerHTML = '';
+  filelist.scrollTop = 0;
+  // No controller (its script did not load), or one that cannot draw: the
+  // plate and the failed state's one line.
+  const failed = `<div class="mmap mmap-plate"><div class="mmap-state"><div class="mmap-line">${escapeHtml(t('map.failed'))}</div></div></div>`;
+  if (typeof MUSICMAP === 'undefined' || !MUSICMAP || typeof MUSICMAP.mount !== 'function') {
+    filelist.innerHTML = failed;
+    return;
+  }
+  let inst = null;
+  try {
+    inst = MUSICMAP.mount(filelist, mapDeps(m));
+  } catch (err) {
+    console.error('the music map could not be drawn', err);
+    if (m.alive) { filelist.innerHTML = failed; }
+  }
+  // mount() may already have handed the column back (deps.disable, a
+  // capture answered): a torn-down mount's answer is destroyed at once.
+  if (m.alive) {
+    m.inst = inst;
+  } else if (inst && typeof inst.destroy === 'function') {
+    try { inst.destroy(); } catch (_) { /* already gone */ }
+  }
+}
+
+// Every root panel calls this (setBrowserRootPanel, guarded), as does an
+// album opened over the map (getAlbumSongs): the mount goes (destroy), and
+// with it the subscriptions it took through deps — the head's, the moods',
+// the now-playing watcher, the visibility listener — the map's own pending
+// Sonic Path pick, the head, the column's classes and aria-current.
+function mapHide() {
+  const m = mapView.mount;
+  mapView.mount = null;
+  clearTimeout(mapView.searchTimer);
+  mapView.searchTimer = null;
+  if (m) {
+    m.alive = false;
+    for (const set of Object.values(m.listeners)) { set.clear(); }
+    if (m.vue) {
+      try { m.vue.$destroy(); } catch (_) { /* gone with the page */ }
+      m.vue = null;
+    }
+    if (m.onVisible) {
+      document.removeEventListener('visibilitychange', m.onVisible);
+      m.onVisible = null;
+    }
+    const inst = m.inst;
+    m.inst = null;
+    if (inst && typeof inst.destroy === 'function') {
+      try { inst.destroy(); } catch (err) { console.error('the music map could not be torn down', err); }
+    }
+  }
+  // The map's own end pick answers nothing once the map is gone.
+  mapCancelPick();
+  const head = document.getElementById('map-head');
+  if (head) {
+    head.classList.add('super-hide');
+    head.innerHTML = '';
+  }
+  document.getElementById('filelist')?.classList.remove('mmap-on');
+  document.body.classList.remove('map-open');
+  document.getElementById('nav-map')?.removeAttribute('aria-current');
+}
+
+// The map's own Sonic Path end pick (mapSonicPath) and its banner, dropped:
+// on the way out (mapHide), or when the map clears its selection while the
+// pick waits (deps.capture.cancel). Another panel's pick (Sonic Path's,
+// Discover's) stays armed.
+function mapCancelPick() {
+  if (typeof VUEPLAYERCORE !== 'undefined' && VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.mmap === true) {
+    VUEPLAYERCORE.songCapture = null;
+    sonicPathHideBanner();
+  }
+}
+
+// Hand a value to this mount's subscribers of one kind.
+function mapEmit(kind, value) {
+  const m = mapView.mount;
+  if (!m || !m.alive || !m.listeners[kind]) { return; }
+  for (const fn of [...m.listeners[kind]]) {
+    try { fn(value); } catch (err) { console.error(`music map: a ${kind} subscriber failed`, err); }
+  }
+}
+
+// The deps one mount gets (the contract: mapPanel's comment).
+function mapDeps(m) {
+  const live = () => m.alive && m.gen === browseGeneration && mapOnScreen();
+  // An answer landing after the map moved on never settles: dropped.
+  const guard = (p) => Promise.resolve(p).then((res) => (live() ? res : new Promise(() => {})));
+  const on = (kind, attach) => (fn) => {
+    if (!m.alive || typeof fn !== 'function') { return () => {}; }
+    const set = m.listeners[kind];
+    set.add(fn);
+    if (attach) { attach(); }
+    return () => { set.delete(fn); };
+  };
+  return {
+    t: (key, params) => t(key, params),
+    escapeHtml: (s) => escapeHtml(s),
+    spinnerHtml: getLoadingSvg(),
+    reducedMotion: () => !!(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches),
+    generation: () => browseGeneration,
+    live,
+    disable: () => mapDisable(m),
+    api: {
+      map: () => guard(MSTREAMAPI.discoveryMap()),
+      overlay: (layer, rev, moods) => guard(MSTREAMAPI.discoveryMapOverlay(layer, rev, moods)),
+      tracks: (body) => guard(MSTREAMAPI.discoveryMapTracks(body)),
+      search: (q) => guard(MSTREAMAPI.discoveryMapSearch(q)),
+      region: (key) => guard(MSTREAMAPI.discoveryMapRegion(key)),
+      neighbours: (id) => guard(MSTREAMAPI.discoveryMapNeighbours(id)),
+    },
+    head: {
+      onSearch: on('search'),
+      onSearchEnter: on('searchEnter'),
+      onPlaysHeat: on('heat'),
+      setPlaysHeat: (pressed) => { if (m.alive) { mapSetHeat(pressed === true, false); } },
+      hidePlaysHeat: () => {
+        mapView.playsOff = true;
+        if (m.alive) {
+          mapSetHeat(false, false);
+          const btn = document.getElementById('map-heat-btn');
+          // the keyboard was on it (its press asked for the layer): Search takes it, not the page
+          if (btn && document.activeElement === btn) { document.getElementById('map-search-btn')?.focus(); }
+          btn?.classList.add('super-hide');
+        }
+      },
+      showFilters: (shown) => {
+        if (!m.alive) { return; }
+        mapView.filtersOff = shown === false;
+        if (mapView.filtersOff) {
+          mapView.moodsOpen = false;
+          // the keyboard on Filters or in its panel (a pick asked for the mask): Search takes it
+          const a = document.activeElement, panel = document.getElementById('map-moods');
+          if (a && (a.id === 'map-moods-btn' || (panel && typeof panel.contains === 'function' && panel.contains(a)))) { document.getElementById('map-search-btn')?.focus(); }
+        }
+        document.getElementById('map-moods-btn')?.classList.toggle('super-hide', mapView.filtersOff);
+        mapRenderMoods();
+      },
+    },
+    moods: {
+      available: () => songListMoods() !== null,
+      filter: () => moodFilterBody('map'),
+      subscribe: on('moods'),
+    },
+    nowPlaying: {
+      path: () => discoveryNowPlayingPath(),
+      title: () => {
+        const path = discoveryNowPlayingPath();
+        if (!path) { return ''; }
+        const meta = MSTREAMPLAYER.playerStats && MSTREAMPLAYER.playerStats.metadata;
+        return (meta && meta.title) || path.split('/').pop();
+      },
+      startedAt: () => {
+        const s = MSTREAMPLAYER.stats && typeof MSTREAMPLAYER.stats.session === 'function' ? MSTREAMPLAYER.stats.session() : null;
+        return s && Number.isFinite(s.startedAt) ? s.startedAt : null;
+      },
+      subscribe: on('nowPlaying', () => mapWatchNowPlaying(m)),
+    },
+    trail: {
+      sessionId: () => {
+        try {
+          return typeof MSTREAMPLAYSESSION !== 'undefined' ? MSTREAMPLAYSESSION.tabSessionId() : null;
+        } catch (_) { return null; }
+      },
+      recentPlays: () => (MSTREAMPLAYER.stats && typeof MSTREAMPLAYER.stats.recentPlays === 'function' ? MSTREAMPLAYER.stats.recentPlays() : []),
+      history: () => guard(MSTREAMAPI.statsHistory({ limit: 50, origin: 'local' })),
+    },
+    capture: {
+      armed: () => !!VUEPLAYERCORE.songCapture,
+      mine: () => !!(VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.mmap === true),
+      // Taken now (one-shot), answered on the next tick: another panel's
+      // pick navigates back to that panel, which tears this mount down —
+      // never from inside the controller's own handler.
+      answer: (row) => {
+        const capture = VUEPLAYERCORE.songCapture;
+        if (!capture || !row || !row.filepath) { return false; }
+        VUEPLAYERCORE.songCapture = null;
+        const song = { filepath: row.filepath, metadata: row.metadata || {} };
+        setTimeout(() => { capture(song); }, 0);
+        return true;
+      },
+      cancel: () => { if (m.alive) { mapCancelPick(); } },
+    },
+    verbs: {
+      play: (row) => { if (row && row.filepath) { queueRow(null, row.filepath, mapRowMeta(row), MSTREAMPLAYER.positionCache.val + 1); } },
+      queue: (row) => { if (row && row.filepath) { queueRow(null, row.filepath, mapRowMeta(row)); } },
+      songMenuGlyph: MAP_ICONS.menu,
+      songMenu: (el) => { if (el) { createPopper3(el); } },
+      autoDj: (row) => mapAutoDj(row),
+      sonicPath: (start, cbs) => mapSonicPath(m, start, cbs),
+      playAll: (rows) => mapPlayAll(rows),
+      queueAll: (rows) => mapQueueAll(rows),
+      saveAsPlaylist: (rows) => mapSaveAsPlaylist(rows),
+    },
+    visible: {
+      now: () => typeof document === 'undefined' || document.visibilityState !== 'hidden',
+      subscribe: on('visible', () => {
+        if (m.onVisible || !m.alive) { return; }
+        m.onVisible = () => { if (document.visibilityState !== 'hidden') { mapEmit('visible'); } };
+        document.addEventListener('visibilitychange', m.onVisible);
+      }),
+    },
+  };
+}
+
+// The now-playing signal: one bare Vue watcher per mount on the reactive
+// filepath (the vp.js playlistVue pattern), handing on the song's path in
+// the map's form (null for a connected server's song); mapHide destroys it.
+function mapWatchNowPlaying(m) {
+  if (m.vue || !m.alive || typeof Vue !== 'function') { return; }
+  m.vue = new Vue({
+    data: { meta: MSTREAMPLAYER.playerStats.metadata },
+    watch: {
+      'meta.filepath': function () {
+        if (m.alive && mapView.mount === m) { mapEmit('nowPlaying', discoveryNowPlayingPath()); }
+      },
+    },
+  });
+}
+
+// A 403 on GET /map (or a format this page cannot read): the map is gone
+// for the session — its nav entry now, and on the next tick (so the
+// controller's own call returns first) the File Explorer takes the column,
+// while this mount is still the page.
+function mapDisable(m) {
+  mapView.off = true;
+  MSTREAMAPI.currentServer.discoveryMap = false;
+  document.getElementById('nav-map')?.classList.add('super-hide');
+  setTimeout(() => {
+    if (!m.alive || m.gen !== browseGeneration || !mapOnScreen()) { return; }
+    changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+  }, 0);
+}
+
+// The head (#map-head, above the scroller): Search (it reveals the field),
+// Filters (moodPanelHtml('map'), when this server filters by mood), a
+// spacer, then Plays heat. The controls are buttons with names; .mmap puts
+// the head in hotkeysSkip's scope, so Space presses one the keyboard is on.
+function mapHeadHtml() {
+  const v = mapView;
+  const moods = songListMoods() !== null;
+  const search = `<button type="button" class="mmap-hbtn" id="map-search-btn" data-mmh="search" aria-expanded="${v.searchOpen ? 'true' : 'false'}" aria-controls="map-search" aria-label="${escapeHtml(t('map.search'))}" title="${escapeHtml(t('map.search'))}">${MAP_ICONS.search}</button>`
+    + `<input type="search" class="browser-default mmap-search${v.searchOpen ? '' : ' super-hide'}" id="map-search" maxlength="128" autocomplete="off" spellcheck="false" aria-label="${escapeHtml(t('map.search'))}" placeholder="${escapeHtml(t('map.search'))}">`;
+  const filters = moods
+    ? `<button type="button" class="mood-filter-btn mmap-hbtn${moodFilterBody('map') ? ' mood-on' : ''}${v.filtersOff ? ' super-hide' : ''}" id="map-moods-btn" data-mmh="moods" aria-expanded="${v.moodsOpen ? 'true' : 'false'}" aria-controls="map-moods" aria-label="${escapeHtml(t('moods.filters'))}" title="${escapeHtml(t('moods.filters'))}">${MAP_ICONS.moods}</button>`
+    : '';
+  const heat = v.playsOff
+    ? ''
+    : `<button type="button" class="mmap-hbtn" id="map-heat-btn" data-mmh="heat" aria-pressed="${v.heat ? 'true' : 'false'}" aria-label="${escapeHtml(t('map.playsHeat'))}" title="${escapeHtml(t('map.playsHeat'))}">${MAP_ICONS.heat}</button>`;
+  const panel = moods
+    ? `<div class="mood-filters mmap-moods super-hide" id="map-moods" role="region" aria-label="${escapeHtml(t('moods.filters'))}"></div>`
+    : '';
+  return `<div class="mmap mmap-head"><div class="mmap-bar">${search}${filters}<span class="grow"></span>${heat}</div>${panel}</div>`;
+}
+
+function mapRenderHead() {
+  const head = document.getElementById('map-head');
+  if (!head) { return; }
+  head.innerHTML = mapHeadHtml();
+  head.classList.remove('super-hide');
+  const root = head.querySelector('.mmap-head');
+  if (root) {
+    root.addEventListener('click', onMapHeadClick);
+    root.addEventListener('input', onMapHeadInput);
+    root.addEventListener('keydown', onMapHeadKey);
+  }
+  mapRenderMoods();
+}
+
+// The Filters panel as the visit left it (open or closed), and the
+// button's state: orange with a dot while a filter is set. `refocus`: the
+// panel control the keyboard was on (the draw replaced it).
+function mapRenderMoods(refocus) {
+  const btn = document.getElementById('map-moods-btn');
+  const panel = document.getElementById('map-moods');
+  const open = mapView.moodsOpen === true && !mapView.filtersOff && !!btn && !!panel;
+  if (btn) {
+    btn.classList.toggle('mood-on', moodFilterBody('map') !== null);
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (!panel) { return; }
+  panel.classList.toggle('super-hide', !open);
+  panel.innerHTML = open ? moodPanelHtml('map') : '';
+  if (open && refocus) { panel.querySelector(refocus)?.focus(); }
+}
+
+function onMapHeadClick(ev) {
+  const el = ev && ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-mmh]') : null;
+  if (!el) { return; }
+  const act = el.getAttribute('data-mmh');
+  if (act === 'search') {
+    mapToggleSearch(!mapView.searchOpen);
+  } else if (act === 'moods') {
+    mapView.moodsOpen = !mapView.moodsOpen;
+    mapRenderMoods();
+  } else if (act === 'heat') {
+    mapSetHeat(!mapView.heat, true);
+  } else {
+    mapPickMood(act, el.getAttribute('data-v'));
+  }
+}
+
+// The field: shown and focused, or hidden — hiding it with text in it
+// clears the search (and the keyboard goes back to its button).
+function mapToggleSearch(open) {
+  const field = document.getElementById('map-search');
+  const btn = document.getElementById('map-search-btn');
+  mapView.searchOpen = open === true;
+  if (btn) { btn.setAttribute('aria-expanded', mapView.searchOpen ? 'true' : 'false'); }
+  if (!field) { return; }
+  field.classList.toggle('super-hide', !mapView.searchOpen);
+  if (mapView.searchOpen) {
+    field.focus();
+    return;
+  }
+  clearTimeout(mapView.searchTimer);
+  mapView.searchTimer = null;
+  if (field.value) {
+    field.value = '';
+    mapEmit('search', '');
+  }
+  if (btn) { btn.focus(); }
+}
+
+// Typing searches 300 ms after the last key (from 2 characters); an
+// emptied field clears at once.
+function onMapHeadInput(ev) {
+  const el = ev && ev.target;
+  if (!el || el.id !== 'map-search') { return; }
+  clearTimeout(mapView.searchTimer);
+  mapView.searchTimer = null;
+  const q = String(el.value || '').trim();
+  if (!q) {
+    mapEmit('search', '');
+    return;
+  }
+  mapView.searchTimer = setTimeout(() => {
+    mapView.searchTimer = null;
+    mapEmit('search', q.length >= 2 ? q : '');
+  }, 300);
+}
+
+// Enter selects the best match now (or answers an armed pick with it);
+// Esc empties the field, then closes it.
+function onMapHeadKey(ev) {
+  const el = ev && ev.target;
+  if (!el || el.id !== 'map-search') { return; }
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    clearTimeout(mapView.searchTimer);
+    mapView.searchTimer = null;
+    mapEmit('searchEnter', String(el.value || '').trim());
+  } else if (ev.key === 'Escape') {
+    ev.preventDefault();
+    if (el.value) {
+      clearTimeout(mapView.searchTimer);
+      mapView.searchTimer = null;
+      el.value = '';
+      mapEmit('search', '');
+    } else {
+      mapToggleSearch(false);
+    }
+  }
+}
+
+// Plays heat's pressed state; `emit`: the user pressed it.
+function mapSetHeat(on, emit) {
+  mapView.heat = on === true;
+  document.getElementById('map-heat-btn')?.setAttribute('aria-pressed', mapView.heat ? 'true' : 'false');
+  if (emit) { mapEmit('heat', mapView.heat); }
+}
+
+// A mood button in the map's Filters: the lists' rules (pickMood,
+// toggleMoodTag, pickMoodLevel, clearMoodFilters) on the map's own filter,
+// as Discover's discoveryPickMood does; the controller hears a change of
+// what the filter would send (deps.moods.subscribe) and asks the overlay.
+function mapPickMood(act, val) {
+  if (!MOODS.filters.map) { MOODS.filters.map = {}; }
+  const f = MOODS.filters.map;
+  const before = JSON.stringify(moodFilterBody('map'));
+  if (act === 'mood') {
+    const [group, value] = String(val).split(':');
+    if (!MOODS.scales.some(([g, values]) => g === group && values.includes(value))) { return; }
+    f[group] = f[group] === value ? undefined : value;
+  } else if (act === 'moodTag') {
+    if (!MOODS.tags.includes(val)) { return; }
+    const tags = new Set(f.tags || []);
+    if (tags.has(val)) { tags.delete(val); } else { tags.add(val); }
+    f.tags = [...tags];
+  } else if (act === 'moodLevel') {
+    if (!MOODS.levels.some(([l]) => l === val) || moodLevel(f) === val) { return; }
+    if (val === 'standard') { delete f.level; } else { f.level = val; }
+  } else if (act === 'moodClear') {
+    MOODS.filters.map = {};
+  } else {
+    return;
+  }
+  // Clear hides itself: the keyboard goes back to the Filters button.
+  mapRenderMoods(act === 'moodClear' ? null : `[data-mmh="${act}"][data-v="${val}"]`);
+  if (act === 'moodClear') { document.getElementById('map-moods-btn')?.focus(); }
+  const body = moodFilterBody('map');
+  if (JSON.stringify(body) !== before) { mapEmit('moods', body); }
+}
+
+// A row's metadata, copied: the queue edits its entries' metadata in
+// place (ratings), which must not reach back into the map's rows.
+function mapRowMeta(row) {
+  return Object.assign({}, (row && row.metadata) || {});
+}
+
+// Auto DJ from here (song card; place card on its centre): sonic mode on —
+// a persisted preference, kept on (the plan's decision 3) — the row as the
+// seed, then the DJ turned on, or kicked when it is on already (a kick
+// picks only for an empty queue: the current song and the queued rows play
+// first).
+function mapAutoDj(row) {
+  if (!row || !row.filepath) { return; }
+  const meta = row.metadata || {};
+  const title = meta.title || String(row.filepath).split('/').pop();
+  AUTODJ.setState({ sonicEnabled: true });
+  AUTODJ.setSonicSeed(row.filepath, meta.artist ? `${title} — ${meta.artist}` : title);
+  if (MSTREAMPLAYER.playerStats.autoDJ) {
+    MSTREAMPLAYER.autoDjKick();
+  } else {
+    MSTREAMPLAYER.toggleAutoDJ();
+  }
+}
+
+// Sonic Path from the song card: `start` is the start; the end pick arms
+// (the pick banner, no navigation away) and the next song picked — a dot,
+// Enter on a lit song or in search — answers it (capture.answer).
+function mapSonicPath(m, start, cbs) {
+  if (!start || !start.filepath) { return; }
+  const o = cbs || {};
+  const capture = (end) => {
+    sonicPathHideBanner();
+    mapBuildPath(m, start, end, o.onPath);
+  };
+  capture.mmap = true;
+  VUEPLAYERCORE.songCapture = capture;
+  // Cancel drops the pick (showPickBanner's own), then tells the card.
+  showPickBanner(t('sonicPath.pickBannerEnd'), () => {
+    if (m.alive && typeof o.onCancel === 'function') { o.onCancel(); }
+  });
+}
+
+// The path between the two picks, built as the Sonic Path panel builds it
+// (sonicPathBuild) and kept in SONICPATH, so that panel shows the same
+// journey — its list is the reading order where stops coincide on the map.
+async function mapBuildPath(m, start, end, onPath) {
+  const strip = (p) => String(p || '').replace(/^\/+/, '');
+  if (!end || !end.filepath) { return; }
+  const res = await MSTREAMAPI.discoveryPath(strip(start.filepath), strip(end.filepath), SONICPATH.length);
+  const done = (value) => {
+    if (typeof onPath === 'function' && m.alive && m.gen === browseGeneration) { onPath(value); }
+  };
+  if (res && res.disabled) {
+    // 403 — the flag was stale; retract the panel for the session.
+    document.getElementById('nav-sonic-path')?.classList.add('super-hide');
+    iziToast.error({ title: t('sonicPath.disabled'), position: 'topCenter', timeout: 3500 });
+    done(null);
+    return;
+  }
+  if (!res) {
+    iziToast.error({ title: t('sonicPath.failed'), position: 'topCenter', timeout: 3000 });
+    done(null);
+    return;
+  }
+  const field = (row) => {
+    const meta = row.metadata || {};
+    return {
+      rawFilePath: row.filepath,
+      title: meta.title || String(row.filepath).split('/').pop(),
+      artist: meta.artist || '',
+      art: meta['album-art'] || null,
+    };
+  };
+  SONICPATH.start = field(start);
+  SONICPATH.end = field(end);
+  SONICPATH.rows = Array.isArray(res.results) ? res.results : [];
+  SONICPATH.view = 'results';
+  SONICPATH.loading = false;
+  SONICPATH.fetched = true;
+  SONICPATH.notAnalyzedStart = !!(res.notAnalyzed && res.notAnalyzed.start);
+  SONICPATH.notAnalyzedEnd = !!(res.notAnalyzed && res.notAnalyzed.end);
+  done({
+    start,
+    end: { filepath: end.filepath, metadata: end.metadata || {} },
+    rows: SONICPATH.rows.slice(),
+    notAnalyzed: { start: SONICPATH.notAnalyzedStart, end: SONICPATH.notAnalyzedEnd },
+  });
+}
+
+// Place / path Play: replace the queue and start. One synchronous block —
+// no await between the clear and the adds: clearPlaylist, row 0 with
+// autoplay on (the first song of an empty queue starts), the rest with it
+// off. With Auto DJ on, clearPlaylist starts the DJ's two-song bootstrap,
+// whose first pick lands only after its fetch, so row 0 is what starts and
+// one DJ pick follows the rows. That pick's request is built inside
+// clearPlaylist, so the rows' ids join the DJ's cooldown (its ignoreList,
+// track ids, newest last) first: the pick that follows the mix avoids its
+// songs. Never sonicPathPlay(true) (it cues row 0 paused) or clearAndPlay
+// (it swaps the array Vue renders).
+function mapPlayAll(rows) {
+  const list = (rows || []).filter((r) => r && r.filepath);
+  if (!list.length) { return; }
+  if (MSTREAMPLAYER.playerStats.autoDJ === true && typeof AUTODJ !== 'undefined' && typeof AUTODJ.setIgnoreList === 'function') {
+    const ids = list.map((r) => r.id).filter((id) => Number.isInteger(id) && id >= 0);
+    AUTODJ.setIgnoreList(AUTODJ.getIgnoreList().filter((id) => !ids.includes(id)).concat(ids));
+  }
+  MSTREAMPLAYER.clearPlaylist();
+  list.forEach((r, i) => {
+    VUEPLAYERCORE.addSongWizard(r.filepath, mapRowMeta(r), false, undefined, false, i > 0);
+  });
+}
+
+// Place / path Queue all: Discover's loop (discoveryQueueAll), then its toast.
+function mapQueueAll(rows) {
+  const list = (rows || []).filter((r) => r && r.filepath);
+  if (!list.length) { return; }
+  for (const r of list) {
+    VUEPLAYERCORE.addSongWizard(r.filepath, mapRowMeta(r), false, undefined, false, true);
+  }
+  iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+}
+
+// Place / path Save as playlist: the shared name-a-playlist modal, with
+// the songs as they were when it opened.
+function mapSaveAsPlaylist(rows) {
+  const paths = (rows || []).filter((r) => r && r.filepath).map((r) => r.filepath);
+  if (!paths.length) { return; }
+  openSavePlaylistModal(() => paths);
+}
+
 ////////////// Jukebox
 function setupJukeboxPanel() {
   setBrowserRootPanel(t('panel.jukeboxMode'), false);
@@ -7672,6 +8480,7 @@ const PANELS_BY_STATE = {
   searchPanel: () => setupSearchPanel(),
   discoverDownloads: () => discoverDownloadsPanel(),
   discovery: () => discoveryPanel(),
+  map: () => mapPanel(),
 };
 
 // Which of those a federated server can actually answer: its library, and
