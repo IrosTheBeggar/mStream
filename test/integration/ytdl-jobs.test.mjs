@@ -250,7 +250,7 @@ describe('ytdl jobs · per account, with ids, reasons and the name check', { ski
       const { entry } = await addAndSettle(danaToken, 'geo');
       assert.equal(entry.status, 'error');
       assert.equal(entry.reason, 'unavailable');
-      assert.equal(entry.error, '[youtube] geo: The uploader has not made this video available in your country');
+      assert.equal(entry.error, 'The uploader has not made this video available in your country');
     } finally { writeScript(); }
   });
 

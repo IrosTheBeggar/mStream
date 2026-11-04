@@ -4397,10 +4397,12 @@ function ytdlToast(job) {
     title,
     position: 'topCenter',
     timeout: 6000,
+    // (no focus on Details: the toast comes when the add ends, maybe
+    // minutes on, and must not take the keys from what's being typed)
     buttons: [[`<button>${escapeHtml(t(v.details.key))}</button>`, (instance, toast) => {
       instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
       ytdlOpenPanel({ needsLook: true });
-    }, true]],
+    }, false]],
   });
 }
 

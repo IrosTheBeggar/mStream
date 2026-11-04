@@ -93,6 +93,14 @@ describe('ytdl jobs', () => {
     assert.equal(jobs.listFor(2, { now: T0 + n + 20 }).length, 1);
   });
 
+  test('publicMessage: an extractor\'s refusal reads as YouTube\'s words, without yt-dlp\'s tag', () => {
+    assert.equal(jobs.publicMessage(new Error('[youtube] bot00000001: Sign in to confirm you’re not a bot.')), 'Sign in to confirm you’re not a bot.');
+    assert.equal(jobs.publicMessage(new Error('[youtube:tab] PLx_9-a: This playlist is private')), 'This playlist is private');
+    // only a leading tag, and never down to nothing
+    assert.equal(jobs.publicMessage(new Error('ffmpeg exited with code 1: [mp3 @ 0x1] bad frame')), 'ffmpeg exited with code 1: [mp3 @ 0x1] bad frame');
+    assert.equal(jobs.publicMessage(new Error('[youtube] x: ')), '[youtube] x:');
+  });
+
   test('publicMessage: the staging folder and the library\'s place on disk never reach the caller', () => {
     const stage = path.join(path.sep, 'srv', 'mstream', 'save', 'discover-staging', 'job-ytdl-Ab12Cd');
     const lib = path.join(path.sep, 'mnt', 'music', 'Inbox');
@@ -111,7 +119,7 @@ describe('ytdl jobs', () => {
     assert.equal(jobs.publicMessage(new Error('unable to write data: [Errno 28] No space left on device: \'C:\\\\data\\\\stage\\\\job-ytdl-1\\\\Song.webm.part\''), win),
       'unable to write data: [Errno 28] No space left on device: \'Song.webm.part\'');
     assert.equal(jobs.publicMessage(new Error('[Errno 13] Permission denied: \'D:\\\\Music\\\\Inbox\\\\Song.mp3\''), win), '[Errno 13] Permission denied: \'inbox/Song.mp3\'');
-    assert.equal(jobs.publicMessage(new Error('[youtube] x: Video unavailable'), pairs), '[youtube] x: Video unavailable', 'words without paths are left alone');
+    assert.equal(jobs.publicMessage(new Error('Video unavailable. This video is private'), pairs), 'Video unavailable. This video is private', 'words without paths are left alone');
     assert.equal(jobs.publicMessage('a string', pairs), 'a string');
     assert.equal(jobs.publicMessage(null, pairs), 'the download failed');
   });

@@ -110,8 +110,11 @@ export function toPublic(job) {
 // path for what the caller may see (the staging folder for nothing, so a
 // staged file reads as its bare name; the library folder for the folder
 // they named). Longest first, so a folder inside another is swapped whole.
+// An extractor's refusal ("[youtube] <id>: Sign in to confirm …") keeps
+// YouTube's words and drops yt-dlp's tag for itself.
 export function publicMessage(err, replacements = []) {
-  let text = String((err && err.message) || err || 'the download failed').trim();
+  let text = String((err && err.message) || err || 'the download failed').trim()
+    .replace(/^\[[^\]\s]+\]\s+[^\s:]+:\s+(?=\S)/, '');
   const pairs = replacements
     .filter(([from]) => typeof from === 'string' && from.length > 1)
     .sort((a, b) => b[0].length - a[0].length);
