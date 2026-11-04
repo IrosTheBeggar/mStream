@@ -52,6 +52,7 @@ The demo site does not require you to sign in because mStream is publicly access
 #### Docker
 
 * [Docker Instructions](https://github.com/linuxserver/docker-mstream)
+* [![Deploy on Easypanel](https://easypanel.io/img/deploy-on-easypanel-40.svg)](https://easypanel.io/templates/mstream) - mStream has a one-click deployment template on [Easypanel](https://easypanel.io), a self-hosted Docker deployment platform
 
 #### Other
 
