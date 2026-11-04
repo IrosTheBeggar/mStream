@@ -12,7 +12,9 @@
  *     typed); every data-i18n key of the four pages that load i18n.js that
  *     en.json has is a plain string with no placeholder (translatePage()
  *     passes no params); the retired Youtube DL tab's and old strip's keys
- *     are in no file, and no value names "Youtube DL";
+ *     are in no file, and no value names "Youtube DL"; every Add from
+ *     YouTube key (ytdl.*, its sidenav, panel and button words) is in all
+ *     twelve files, none empty;
  *   - plural objects: each carries every form its own language's
  *     Intl.PluralRules picks for a whole number, plus `other`, and no form
  *     that language never picks (no `two` in Russian or Polish); a form
@@ -165,6 +167,17 @@ describe('the locale files', () => {
       assert.deepEqual(extra, [], `${l}.json keys en.json does not have`);
       const shape = Object.keys(DICTS[l]).filter((k) => isPlural(DICTS[l][k]) !== isPlural(EN[k]));
       assert.deepEqual(shape, [], `${l}.json keys that are a string where en has a plural object, or the other way`);
+    });
+  });
+
+  test('Add from YouTube is translated everywhere: every ytdl.* key en.json has, and its sidenav, panel and button words, is in all twelve files, not empty', () => {
+    const keys = Object.keys(EN).filter((k) => k.startsWith('ytdl.')).concat(['nav.addFromYoutube', 'panel.addFromYoutube', 'tooltip.addFromYoutubeHere']);
+    assert.ok(keys.length > 150, `en.json has the feature's words (${keys.length} keys)`);
+    keys.forEach((k) => assert.ok(hasOwn(EN, k), `en.json ${k}`));
+    const blank = (v) => formsOf(v).some((s) => typeof s !== 'string' || !s.trim());
+    LANGS.forEach((l) => {
+      assert.deepEqual(keys.filter((k) => !hasOwn(DICTS[l], k)), [], `${l}.json lacks these Add from YouTube keys`);
+      assert.deepEqual(keys.filter((k) => blank(DICTS[l][k])), [], `${l}.json has these Add from YouTube keys empty`);
     });
   });
 
