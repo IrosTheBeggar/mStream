@@ -158,6 +158,66 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/taste', body || {});
   };
 
+  // The music map (/api/v1/discovery/map*, docs/music-map-plan.md §3.8).
+  // Raw fetch like discoveryReq, but status-preserving: the map acts on
+  // which failure it got (§4.6), where discoveryReq folds every one but
+  // 403 into null.
+  //   2xx              the body
+  //   403              { disabled: true }   feature off, no layout here, or no account (plays)
+  //   404              { notFound: true }   region / track gone: refetch the map, clear
+  //   409              { stale: true }      the overlay's rev is not the map's any more
+  //   429              { busy: true }       search past its concurrency gate
+  //   anything else    null                 other statuses, a network error, the timeout
+  // `query` is an object of strings (undefined values left out); `body` is
+  // sent as JSON. GET /map revalidates through the browser's HTTP cache:
+  // the route answers `private, no-cache` with a strong ETag, so a 304
+  // comes back here as the cached 200.
+  const MAP_TIMEOUT_MS = 60000;
+  async function discoveryMapFetch(method, route, opts) {
+    const o = opts || {};
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries(o.query || {})) {
+      if (v !== undefined && v !== null) { q.append(k, String(v)); }
+    }
+    const qs = q.toString();
+    const ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), o.timeoutMs || MAP_TIMEOUT_MS) : null;
+    try {
+      const headers = { 'x-access-token': mstreamModule.currentServer.token };
+      if (o.body !== undefined) { headers['Content-Type'] = 'application/json'; }
+      const res = await fetch(mstreamModule.currentServer.host + route + (qs ? '?' + qs : ''), {
+        method,
+        headers,
+        body: o.body !== undefined ? JSON.stringify(o.body) : undefined,
+        signal: ctl ? ctl.signal : undefined,
+      });
+      if (res.status === 403) { return { disabled: true }; }
+      if (res.status === 404) { return { notFound: true }; }
+      if (res.status === 409) { return { stale: true }; }
+      if (res.status === 429) { return { busy: true }; }
+      if (!res.ok) { return null; }
+      return await res.json();
+    } catch (_) {
+      return null;
+    } finally {
+      if (timer) { clearTimeout(timer); }
+    }
+  }
+  mstreamModule.discoveryMapFetch = discoveryMapFetch;
+
+  // The layout: { state, model, rev, layout, regions, points } (§3.8.3).
+  mstreamModule.discoveryMap = () => discoveryMapFetch('GET', 'api/v1/discovery/map');
+  // layer 'mood' | 'plays', against the map's `rev`; `moods` is a mood
+  // filter in the wire form (moodFilterBody), null for none (all ones).
+  mstreamModule.discoveryMapOverlay = (layer, rev, moods) => discoveryMapFetch('GET', 'api/v1/discovery/map/overlay', {
+    query: { layer, rev, moods: moods ? JSON.stringify(moods) : undefined },
+  });
+  // { ids } → { tracks: [row | null] }; { filepaths } → { ids: [id | null] }.
+  mstreamModule.discoveryMapTracks = (body) => discoveryMapFetch('POST', 'api/v1/discovery/map/tracks', { body: body || {} });
+  mstreamModule.discoveryMapSearch = (q) => discoveryMapFetch('POST', 'api/v1/discovery/map/search', { body: { q } });
+  mstreamModule.discoveryMapRegion = (key) => discoveryMapFetch('POST', 'api/v1/discovery/map/region', { body: { key } });
+  mstreamModule.discoveryMapNeighbours = (id) => discoveryMapFetch('POST', 'api/v1/discovery/map/neighbours', { body: { id } });
+
   // Discovery plug-ins — what this server lets a user do with a network or
   // peer recommendation. Reveal via the ping's discoveryPlugins flag, never
   // a probe; the list itself is fetched on the first row menu.
@@ -587,6 +647,13 @@ const MSTREAMAPI = (() => {
   }
   mstreamModule.postNowPlaying = (body) => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/stats/now-playing', body);
+  }
+  // The listening log, newest first ({ items, next }): `query` as the
+  // route takes it (limit, origin, before, …). The map's DJ trail reads
+  // one page per visit. The map's contract: { disabled: true } on 403 (a
+  // guest, a federation key), null on any other failure.
+  mstreamModule.statsHistory = (query) => {
+    return discoveryMapFetch('GET', 'api/v1/stats/history', { query: query || {} });
   }
 
   // LOGIN

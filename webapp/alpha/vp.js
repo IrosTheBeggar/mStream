@@ -4780,7 +4780,12 @@ const VUEPLAYERCORE = (() => {
   // and Enter press its buttons, the arrows move through a radio group, and
   // nothing should seek, skip or pause behind it — and a key on a connected
   // server's page control that opens the window (its header's Keep a
-  // copy…, a row's or a card's ⋯): Space presses it, as Enter does.
+  // copy…, a row's or a card's ⋯): Space presses it, as Enter does. And
+  // any key on a music map button (.mmap: its head and its plate) that the
+  // keyboard brought focus to: Space and Enter press it. A map button that
+  // a click or a tap left focused (or a card that click opened), and the
+  // plate itself, leave Space to the player's play / pause; the plate stops
+  // its own keys (the arrows pan, + and − zoom, Esc clears) before here.
   function hotkeysSkip(target) {
     // the recommendation window holds the keyboard while it is open, even
     // when focus fell out of it for a moment (a control it was on went away)
@@ -4788,8 +4793,20 @@ const VUEPLAYERCORE = (() => {
     if (!target || typeof target.tagName !== 'string') { return false; }
     const element = target.tagName.toLowerCase();
     if (element === 'input' || element === 'textarea' || element === 'select' || target.isContentEditable) { return true; }
-    return typeof target.closest === 'function' && target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more') !== null;
+    if (typeof target.closest !== 'function') { return false; }
+    if (target.closest('.dmodal-shadow, .browse-keep, .browse-keep-tab, .browse-keep-more') !== null) { return true; }
+    return element === 'button' && target.closest('.mmap') !== null && hotkeysFocusBy !== 'pointer';
   }
+
+  // How focus last arrived: after a pointer press (a click, a tap), or by
+  // the keyboard — Tab, Enter, a screen reader; the default. :focus-visible
+  // cannot tell them apart here: Chrome turns it on for the focused element
+  // at the keydown itself, before any listener runs.
+  let hotkeysInput = 'key';
+  let hotkeysFocusBy = 'key';
+  document.addEventListener('pointerdown', () => { hotkeysInput = 'pointer'; }, true);
+  document.addEventListener('keydown', () => { hotkeysInput = 'key'; }, true);
+  document.addEventListener('focusin', () => { hotkeysFocusBy = hotkeysInput; }, true);
 
   window.addEventListener("keydown", (event) => {
     // Use default behavior if user is in a form, an editable element or the

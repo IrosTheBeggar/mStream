@@ -613,6 +613,13 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" fill="none"/><path d="M15 9l-2 5-4 1 2-5z" fill="#DDD"/></svg>
       <span data-i18n="nav.discover">Discover</span>
     </div>
+    <!-- Map — the music map (m.js mapPanel). Hidden until the ping
+         advertises discovery && discoveryMap >= 1. A focusable link:
+         Enter and Space open it (mapNavKey). -->
+    <div id="nav-map" role="link" tabindex="0" class="local-only side-nav-item my-waves super-hide" onclick="changeView(mapPanel, this);" onkeydown="mapNavKey(event, this);" data-panel="map">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path fill="none" d="M3 6l6-3 6 3 6-3v15l-6 3-6-3-6 3z"/><path fill="none" d="M9 3v15M15 6v15"/></svg>
+      <span data-i18n="nav.map">Map</span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(getRatedSongs, this)" data-panel="allRated">
       <?xml version="1.0" encoding="iso-8859-1"?><svg width="24" height="24" xmlns="http://www.w3.org/2000/svg" viewBox="-3 0 62 62" style="enable-background:new 0 0 53.867 53.867"><path style="fill:#efce4a" d="M26.934 1.318l8.322 16.864 18.611 2.705L40.4 34.013l3.179 18.536-16.645-8.751-16.646 8.751 3.179-18.536L0 20.887l18.611-2.705z"/></svg>
       <span data-i18n="nav.rated">Rated</span>
@@ -871,6 +878,10 @@
              with Keep a copy… (m.js browseHeadDraw). Above the scroller, so
              the list's filter never redraws it; hidden on every other page. -->
         <div id="browse-head" class="super-hide"></div>
+        <!-- The music map's toolbar (m.js mapRenderHead): Search, Filters and
+             Plays heat, in the column's chrome above the scroller, as
+             #dpage-head is for Discover; hidden on every other page. -->
+        <div id="map-head" class="super-hide"></div>
         <!-- The Discover page's configuration bar and its open options (m.js
              renderDiscovery): part of the column's chrome, above the scroller,
              as #directory_bar is for the other panels; hidden elsewhere. -->
@@ -1511,6 +1522,9 @@
   <!-- The Discover page's pure half (window.DISCOVERYPAGE) — m.js reads it
        when the page opens (no load-time dependency). -->
   <script src="alpha/discovery-page.js"></script>
+  <!-- The music map (window.MUSICMAP): its pure core and the canvas
+       controller m.js mounts in #filelist (mapPanel). -->
+  <script src="alpha/music-map.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

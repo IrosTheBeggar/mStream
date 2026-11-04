@@ -1486,7 +1486,7 @@ The web column is the spec; the phone and terminal sections (§5, §6) point her
 | Full redraw at 100k | ≤ 50 ms |
 | Memory | ≤ 30 MB at 100k (grid index + buffers) |
 
-The module stays under 60 KB and loads eagerly beside `discovery-page.js` (`S/plan/read-webapp.md` §6).
+The module stays under 80 KB and loads eagerly beside `discovery-page.js` (`S/plan/read-webapp.md` §6). The draft's 60 KB did not survive the build: the core is about 40 KB and the controller about 36 KB (26 KB gzipped together), in line with `discovery-page.js` (69 KB) and `auto-dj.js` (67 KB), which also load eagerly. Lazy-loading the controller was weighed and not taken: it adds an async load path for about 6 % of the eager JavaScript.
 
 ### 4.9 Phone widths (no board)
 
