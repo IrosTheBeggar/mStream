@@ -58,6 +58,10 @@ The demo site does not require you to sign in because mStream is publicly access
 * [Install From Source](docs/install.md)
 * [AWS Cloud using Terraform](https://gitlab.com/SiliconTao-Systems/nova)
 
+## One-Click Deploy
+
+[![Deploy on RepoCloud](https://d16t0pc4846x52.cloudfront.net/deploylobe.svg)](https://repocloud.io/details/Mstream/)
+
 ## Mobile Apps
 
 #### Official Mobile Apps
