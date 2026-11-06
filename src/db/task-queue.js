@@ -21,6 +21,8 @@ import { invalidateCoverageCache } from './enrichment-status-lib.js';
 import { syncModelGenres } from './genre-sync.js';
 import { syncModelMoods } from './mood-sync.js';
 import { activeMoodVersion } from './discovery-features-lib.js';
+import * as sim from './discovery-similarity.js';
+import { readTrackMapPointer, mapPointerValid } from './map-sync.js';
 
 const __dirname = getDirname(import.meta.url);
 
@@ -224,7 +226,7 @@ export function findRustParser() {
     // Docker / tarball extraction can strip the execute bit — restore it.
     // No-op on Windows; if chmod fails (read-only volume etc.) the later
     // spawn will fail and trigger the JS fallback in runScan().
-    try { fs.chmodSync(binPath, 0o755); } catch (_) {}
+    try { fs.chmodSync(binPath, 0o755); } catch (_) { /* the spawn's own failure handles it */ }
     rustBinaryReady = true;
     return true;
   };
@@ -463,6 +465,7 @@ function nextTask() {
       else if (candidate.task === 'lyrics')   { runLyricsTask(candidate); }
       else if (candidate.task === 'audioanalysis') { runAudioAnalysisTask(candidate); }
       else if (candidate.task === 'discovery') { runDiscoveryTask(candidate); }
+      else if (candidate.task === 'map')      { runMapTask(candidate); }
       else if (candidate.task === 'acoustid') { runAcoustidTask(candidate); }
     } catch (err) {
       winston.error(`Task dispatch failed for ${JSON.stringify(candidate)} — dropping the task`, { stack: err });
@@ -474,7 +477,7 @@ function nextTask() {
 // queue makes a decision: they don't count against "drained" (the side
 // effects below are about the SCAN batch), they don't surface as `locked`
 // (isScanning), and they run strictly serial like everything else.
-const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'audioanalysis', 'acoustid'];
+const ENRICHMENT_KINDS = ['waveform', 'albumart', 'lyrics', 'discovery', 'map', 'audioanalysis', 'acoustid'];
 
 // ── Enrichment status registry ──────────────────────────────────────────────
 //
@@ -558,9 +561,16 @@ function checkQueueDrainedSideEffects() {
 // Now the discovery re-key commits in bounded chunks with a yield
 // between them, and the waveform re-key enumerates the cache dir ONCE
 // and only touches files that exist, through fs.promises. The ledger
-// DELETE still happens only after everything applied; a crash mid-way
-// re-applies cleanly (moved groups have no live sources → no-ops).
+// DELETE still happens only after everything applied, and takes only the
+// rows this run read; a crash mid-way re-applies cleanly (moved groups
+// have no live sources → no-ops).
 let hashTransitionsInFlight = false;
+// Scans started this process lifetime. Scans are the ledger's only writers
+// (the rust and JS scanners), so the count dates a ledger: a map pass let
+// past a failed apply carries the count at that apply's start
+// (mapWaitsForTransitions), and rows a scan started since may have written
+// get an attempt of their own before any pass runs past them.
+let scansStarted = 0;
 // 250 groups ≈ 250 ms of block per chunk on the rig (each move pays a
 // per-row export-id re-derivation); 500 measured ~2× that.
 const HASH_TRANSITION_CHUNK = 250;
@@ -569,19 +579,42 @@ const RENAME_CONCURRENCY = 16;
 async function applyHashTransitions() {
   if (hashTransitionsInFlight) { return; }
   hashTransitionsInFlight = true;
+  const scansBefore = scansStarted;
+  let outcome;
   try {
-    await applyHashTransitionsInner();
+    outcome = await applyHashTransitionsInner();
   } finally {
     hashTransitionsInFlight = false;
   }
+  // The music map's points were re-keyed in the same transactions; one map
+  // pass now reconciles the mirror's hashes (no point moves). Also the pass
+  // that waited for this apply (maybeEnqueueMap and runMapTask never run a
+  // map worker beside the applier or ahead of its ledger: it would read the
+  // re-keyed songs as gone). When the apply failed, that pass runs past the
+  // ledger it waited for, so a ledger that keeps failing never holds the map
+  // back; the next pass waits for an attempt of its own.
+  if (outcome.moved || mapAfterTransitions) {
+    const deferred = mapAfterTransitions || {};
+    mapAfterTransitions = null;
+    try {
+      // A parked pass keeps its own reason unless something really moved.
+      maybeEnqueueMap(outcome.moved ? 'after hash transitions' : deferred.reason, {
+        ...deferred, pastFailedLedger: outcome.failed ? scansBefore : null,
+      });
+    } catch (err) {
+      winston.warn('Music map enqueue after hash transitions failed', { stack: err });
+    }
+  }
 }
 
+// What one apply did: whether any discovery row or map point moved, and
+// whether it failed (the ledger then stays for the next attempt).
 async function applyHashTransitionsInner() {
   try {
     const mdb = db.getDB();
-    if (!mdb) { return; }
+    if (!mdb) { return { moved: false, failed: false }; }
     const rows = mdb.prepare('SELECT old_hash, new_hash FROM hash_transitions').all();
-    if (rows.length === 0) { return; }
+    if (rows.length === 0) { return { moved: false, failed: false }; }
 
     // Collapse chains to each terminal identity, grouping every source
     // that lands there. Cycles (edit-then-revert sequences recorded
@@ -626,12 +659,14 @@ async function applyHashTransitionsInner() {
     const ddb = discoveryDb.openDiscoveryDbIfExists();
     let applied = null;
     if (ddb) {
-      applied = { moved: 0, dropped: 0 };
+      applied = { moved: 0, dropped: 0, pointsMoved: 0, pointsDropped: 0 };
       for (let i = 0; i < groupList.length; i += HASH_TRANSITION_CHUNK) {
         const part = discoveryDb.applyHashTransitionGroups(
           groupList.slice(i, i + HASH_TRANSITION_CHUNK));
         applied.moved += part.moved;
         applied.dropped += part.dropped;
+        applied.pointsMoved += part.pointsMoved || 0;
+        applied.pointsDropped += part.pointsDropped || 0;
         await new Promise((resolve) => setImmediate(resolve));
       }
     }
@@ -698,13 +733,26 @@ async function applyHashTransitionsInner() {
       }
     }
 
-    mdb.prepare('DELETE FROM hash_transitions').run();
+    // Only the rows read above go. The applier is not a task, so a scan can
+    // be dispatched while it yields and commit more rows (or replace one in
+    // place: a chain step is INSERT OR REPLACE); those stay for the next
+    // drain instead of vanishing unapplied, which would strand their
+    // embeddings and make the next map pass take their songs for gone ones.
+    const delApplied = mdb.prepare('DELETE FROM hash_transitions WHERE old_hash = ? AND new_hash = ?');
+    db.transaction(() => { for (const r of rows) { delApplied.run(r.old_hash, r.new_hash); } });
     winston.info(`Applied ${rows.length} hash transition(s) (${groupList.length} identity group(s))`
       + (applied ? ` — discovery rows moved: ${applied.moved}, superseded: ${applied.dropped}`
         : ' (discovery inactive — drained)')
+      + (applied && applied.pointsMoved + applied.pointsDropped > 0
+        ? `; map points re-keyed: ${applied.pointsMoved}, superseded: ${applied.pointsDropped}` : '')
       + (renamed > 0 ? `; ${renamed} waveform artifact(s) re-keyed` : ''));
+    return {
+      moved: !!applied && applied.moved + applied.dropped + applied.pointsMoved + applied.pointsDropped > 0,
+      failed: false,
+    };
   } catch (err) {
     winston.warn(`Hash-transition apply failed (will retry on next drain): ${err.message}`);
+    return { moved: false, failed: true };
   }
 }
 
@@ -721,16 +769,18 @@ function runModelSyncs(when) {
   }
 }
 
-function checkQueueDrainedSideEffectsInner() {
-  // Enrichment passes (waveform decode, art download) don't count against
-  // "drained": the side effects below are about the SCAN batch — the
-  // passes change no library content the DLNA caches care about, and they
-  // are not part of any migration epoch (the marker must not wait minutes
-  // for background decode / throttled downloads before clearing).
-  const drained =
-    (activeTask === null || ENRICHMENT_KINDS.includes(activeTask.kind)) &&
+// Enrichment passes (waveform decode, art download) don't count against
+// "drained": the side effects below are about the SCAN batch — the
+// passes change no library content the DLNA caches care about, and they
+// are not part of any migration epoch (the marker must not wait minutes
+// for background decode / throttled downloads before clearing).
+function queueDrained() {
+  return (activeTask === null || ENRICHMENT_KINDS.includes(activeTask.kind)) &&
     !taskQueue.some((t) => !ENRICHMENT_KINDS.includes(t.task));
-  if (!drained) { return; }
+}
+
+function checkQueueDrainedSideEffectsInner() {
+  if (!queueDrained()) { return; }
 
   // Bump DLNA's SystemUpdateID so control points refresh their caches —
   // but only if some scan in the just-drained batch actually changed the
@@ -752,6 +802,11 @@ function checkQueueDrainedSideEffectsInner() {
   if (anyScansChanged || bootModelSyncPending) {
     bootModelSyncPending = false;
     runModelSyncs('on queue drain');
+    // The music map's mirror follows the same changes (a moved file is a
+    // new track id with the same hash; the first drain after boot covers an
+    // upgrade into the map). Consumed below, or by the embedding pass's
+    // settle when discovery work got queued.
+    mapEnqueuePending = true;
   }
 
   if (anyScansChanged) {
@@ -797,7 +852,16 @@ function checkQueueDrainedSideEffectsInner() {
   // Rows are drained after applying; when discovery has no DB (feature
   // off) only the waveform renames apply — embeddings that were never
   // collected have nothing to follow.
-  applyHashTransitions();
+  //
+  // Never beside a running map worker (§3.7): it may have read its
+  // inventory before these re-keys and would take the re-keyed songs for
+  // gone ones. The map's own close drains again, so the ledger is applied
+  // right after the pass, and the applier then enqueues the pass that
+  // follows the re-keys. (A map pass waits for a pending ledger at
+  // dispatch — mapWaitsForTransitions — so this guards the other order: a
+  // pass let past a failed apply that waited behind another task, which the
+  // close dispatching it drains right after.)
+  if (activeTask?.kind !== 'map') { applyHashTransitions(); }
 
   // Hand the now-idle stretch to the album-art download pass if a scan in
   // this drained batch asked for it. Done HERE — after the DLNA bump and
@@ -828,6 +892,16 @@ function checkQueueDrainedSideEffectsInner() {
   if (discoveryEnqueuePending) {
     discoveryEnqueuePending = false;
     maybeEnqueueDiscovery();
+  }
+
+  // Then the music map — unless an embedding pass is queued or running:
+  // its settle enqueues the map with fresher vectors (and a failed pass
+  // enqueues it from its own close), so the drain's mirror refresh is
+  // never lost. maybeEnqueueMap re-checks config and whether anything is
+  // mapped or mappable before forking.
+  if (mapEnqueuePending && !discoveryQueuedOrActive()) {
+    mapEnqueuePending = false;
+    maybeEnqueueMap('on queue drain');
   }
 
   // Then the essentia BPM/key analysis pass. Separate flag + enqueue so it
@@ -1017,7 +1091,7 @@ function attachScanHandlers(forkedScan, scanObj) {
   // Ensure scanner is killed on server shutdown; keep a handle so we can
   // drop the entry from the kill queue when the process exits cleanly —
   // otherwise the queue would grow unbounded across scheduled scans.
-  const killFn = () => { try { forkedScan.kill(); } catch (_) {} };
+  const killFn = () => { try { forkedScan.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
 
   // Claim the single in-flight slot. The kill function rides along so
@@ -1059,7 +1133,7 @@ function onScanClose(forkedScan, scanObj, code) {
   // Clean up progress row (scanner should have deleted it, but handle crashes)
   try {
     db.getDB()?.prepare('DELETE FROM scan_progress WHERE scan_id = ?').run(scanObj.id);
-  } catch (_) {}
+  } catch (_) { /* best-effort: the boot sweep clears leftovers */ }
 
   // A scan changes the track/album pools every coverage count is built
   // over — drop the status API's memo like the enrichment passes do.
@@ -2227,6 +2301,9 @@ function runDiscoveryTask(taskObj) {
     // embedding (drops out of the eligible set) or an error-cooldown row.
     if (code === 0 && !signal && observers.hitCap) {
       maybeEnqueueDiscovery();
+      // A long first backfill gets an early map instead of waiting days
+      // for the settle (guarded: a throw here would escape the close).
+      maybeEnqueueMapEarly();
     }
     // Backlog drained (no follow-up batch got queued — covers both the
     // terminal pass and the backlog-size-divisible-by-cap edge where the
@@ -2238,9 +2315,19 @@ function runDiscoveryTask(taskObj) {
       // into mstream.db before announcing the snapshot (the syncs are local
       // mstream.db work; they don't change what gets published).
       runModelSyncs('after embedding pass');
+      // The settle: the embedding backlog is drained, which is what lets a
+      // model switch rebuild the map (settled). Also after a catalogue-fill-
+      // only pass, where the worker just mirrors.
+      mapEnqueuePending = false;
+      maybeEnqueueMap('after embedding pass', { settled: true });
       import('../state/discovery-p2p.js')
         .then((p2p) => p2p.maybeAutoPublishSnapshot())
         .catch((err) => winston.warn(`discovery auto-publish after embedding pass failed: ${err.message}`));
+    }
+    // A pass that ended without settling still owes the drain its map pass.
+    if (mapEnqueuePending && (code !== 0 || signal)) {
+      mapEnqueuePending = false;
+      maybeEnqueueMap('after a failed embedding pass');
     }
     nextTask();
     checkQueueDrainedSideEffects();
@@ -2250,6 +2337,412 @@ function runDiscoveryTask(taskObj) {
     closeOnce(-1, null);
   });
   forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// ── Music map task ───────────────────────────────────────────────────────────
+//
+// The music map (src/db/map-layout.mjs, role 'map'): turns the active
+// model's embeddings into the Atlas layout the map routes serve
+// (src/api/discovery-map.js; docs/music-map-plan.md §3.3–§3.4). The worker
+// decides from the data what a run is — rebuild, refit, place, mirror or
+// empty — so the queue only says when: the embedding pass's settle, the
+// drain (mapEnqueuePending), after the hash-transition applier, early in a
+// long first backfill, at boot when nothing scans, and the admin rebuild.
+// No timer of its own: the daily scan chain (scan → embed → settle) is the
+// nightly cadence.
+//
+// Guards: never beside the hash-transition applier, in either order, nor
+// ahead of a ledger it has yet to apply (it re-keys map_points in chunks; a
+// worker beside it or ahead of it would read the re-keyed songs as gone) —
+// a pass runs past a pending ledger only when its own attempt at it failed;
+// one retry with a halved fit cap after a memory-guard exit or an
+// unexplained kill; a 30-minute kill timer; off after three failed passes
+// in a row, until restart or an admin rebuild.
+
+const MAP_SCRIPT_PATH = path.join(__dirname, './map-layout.mjs');
+const MAP_RUN_TIMEOUT_MS = Number(process.env.MSTREAM_TEST_MAP_TIMEOUT_MS) || 30 * 60 * 1000;
+// One run's placement budget (the worker's budgetSec).
+const MAP_BUDGET_SEC = 120;
+// Exit contract with map-layout.mjs.
+const MAP_SCHEMA_GUARD_EXIT = 3;
+const MAP_MEMORY_GUARD_EXIT = 5;
+// A halved fit cap never drops below the worker's floor.
+const MAP_FIT_CAP_FLOOR = 1000;
+const MAP_FAILURES_TO_LATCH = 3;
+// The early map in a long first backfill (§3.3.3 item 4).
+const MAP_EARLY_MIN_EMBEDDED = 1000;
+const MAP_EARLY_COVERAGE = 0.7;
+const MAP_EARLY_AGE_MS = 24 * 60 * 60 * 1000;
+
+let mapFitCapLatched = null;      // halved after a memory-guard exit or an unexplained kill; cleared on restart
+let mapRetryUsed = false;         // that retry happens once per boot
+let mapFailures = 0;              // consecutive failed passes; the third latches the pass off
+let mapPassFailing = false;       // the latch: off until restart or an admin rebuild
+let mapEnqueuePending = false;    // set at a drain that ran the model syncs; cleared only when a map pass is enqueued
+let mapAfterTransitions = null;   // { force, settled, reason } of a map pass that waited for the hash-transition applier
+
+// The check addDiscoveryTask inlines.
+function discoveryQueuedOrActive() {
+  return activeTask?.kind === 'discovery' || taskQueue.some((t) => t.task === 'discovery');
+}
+
+// Two requests folded into one: an admin rebuild or a settle is never lost.
+function mergeMapOptions(a, b) {
+  return { force: a?.force || b?.force || null, settled: !!(a?.settled || b?.settled) };
+}
+
+// Park a map pass until the hash-transition applier finishes (it enqueues
+// the pass then), folding it into any pass already parked.
+function deferMapUntilTransitions(reason, opts) {
+  mapAfterTransitions = { ...mergeMapOptions(mapAfterTransitions, opts), reason: mapAfterTransitions?.reason ?? reason };
+}
+
+// The hash-transition ledger still holds rows the applier has not consumed:
+// a scan wrote them and its drain has not run yet — every close handler
+// dispatches the next task before it drains, and a scan still queued keeps
+// the drain away altogether — or the last apply failed. A map worker must
+// not run then: the re-keyed songs' tracks already carry the new hash while
+// their points and discovery rows still carry the old one, so it would take
+// them for gone songs and prune or drop them (§3.7).
+function hashTransitionsPending() {
+  try {
+    return !!db.getDB()?.prepare('SELECT 1 FROM hash_transitions LIMIT 1').get();
+  } catch (err) {
+    winston.warn(`Music map: could not read the hash-transition ledger: ${err.message}`);
+    return false;
+  }
+}
+
+// Whether a map pass must wait for the hash-transition applier, which
+// enqueues it when it finishes: the applier is running, or a ledger is
+// waiting for it. A drain applies the ledger, so the pass waits for that
+// drain — but when nothing but enrichment passes is queued or running (the
+// drain's own condition) and no map worker runs, no drain may be coming (at
+// boot with scanInterval 0, say), so the applier starts here. Every pass
+// waits for an attempt of its own: a failure lets past only the pass that
+// waited for that attempt (`pastFailedLedger`, the scansStarted count at
+// its start), and only while no scan has started since — a ledger that
+// keeps failing never holds the map back, and one failure (a passing
+// SQLITE_BUSY, say) never lets later passes past a ledger that would apply.
+function mapWaitsForTransitions(pastFailedLedger = null) {
+  if (hashTransitionsInFlight) { return true; }
+  if (pastFailedLedger === scansStarted) { return false; }
+  if (!hashTransitionsPending()) { return false; }
+  if (activeTask?.kind !== 'map' && queueDrained()) { applyHashTransitions(); }
+  return true;
+}
+
+// Enqueue a map pass unless the feature is off or latched, or nothing is
+// mapped and nothing is mappable. `force: 'rebuild'` (the admin route)
+// skips that pre-check; `settled` says the embedding backlog just drained;
+// `pastFailedLedger` comes only from the applier (mapWaitsForTransitions).
+// Exported for the admin route (through requestMapRebuild) and tests.
+export function maybeEnqueueMap(reason, { force = null, settled = false, pastFailedLedger = null } = {}) {
+  const o = config.program.scanOptions;
+  if (o.collectDiscoveryData !== true || o.musicMap === false || mapPassFailing) { return; }
+  const ddb = discoveryDb.openDiscoveryDbIfExists();
+  if (!ddb) { return; }
+  if (!force) {
+    try {
+      // Nothing mapped and nothing to map → no fork (keeps test servers and
+      // empty installs quiet). The first probe is index-only
+      // (idx_discovery_tracks_embedded_model_mood); a pointer with no rows
+      // left still forks once, so the worker can clear it.
+      const embedded = ddb.prepare(
+        'SELECT 1 FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ? LIMIT 1').get(o.discoveryModel);
+      const mdb = db.getDB();
+      const mapped = embedded || !mdb ? null
+        : (mdb.prepare('SELECT 1 FROM track_map LIMIT 1').get()
+          || mdb.prepare('SELECT 1 FROM track_map_meta WHERE active_layout IS NOT NULL').get());
+      if (!embedded && !mapped) { return; }
+    } catch (err) {
+      winston.warn('Music map pre-check failed; skipping enqueue', { stack: err });
+      return;
+    }
+  }
+  // Never beside the hash-transition applier, nor ahead of a ledger it has
+  // yet to apply (§3.7): the applier enqueues this pass when it finishes.
+  if (mapWaitsForTransitions(pastFailedLedger)) {
+    deferMapUntilTransitions(reason, { force, settled });
+    return;
+  }
+  addMapTask(reason, force, settled, pastFailedLedger);
+}
+
+function addMapTask(reason, force, settled, pastFailedLedger = null) {
+  // At most one queued pass, which takes on a stronger request. One may
+  // queue behind a running pass: the data can have moved since it forked.
+  // A pass the applier lets past a failed apply keeps that leave when it
+  // folds into the queued one: they are one pass now.
+  const pastFailed = Number.isInteger(pastFailedLedger) ? { pastFailedLedger } : {};
+  const queued = taskQueue.find((t) => t.task === 'map');
+  if (queued) {
+    Object.assign(queued, mergeMapOptions(queued, { force, settled }), pastFailed);
+    return;
+  }
+  taskQueue.push({ task: 'map', id: nanoid(8), reason, ...mergeMapOptions(null, { force, settled }), ...pastFailed });
+  reportEnrichment('map', { state: 'queued' });
+  nextTask();
+}
+
+// The early map (§3.3.3 item 4), from the embedding pass's hitCap branch:
+// a first map once 1,000 current-model songs are embedded, or a refresh
+// when the serving layout (of the active model) holds under 70 % of them
+// and is a day old. A model switch never fires it: the switch rebuilds at
+// the settle. Fully guarded — a throw would escape the child's 'close'.
+function maybeEnqueueMapEarly() {
+  try {
+    const o = config.program.scanOptions;
+    if (o.collectDiscoveryData !== true || o.musicMap === false || mapPassFailing) { return; }
+    const ddb = discoveryDb.openDiscoveryDbIfExists();
+    const mdb = db.getDB();
+    if (!ddb || !mdb) { return; }
+    const embedded = ddb.prepare(
+      'SELECT COUNT(*) AS n FROM discovery_tracks WHERE embedding IS NOT NULL AND model_id = ?').get(o.discoveryModel).n;
+    const pointer = readTrackMapPointer(mdb);
+    if (!mapPointerValid(pointer, ddb)) {
+      const anyReady = ddb.prepare("SELECT 1 FROM map_layouts WHERE state = 'ready' LIMIT 1").get();
+      if (!anyReady && embedded >= MAP_EARLY_MIN_EMBEDDED) { maybeEnqueueMap('first map during the embedding backfill'); }
+      return;
+    }
+    const s = ddb.prepare('SELECT model_id, n_points, fitted_at, placed_at FROM map_layouts WHERE id = ?')
+      .get(pointer.active_layout);
+    if (s && s.model_id === o.discoveryModel && s.n_points < MAP_EARLY_COVERAGE * embedded
+        && Date.now() - Math.max(s.fitted_at, s.placed_at ?? 0) >= MAP_EARLY_AGE_MS) {
+      maybeEnqueueMap('more songs analysed');
+    }
+  } catch (err) {
+    winston.warn(`Music map early check failed: ${err.message}`);
+  }
+}
+
+// The worker's payload (pure; exported for tests). Small — the Windows argv
+// cap is 32,767 characters. JSON.stringify turns Infinity into null (it
+// drops only undefined) and the worker's Joi rejects null, so the optional
+// keys appear only when set. `env` carries what the process knows: the two
+// database paths and the server's RSS.
+export function mapPayload(o, capLatched, taskObj, { discoveryDbPath, libraryDbPath, parentRssBytes }) {
+  const cap = Math.min(o.mapMaxFitTracks ?? Infinity, capLatched ?? Infinity);
+  return {
+    discoveryDbPath,
+    libraryDbPath,
+    model: o.discoveryModel,
+    expectedSchemaVersion: SCHEMA_VERSION,
+    parentRssBytes: Math.max(0, Math.round(parentRssBytes || 0)),
+    budgetSec: MAP_BUDGET_SEC,
+    settled: !!taskObj?.settled,
+    ...(Number.isFinite(cap) ? { maxFitTracks: cap } : {}),
+    ...(taskObj?.force ? { force: taskObj.force } : {}),
+  };
+}
+
+// What a finished map worker means (pure; exported for tests). `state` is
+// the boot-scoped { retryUsed, failures }; the answer is the kind of exit,
+// the state after it, a fit cap to latch (or null), whether to retry and
+// whether the failure latch closes:
+//   completed  exit 0: failures back to 0
+//   killed     a deliberate kill (the kill queue): nothing
+//   timeout    the 30-minute timer: a failure
+//   memory     exit 5, or a death neither the kill queue nor the timer
+//              caused — a signal (the kernel's OOM killer), or on Windows an
+//              NTSTATUS exit code ≥ 0xC0000000: the fit cap halves (from
+//              the error event's nFitTried, else the fit's size, else 2,000;
+//              never under 1,000); the first time per boot a retry, after
+//              that a failure
+//   schema     exit 3, the library schema guard: not counted
+//   failed     anything else (exit 1, a failed start): a failure
+// Three failures in a row latch the pass off.
+export function classifyMapExit({ code, signal, killedByUs = false, timedOut = false, errorEvt = null, fitSize = null },
+  { retryUsed = false, failures = 0 } = {}) {
+  const out = { kind: null, retryUsed, failures, capLatched: null, retry: false, latch: false };
+  const failure = (kind) => {
+    out.kind = kind;
+    out.failures = failures + 1;
+    out.latch = out.failures >= MAP_FAILURES_TO_LATCH;
+    return out;
+  };
+  if (code === 0 && !signal) {
+    out.kind = 'completed';
+    out.failures = 0;
+    return out;
+  }
+  if (timedOut) { return failure('timeout'); }
+  if (killedByUs) {
+    out.kind = 'killed';
+    return out;
+  }
+  const crashed = !!signal || (typeof code === 'number' && code >= 0xC0000000);
+  if (code === MAP_MEMORY_GUARD_EXIT || crashed) {
+    const tried = errorEvt?.nFitTried ?? fitSize ?? 2000;
+    out.capLatched = Math.max(MAP_FIT_CAP_FLOOR, Math.floor(tried / 2));
+    if (!retryUsed) {
+      out.kind = 'memory';
+      out.retry = true;
+      out.retryUsed = true;
+      return out;
+    }
+    return failure('memory');
+  }
+  if (code === MAP_SCHEMA_GUARD_EXIT) {
+    out.kind = 'schema';
+    return out;
+  }
+  return failure('failed');
+}
+
+// lastRun.counts for the status API: the completion event minus its layout
+// id and fit attempt (finishEnrichment drops event and hitCap).
+function mapRunCounts(evt) {
+  const counts = { ...evt };
+  delete counts.layoutId;
+  delete counts.nFitTried;
+  return counts;
+}
+
+const minutesText = (ms) => (ms >= 60 * 1000 ? `${Math.round(ms / 60000)} minutes` : `${Math.round(ms / 1000)} seconds`);
+
+function runMapTask(taskObj) {
+  // The task left the queue — whether it runs, waits or gate-bails below.
+  reportEnrichment('map', { state: 'idle', progress: null });
+  // Re-check the gate at run time: config may have flipped while queued.
+  if (!enrichmentGate('map').enabled) { return; }
+  // Re-checked at dispatch: the applier may have started since the enqueue,
+  // or a scan may have left it a ledger since (close handlers dispatch
+  // before they drain). The applier enqueues this pass when it finishes;
+  // nextTask loops past the no-op.
+  if (mapWaitsForTransitions(taskObj.pastFailedLedger)) {
+    deferMapUntilTransitions(taskObj.reason, taskObj);
+    return;
+  }
+
+  const dbDir = config.program.storage.dbDirectory;
+  const payload = mapPayload(config.program.scanOptions, mapFitCapLatched, taskObj, {
+    discoveryDbPath: discoveryDb.discoveryDbPath(),
+    libraryDbPath: path.join(dbDir, 'mstream.db'),
+    parentRssBytes: process.memoryUsage().rss,
+  });
+  const forked = launchWorker('map', MAP_SCRIPT_PATH, JSON.stringify(payload));
+  winston.info(`Music map pass started (${taskObj.reason || 'queued'})`);
+  // Boot-reaper contract: this child writes both databases.
+  if (Number.isInteger(forked.pid)) {
+    writeScannerPidfile(dbDir, forked.pid, process.execPath, 'js', workerReaperMarker('map', MAP_SCRIPT_PATH));
+  }
+
+  const observers = {
+    killedByUs: false, timedOut: false, completeEvt: null, errorEvt: null, fitSize: null, phase: null,
+    timer: null, libVersionBefore: null,
+  };
+  const killFn = () => {
+    observers.killedByUs = true;
+    try { forked.kill(); } catch (_) { /* already gone */ }
+  };
+  addToKillQueue(killFn);
+  observers.timer = setTimeout(() => {
+    observers.timedOut = true;
+    killFn();
+  }, MAP_RUN_TIMEOUT_MS);
+  observers.timer.unref?.();
+  // The worker's mstream.db commits move the server connection's
+  // data_version; a clean run absorbs them so the similarity index does
+  // not take them for library drift (discovery-similarity.js).
+  try { observers.libVersionBefore = sim.libraryVersionNow(); } catch (_) { observers.libVersionBefore = null; }
+  activeTask = { kind: 'map', taskObj, child: forked, killFn, observers };
+  reportEnrichment('map', { state: 'running' });
+
+  bufferLines(forked.stdout, (line) => {
+    if (!line) { return; }
+    if (line[0] === '{') {
+      try {
+        const evt = JSON.parse(line);
+        if (evt.event === 'mapProgress') {
+          // The fit phase's opening event carries |F|: the size an
+          // unexplained kill halves.
+          if (evt.phase === 'fit' && observers.fitSize === null && Number.isInteger(evt.total)) {
+            observers.fitSize = evt.total;
+          }
+          reportEnrichment('map', { progress: { attempted: evt.attempted ?? 0, total: evt.total ?? null } });
+          if (evt.phase !== observers.phase) {
+            observers.phase = evt.phase;
+            winston.info(`Music map: ${evt.phase} ${evt.attempted ?? 0}/${evt.total ?? '?'}`);
+          }
+          return;
+        }
+        if (evt.event === 'mapComplete') {
+          observers.completeEvt = evt;
+          winston.info(`Music map: ${evt.mode}${evt.method ? ` (${evt.method})` : ''} — ${evt.fitted} fitted, `
+            + `${evt.placed} placed, ${evt.removed} removed, ${evt.dots} dots, ${evt.regions} regions `
+            + `in ${evt.ms} ms (peak ${evt.peakRssMB} MB)`);
+          return;
+        }
+        if (evt.event === 'error') {
+          observers.errorEvt = evt;
+          winston.error(`Music map: ${evt.message}`);
+          return;
+        }
+      } catch (_) { /* not a structured event — log as plain text */ }
+    }
+    winston.info(line);
+  });
+  bufferLines(forked.stderr, (line) => logWorkerStderr('Music map', line));
+
+  let closed = false;
+  const closeOnce = (code, signal) => {
+    if (closed) { return; }
+    closed = true;
+    clearTimeout(observers.timer);
+    clearScannerPidfile(dbDir);
+    if (activeTask?.child === forked) {
+      removeFromKillQueue(activeTask.killFn);
+      activeTask = null;
+    }
+    const evt = observers.completeEvt;
+    finishEnrichment('map', code, signal, evt ? mapRunCounts(evt) : null);
+    const verdict = classifyMapExit({ code, signal, ...observers }, { retryUsed: mapRetryUsed, failures: mapFailures });
+    mapRetryUsed = verdict.retryUsed;
+    mapFailures = verdict.failures;
+    if (verdict.capLatched !== null) { mapFitCapLatched = verdict.capLatched; }
+    if (verdict.kind === 'completed') {
+      try { sim.absorbLibraryVersion(observers.libVersionBefore, sim.libraryVersionNow()); } catch (_) { /* index not built */ }
+      if (evt?.hitCap) { maybeEnqueueMap('more to place'); }
+    } else if (verdict.kind === 'memory') {
+      const how = code === MAP_MEMORY_GUARD_EXIT ? 'stopped at its memory guard' : 'was killed';
+      winston.warn(verdict.retry
+        ? `Music map pass ${how} — retrying with a fit of ${verdict.capLatched} songs`
+        : `Music map pass ${how} — later fits are capped at ${verdict.capLatched} songs`);
+      if (verdict.retry) {
+        maybeEnqueueMap('retry with a smaller fit', { force: taskObj.force || null, settled: !!taskObj.settled });
+      }
+    } else if (verdict.kind === 'timeout') {
+      winston.warn(`Music map pass took longer than ${minutesText(MAP_RUN_TIMEOUT_MS)} — stopped`);
+    } else if (verdict.kind === 'schema') {
+      winston.warn('Music map pass aborted: library schema changed under it (another instance migrating?)');
+    } else if (verdict.kind === 'killed') {
+      winston.info(`Music map pass terminated by ${signal || `exit code ${code}`}`);
+    } else {
+      winston.warn(`Music map pass exited with code ${code}`);
+    }
+    if (verdict.latch && !mapPassFailing) {
+      mapPassFailing = true;
+      winston.error(`Music map pass failed ${MAP_FAILURES_TO_LATCH} times in a row — stopped until restart `
+        + '(an admin rebuild retries)');
+    }
+    nextTask();
+    checkQueueDrainedSideEffects();
+  };
+  forked.on('error', (err) => {
+    winston.error(`Music map pass failed to start: ${err.message}`);
+    closeOnce(-1, null);
+  });
+  forked.on('close', (code, signal) => closeOnce(code, signal));
+}
+
+// POST /api/v1/admin/discovery/map/rebuild: clears the failure latch — the
+// operator's retry — then enqueues a forced rebuild (no pre-check; the
+// worker rebuilds from the current vectors, or does nothing without any).
+export function requestMapRebuild() {
+  mapPassFailing = false;
+  mapFailures = 0;
+  maybeEnqueueMap('admin rebuild', { force: 'rebuild' });
 }
 
 // ── AcoustID identification task ─────────────────────────────────────────────
@@ -2461,6 +2954,8 @@ function runScan(scanObj) {
     winston.warn(`Library '${scanObj.vpath}' not found in database, skipping scan`);
     return;
   }
+  // It may write hash-transition ledger rows (see scansStarted).
+  scansStarted++;
 
   const dbPath = path.join(config.program.storage.dbDirectory, 'mstream.db');
 
@@ -2809,7 +3304,7 @@ function runBackupTask(taskObj) {
 // us no other way to thread state from the data handler into the close
 // handler short of module-level state, which we already have plenty of.
 function attachBackupHandlers(forked, taskObj, historyId) {
-  const killFn = () => { try { forked.kill(); } catch (_) {} };
+  const killFn = () => { try { forked.kill(); } catch (_) { /* already gone */ } };
   addToKillQueue(killFn);
 
   const observers = { lastEvent: null, fatalError: null };
@@ -3043,6 +3538,13 @@ function enrichmentGate(kind) {
       if (discoveryRuntimeUnavailable) { return off('runtime-unavailable'); }
       if (!ffmpegBin()) { return off('no-ffmpeg'); }
       return on;
+    // The music map reads embeddings the discovery pass already wrote, so it
+    // needs no ffmpeg or ONNX runtime of its own. 'failing' is the latch
+    // after three failed passes in a row (until restart or an admin rebuild).
+    case 'map':
+      if (opts.collectDiscoveryData !== true || opts.musicMap === false) { return off('config'); }
+      if (mapPassFailing) { return off('failing'); }
+      return on;
     case 'acoustid':
       if (opts.analyzeAcoustid !== true) { return off('config'); }
       if (!opts.acoustidApiKey) { return off('no-api-key'); }
@@ -3110,7 +3612,7 @@ export function runAfterBoot() {
     } else {
       db.getDB()?.prepare('DELETE FROM scan_progress').run();
     }
-  } catch (_) {}
+  } catch (_) { /* best-effort: stale rows only blank the progress UI */ }
 
   // Check if a migration flagged a force rescan. We DO NOT unlink the
   // marker here — it stays on disk until the queue drains after a
@@ -3156,7 +3658,7 @@ export function runAfterBoot() {
       hashEpoch = bootRescanScanId.startsWith('hashgen-');
       winston.info(`Rescan pending from migration — resumable ${hashEpoch ? 'generation-scoped' : 'full force'} epoch '${bootRescanScanId}'`);
     }
-  } catch (_) {}
+  } catch (_) { /* unreadable marker: no boot rescan this time */ }
 
   setTimeout(() => {
     if (pendingRescan) {
@@ -3175,6 +3677,11 @@ export function runAfterBoot() {
     }
     if (config.program.scanOptions.scanInterval > 0 && scanIntervalTimer === null) {
       scanIntervalTimer = setInterval(() => scanAll(), config.program.scanOptions.scanInterval * 60 * 60 * 1000);
+    }
+    // No boot scan means no boot drain: the music map's first pass of this
+    // process (mirror refresh, an upgrade into the map) is enqueued here.
+    if (!pendingRescan && config.program.scanOptions.scanInterval === 0) {
+      maybeEnqueueMap('at boot');
     }
     // Filesystem watcher (opt-in). Started/stopped here so reboot()
     // re-evaluates the flag; start is restart-idempotent. Any events it

@@ -37,6 +37,10 @@ export function setup(mstream) {
       // fact /api/ carries under features; ping lists keys by hand, so a
       // new capability must be added here too (the drift-lock test checks).
       discoveryTaste: features.discoveryTaste,
+      // The music map's generation (api/discovery-map.js) — same fact /api/
+      // carries under features; listed by hand like every ping key (the
+      // drift-lock test checks).
+      discoveryMap: features.discoveryMap,
       // Mood scores to filter by, right now (api/mood-filter.js) — the
       // Discover page's and the song lists' filters gate on it; same flag
       // on /api/.

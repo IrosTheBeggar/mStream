@@ -2104,6 +2104,24 @@ jobs:
           echo "$OUT" | grep -q IROH_OK || { echo "FAIL: iroh native binding did not load in the standalone binary"; exit 1; }
           echo "OK: iroh native binding loaded from the bundled .node"
 
+      - name: Smoke test music map worker
+        # Proves the map worker module (src/db/map-layout.mjs) and umap-js are
+        # embedded in the standalone binary: its static imports run before input
+        # validation, so `'{}'` reaching "Invalid JSON Input" means they loaded.
+        # A separate step on purpose: the main smoke step's run block sits just
+        # under GitHub's 21000-byte expression cap. Each step is a fresh shell,
+        # so BIN is derived again, as the iroh step does.
+        if: matrix.smoke
+        shell: bash
+        run: |
+          set -e
+          D=$(ls -d dist/stage/mStream-*-${{ matrix.key }})
+          if [ -d "$D/mStream.app" ]; then BIN="$D/mStream.app/Contents/MacOS/mstream-server"; elif [ -f "$D/mstream-server.exe" ]; then BIN="$D/mstream-server.exe"; else BIN="$D/mstream-server"; fi
+          echo "map worker smoke binary: $BIN"
+          OUT=$("$BIN" --mstream-worker=map '{}' 2>&1) || true
+          echo "$OUT" | grep -q 'Invalid JSON Input' || { echo "$OUT"; echo "FAIL: map worker did not load (umap-js not embedded?)"; exit 1; }
+          echo "OK: map worker and umap-js load in the standalone binary"
+
       # ── Windows installer (Inno Setup) ──────────────────────────────────
       # Compiled from the PRISTINE payload snapshot taken before the smokes
       # (see "Snapshot installer payload" above): the smoked stage dir

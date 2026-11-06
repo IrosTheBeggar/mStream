@@ -117,6 +117,34 @@ function libraryVersion() {
   return main.prepare('PRAGMA data_version').get().data_version;
 }
 
+// The map worker's mirror commits (src/db/map-sync.js) move the same
+// counter, and the index would take them for library drift — a full
+// rebuild on the event loop once its window passes, for writes that never
+// touch an artist. The map pass absorbs its own writes instead: task-queue
+// reads libraryVersionNow() when it forks the worker and, on a clean exit,
+// calls absorbLibraryVersion(before, libraryVersionNow()). The serial queue
+// makes the worker the only other connection committing in between.
+
+/** The main connection's data_version now; null when no main database is open. */
+export function libraryVersionNow() {
+  return libraryVersion();
+}
+
+/**
+ * Move the cached index's library version from `before` to `after` — only
+ * while it still equals `before`: an index rebuilt during the run already
+ * read part of the writes, and another writer may have committed, so then
+ * the drift stays for the usual window. Returns true when absorbed.
+ */
+export function absorbLibraryVersion(before, after) {
+  if (!cache || before === null || before === undefined || after === null || after === undefined) {
+    return false;
+  }
+  if (cache.libVersion !== before) { return false; }
+  cache.libVersion = after;
+  return true;
+}
+
 /**
  * The artist identity of one catalogue row: the library's when the row's
  * track is still in the library (`owner` = { key, name } from

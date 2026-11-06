@@ -103,6 +103,12 @@ export function buildFeatures() {
     // 2: the body takes `moods`, a mood filter (api/mood-filter.js) — the
     // route's Joi is strict, so a client sends it only from 2 on.
     discoveryTaste: 2,
+    // The music map (api/discovery-map.js): an integer GENERATION like
+    // discoveryTaste — a later format or body key ships as 2 and clients gate
+    // on >= n; 0 when scanOptions.musicMap is off. A version fact: clients
+    // show the map on `discovery === true && discoveryMap >= 1`, never on a
+    // peer; whether a layout exists yet is the route's own answer (state).
+    discoveryMap: config.program.scanOptions.musicMap === false ? 0 : 1,
     // A mood filter would find something RIGHT NOW: the mood heads are on
     // and some songs have scores (api/mood-filter.js). The local Discover
     // page shows its filters on this, and so do the song lists (/db/rated,

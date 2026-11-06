@@ -2263,7 +2263,7 @@ const dbView = Vue.component('db-view', {
                       <tr v-for="p in enrichStatus.enrichment" v-bind:key="p.pass">
                         <td><b>{{ passLabel(p.pass) }}</b></td>
                         <td>
-                          <div class="switch enrich-switch">
+                          <div v-if="p.pass !== 'map'" class="switch enrich-switch">
                             <label>
                               <input type="checkbox" v-bind:checked="passEnabled(p.pass)" v-on:click.prevent="togglePass(p.pass)">
                               <span class="lever"></span>
@@ -3080,6 +3080,7 @@ const dbView = Vue.component('db-view', {
         lyrics: 'Lyrics',
         audioanalysis: 'BPM / Key',
         discovery: 'Discovery Embeddings',
+        map: this.t('map.pass'),
         acoustid: 'AcoustID IDs',
       }[kind] || kind;
     },
@@ -3139,6 +3140,7 @@ const dbView = Vue.component('db-view', {
           'no-binary': 'rust-parser unavailable',
           'binary-unsupported': 'rust-parser outdated',
           'runtime-unavailable': 'ML runtime unavailable',
+          'failing': 'stopped after repeated failures',
         }[p.disabledReason] || p.disabledReason;
         return `Off — ${reason}`;
       }
@@ -3171,7 +3173,7 @@ const dbView = Vue.component('db-view', {
         notFound: 'not found', notfound: 'not found', nomatch: 'no match',
         lowconf: 'low-confidence', undecodable: 'undecodable',
         failed: 'failed', errors: 'errors', error: 'errors',
-        attempted: 'attempted', total: 'planned',
+        attempted: 'attempted', total: 'planned', peakRssMB: 'MB peak',
       };
       return Object.entries(counts || {})
         .filter(([k, v]) => v > 0 && k !== 'attempted' && k !== 'total')

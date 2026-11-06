@@ -33,6 +33,7 @@ import {
   upsertDiscoveryTrack, exportIdFor, getMeta, setMeta,
   applyHashTransitionGroups,
   hasFillableCatalogueRows, fillCatalogueFieldsFromLibrary,
+  ensureMapTables, MAP_SCHEMA, bumpMapVersion, reserveMapKeys, initMapRecentAfter,
   DISCOVERY_SCHEMA_VERSION, EMBEDDING_DTYPE, EMBEDDING_NORMALIZATION,
 } from '../../src/db/discovery-db.js';
 import {
@@ -68,6 +69,22 @@ function blobToFloats(blob) {
   return Array.from(new Float32Array(u8.buffer, 0, u8.byteLength / 4));
 }
 
+// Music map rows, with only what the NOT NULL columns demand.
+function insertMapLayout(db, state = 'ready') {
+  return Number(db.prepare(`
+    INSERT INTO map_layouts (state, model_id, method, params, dim, k, pca_mean, pca_axes, affine,
+                             frame, aspect, land_levels, n_fit, n_points, created_at, fitted_at)
+    VALUES (?, 'test-model', 'pca2', '{}', 4, 2, ?, ?, '[1,0,0,0,1,0]', 1, 1, '{}', 0, 0, 0, 0)
+  `).run(state, Buffer.alloc(16), Buffer.alloc(32)).lastInsertRowid);
+}
+
+function insertMapPoint(db, layoutId, hash, { dot = hash, x = 0.5, y = 0.5 } = {}) {
+  db.prepare(`
+    INSERT INTO map_points (layout_id, audio_hash, dot, x, y, placed, region0, region1, central0, central1, pca)
+    VALUES (?, ?, ?, ?, ?, 'pca2', 0, 0, -1, -1, ?)
+  `).run(layoutId, hash, dot, x, y, Buffer.alloc(8));
+}
+
 describe('discovery-db bootstrap', () => {
   test('initDiscoveryDb creates the schema at the current version', () => {
     assert.equal(isDiscoveryDbOpen(), false);
@@ -82,7 +99,10 @@ describe('discovery-db bootstrap', () => {
     const tables = db.prepare(
       "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
     ).all().map(r => r.name);
-    assert.deepEqual(tables, ['discovery_lookups', 'discovery_meta', 'discovery_tracks']);
+    // The music map's tables sit beside the versioned schema (ensureMapTables),
+    // so the version above stays put.
+    assert.deepEqual(tables, ['discovery_lookups', 'discovery_meta', 'discovery_tracks',
+      'map_layouts', 'map_points', 'map_regions']);
 
     // V3 catalogue columns exist on a fresh file (the chain replays every
     // migration from zero — V1's CREATE TABLE is never edited).
@@ -302,7 +322,7 @@ describe('applyHashTransitionGroups', () => {
       'SELECT export_id, updated_at FROM discovery_tracks WHERE audio_hash = ?').get('rk-old');
 
     const out = applyHashTransitionGroups([{ target: 'rk-new', sources: ['rk-old'] }]);
-    assert.deepEqual(out, { moved: 1, dropped: 0 });
+    assert.deepEqual(out, { moved: 1, dropped: 0, pointsMoved: 0, pointsDropped: 0 });
 
     const row = getDiscoveryDb().prepare(
       `SELECT export_id, updated_at, embedding FROM discovery_tracks
@@ -319,7 +339,7 @@ describe('applyHashTransitionGroups', () => {
     upsertDiscoveryTrack({ audioHash: 'rk-t', artist: 'target-fresh' });
     upsertDiscoveryTrack({ audioHash: 'rk-s1', artist: 'stale' });
     const out = applyHashTransitionGroups([{ target: 'rk-t', sources: ['rk-s1'] }]);
-    assert.deepEqual(out, { moved: 0, dropped: 1 });
+    assert.deepEqual(out, { moved: 0, dropped: 1, pointsMoved: 0, pointsDropped: 0 });
     const rows = getDiscoveryDb().prepare(
       "SELECT audio_hash, artist FROM discovery_tracks WHERE audio_hash LIKE 'rk-%' AND audio_hash IN ('rk-t','rk-s1')").all();
     assert.deepEqual(rows.map((r) => ({ ...r })), [{ audio_hash: 'rk-t', artist: 'target-fresh' }]);
@@ -330,7 +350,7 @@ describe('applyHashTransitionGroups', () => {
     upsertDiscoveryTrack({ audioHash: 'rk-b', artist: 'newer' });   // higher rowversion
     // Sources listed stale-last to prove order doesn't decide.
     const out = applyHashTransitionGroups([{ target: 'rk-c', sources: ['rk-b', 'rk-a'] }]);
-    assert.deepEqual(out, { moved: 1, dropped: 1 });
+    assert.deepEqual(out, { moved: 1, dropped: 1, pointsMoved: 0, pointsDropped: 0 });
     const c = getDiscoveryDb().prepare(
       'SELECT artist FROM discovery_tracks WHERE audio_hash = ?').get('rk-c');
     assert.equal(c.artist, 'newer');
@@ -347,6 +367,49 @@ describe('applyHashTransitionGroups', () => {
     const rows = ddb.prepare(
       "SELECT audio_hash, outcome FROM discovery_lookups WHERE audio_hash LIKE 'rk-l%'").all();
     assert.deepEqual(rows.map((r) => ({ ...r })), [{ audio_hash: 'rk-l3', outcome: 'nomatch' }]);
+  });
+
+  test('music map points follow in every layout; dot and position stay; no index epoch for them', () => {
+    const ddb = getDiscoveryDb();
+    const previous = insertMapLayout(ddb);
+    const serving = insertMapLayout(ddb);
+    for (const layout of [previous, serving]) {
+      insertMapPoint(ddb, layout, 'rk-p1', { x: 0.1, y: 0.2 });                  // a singleton
+      insertMapPoint(ddb, layout, 'rk-g1', { dot: 'rk-g1', x: 0.3, y: 0.4 });    // a group's label member…
+      insertMapPoint(ddb, layout, 'rk-g2', { dot: 'rk-g1', x: 0.3, y: 0.4 });    // …and its other member
+      insertMapPoint(ddb, layout, 'rk-c1', { x: 0.7, y: 0.7 });
+    }
+    insertMapPoint(ddb, serving, 'rk-c9', { x: 0.9, y: 0.9 });   // the target already placed here only
+    const epochBefore = getMeta('index_epoch');
+
+    const out = applyHashTransitionGroups([
+      { target: 'rk-p1n', sources: ['rk-p1'] },
+      { target: 'rk-g1n', sources: ['rk-g1'] },
+      { target: 'rk-c9', sources: ['rk-c1'] },
+    ]);
+    assert.deepEqual(out, { moved: 0, dropped: 0, pointsMoved: 5, pointsDropped: 1 });
+    assert.equal(getMeta('index_epoch'), epochBefore, 'map rows publish no similarity-index epoch');
+
+    const pointsOf = (layout) => Object.fromEntries(ddb.prepare(
+      'SELECT audio_hash, dot, x, y FROM map_points WHERE layout_id = ? ORDER BY audio_hash').all(layout)
+      .map((r) => [r.audio_hash, { dot: r.dot, x: r.x, y: r.y }]));
+    assert.deepEqual(pointsOf(previous), {
+      'rk-c9': { dot: 'rk-c1', x: 0.7, y: 0.7 },     // moved: this layout had no point at the target
+      'rk-g1n': { dot: 'rk-g1', x: 0.3, y: 0.4 },    // the label member re-keyed, its label kept
+      'rk-g2': { dot: 'rk-g1', x: 0.3, y: 0.4 },
+      'rk-p1n': { dot: 'rk-p1', x: 0.1, y: 0.2 },    // the singleton's own hash re-keyed, its label kept
+    });
+    assert.deepEqual(pointsOf(serving), {
+      'rk-c9': { dot: 'rk-c9', x: 0.9, y: 0.9 },     // the target's own point wins; the source's went
+      'rk-g1n': { dot: 'rk-g1', x: 0.3, y: 0.4 },
+      'rk-g2': { dot: 'rk-g1', x: 0.3, y: 0.4 },
+      'rk-p1n': { dot: 'rk-p1', x: 0.1, y: 0.2 },
+    });
+
+    // Re-applying the same groups is a no-op (a crash re-applies from the ledger).
+    assert.deepEqual(applyHashTransitionGroups([{ target: 'rk-p1n', sources: ['rk-p1'] }]),
+      { moved: 0, dropped: 0, pointsMoved: 0, pointsDropped: 0 });
+    ddb.exec('DELETE FROM map_points; DELETE FROM map_layouts;');
   });
 });
 
@@ -540,5 +603,142 @@ describe('discovery db V4 mood columns', () => {
     assert.equal(row.mood_scores, null);
     assert.equal(row.mood_version, null);
     assert.equal(row.danceability, null);
+  });
+});
+
+// ── The music map's tables, beside the versioned schema ─────────────────────
+//
+// ensureMapTables (run by initDiscoveryDb) keeps them on a line of their own:
+// a map_schema mismatch drops and rebuilds them — they are a cache — with a
+// fresh map_epoch, so mstream.db's serving pointer can never read a new
+// generation's layout ids; the recent baseline outlives every reset.
+describe('music map tables (ensureMapTables)', () => {
+  let dir;
+  let mapPath;
+  const tableNames = (db) => db.prepare(
+    "SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'map_%' ORDER BY name"
+  ).all().map((r) => r.name);
+  const count = (db, table) => db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n;
+
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-discovery-map-'));
+    mapPath = path.join(dir, 'discovery.db');
+    closeDiscoveryDb();
+    initDiscoveryDb(mapPath);
+  });
+
+  after(() => {
+    closeDiscoveryDb();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a fresh file gets the tables, map_schema and a 16-hex map_epoch — and no version bump', () => {
+    const db = getDiscoveryDb();
+    assert.deepEqual(tableNames(db), ['map_layouts', 'map_points', 'map_regions']);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, DISCOVERY_SCHEMA_VERSION);
+    assert.equal(getMeta('map_schema'), String(MAP_SCHEMA));
+    assert.match(getMeta('map_epoch'), /^[0-9a-f]{16}$/);
+    assert.equal(getMeta('map_recent_after'), null, 'the baseline is set by the first ready layout, not here');
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((r) => r.name);
+    for (const name of ['idx_map_points_hash', 'idx_map_regions_key']) { assert.ok(indexes.includes(name), name); }
+  });
+
+  test('a current file keeps its rows and epoch across re-opens', () => {
+    const db = getDiscoveryDb();
+    const layout = insertMapLayout(db);
+    insertMapPoint(db, layout, 'keep-me');
+    const epoch = getMeta('map_epoch');
+    assert.deepEqual(ensureMapTables(), { reset: false });
+    closeDiscoveryDb();
+    initDiscoveryDb(mapPath);
+    assert.equal(getMeta('map_epoch'), epoch);
+    assert.equal(count(getDiscoveryDb(), 'map_points'), 1);
+    assert.equal(count(getDiscoveryDb(), 'map_layouts'), 1);
+  });
+
+  test('a map_schema mismatch drops and recreates the tables with a fresh epoch, keeping map_recent_after', () => {
+    const db = getDiscoveryDb();
+    const layout = insertMapLayout(db);
+    insertMapPoint(db, layout, 'stale-point');
+    db.prepare(`
+      INSERT INTO map_regions (layout_id, level, id, key, hue, x, y, anchor_x, anchor_y, extent, size, mix)
+      VALUES (?, 0, 0, 'g:Rock', 10, 0.5, 0.5, 0.5, 0.5, 0.1, 1, '[]')
+    `).run(layout);
+    setMeta('map_version', '7');
+    setMeta('map_next_key', '12');
+    setMeta('map_recent_after', '2026-10-01 00:00:00');
+    const salt = getMeta('export_salt');
+    const rowSeq = getMeta('row_seq');
+    const epoch = getMeta('map_epoch');
+    setMeta('map_schema', String(MAP_SCHEMA - 1));
+
+    assert.deepEqual(ensureMapTables(), { reset: true });
+    assert.deepEqual(tableNames(db), ['map_layouts', 'map_points', 'map_regions']);
+    for (const t of ['map_layouts', 'map_points', 'map_regions']) { assert.equal(count(db, t), 0, t); }
+    assert.equal(getMeta('map_schema'), String(MAP_SCHEMA));
+    assert.match(getMeta('map_epoch'), /^[0-9a-f]{16}$/);
+    assert.notEqual(getMeta('map_epoch'), epoch, 'a new generation of map tables gets a new name');
+    assert.equal(getMeta('map_version'), null, 'map_* keys go with their tables…');
+    assert.equal(getMeta('map_next_key'), null);
+    assert.equal(getMeta('map_recent_after'), '2026-10-01 00:00:00', '…except the recent baseline');
+    assert.equal(getMeta('export_salt'), salt, 'other keys untouched');
+    assert.equal(getMeta('row_seq'), rowSeq, 'the map never touches row_seq');
+    // Why the epoch exists: AUTOINCREMENT restarts after the DROP, so layout ids repeat.
+    assert.equal(insertMapLayout(db), 1);
+  });
+
+  test('initDiscoveryDb applies the reset on open, e.g. a file a newer map shape left behind', () => {
+    setMeta('map_schema', String(MAP_SCHEMA + 1));
+    const epoch = getMeta('map_epoch');
+    closeDiscoveryDb();
+    initDiscoveryDb(mapPath);
+    assert.equal(getMeta('map_schema'), String(MAP_SCHEMA));
+    assert.notEqual(getMeta('map_epoch'), epoch);
+    assert.equal(count(getDiscoveryDb(), 'map_layouts'), 0);
+    assert.equal(getMeta('map_recent_after'), '2026-10-01 00:00:00');
+  });
+
+  test('a current file that lost its map_epoch gets a fresh one without a reset', () => {
+    const db = getDiscoveryDb();
+    insertMapLayout(db);
+    db.prepare("DELETE FROM discovery_meta WHERE key = 'map_epoch'").run();
+    assert.deepEqual(ensureMapTables(), { reset: false });
+    assert.match(getMeta('map_epoch'), /^[0-9a-f]{16}$/);
+    assert.equal(count(db, 'map_layouts'), 1, 'no reset: the rows stay');
+  });
+
+  test('the map counters are upserts: after a reset they start over instead of going dead', () => {
+    const db = getDiscoveryDb();
+    setMeta('map_version', '41');
+    setMeta('map_next_key', '17');
+    setMeta('map_schema', '0');
+    ensureMapTables();
+    assert.equal(getMeta('map_version'), null, 'the reset took both keys');
+    assert.equal(getMeta('map_next_key'), null);
+
+    assert.equal(bumpMapVersion(), 1);
+    assert.equal(bumpMapVersion(), 2);
+    assert.equal(getMeta('map_version'), '2');
+    // It rides the caller's transaction: rolled back with it.
+    db.exec('BEGIN IMMEDIATE');
+    assert.equal(bumpMapVersion(db), 3);
+    db.exec('ROLLBACK');
+    assert.equal(getMeta('map_version'), '2');
+
+    assert.equal(reserveMapKeys(3), 0, 'the first block starts at 0');
+    assert.equal(reserveMapKeys(2), 3);
+    assert.equal(reserveMapKeys(0), 5);
+    assert.equal(getMeta('map_next_key'), '5');
+    assert.throws(() => reserveMapKeys(-1), RangeError);
+  });
+
+  test('initMapRecentAfter sets the baseline once and never moves it', () => {
+    getDiscoveryDb().prepare("DELETE FROM discovery_meta WHERE key = 'map_recent_after'").run();
+    assert.equal(initMapRecentAfter(null), false, 'an empty library has no baseline yet');
+    assert.equal(initMapRecentAfter(''), false);
+    assert.equal(getMeta('map_recent_after'), null);
+    assert.equal(initMapRecentAfter('2026-11-01 10:00:00'), true);
+    assert.equal(initMapRecentAfter('2026-11-02 10:00:00'), false, 'set once');
+    assert.equal(getMeta('map_recent_after'), '2026-11-01 10:00:00');
   });
 });

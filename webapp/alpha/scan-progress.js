@@ -4,9 +4,9 @@
 //
 // Also polls GET /api/v1/scan/status (every other tick — enrichment
 // passes move slower than scans) and renders one quiet chip while an
-// enrichment pass (waveforms, album-art, lyrics, BPM/key, discovery,
-// AcoustID) is running. The task queue is strictly serial, so at most
-// one enrichment chip can ever show.
+// enrichment pass (waveforms, album-art, lyrics, BPM/key, discovery, the
+// music map, AcoustID) is running. The task queue is strictly serial, so
+// at most one enrichment chip can ever show.
 
 (function () {
   const POLL_INTERVAL_MS = 3000;
@@ -27,6 +27,8 @@
     lyrics: 'Lyrics',
     audioanalysis: 'BPM / key',
     discovery: 'Discovery',
+    // Resolved at render time: the dictionary may load after this file.
+    map: () => t('map.pass'),
     acoustid: 'AcoustID',
   };
 
@@ -37,7 +39,8 @@
 
   function renderEnrichChip(enrich) {
     if (!enrich) { return ''; }
-    const label = ENRICH_LABELS[enrich.pass] || enrich.pass;
+    const entry = ENRICH_LABELS[enrich.pass];
+    const label = (typeof entry === 'function' ? entry() : entry) || enrich.pass;
     const prog = enrich.progress;
     const pct = prog && prog.total ? Math.min(100, Math.round((prog.attempted / prog.total) * 100)) : null;
     const bar = pct != null
