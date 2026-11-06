@@ -4,13 +4,16 @@
 // decision needs arrives as an argument; nothing here touches disk, network,
 // or clocks.
 //
-// Two policies live here:
+// Three policies live here:
 //
 //   candidateOrder      which unheld catalog peer is most worth downloading
 //                       (used by the reconcile top-up AND by rotation)
 //   planRotation        which held snapshot to swap for which candidate so
 //                       shelf MEMBERSHIP cycles over time ("suggestions stay
 //                       fresh") — the anti-calcification pass
+//   planRoom            which held snapshots to swap out so ONE chosen peer
+//                       fits (an admin's Add on the Peer Recommendations
+//                       page) — same eviction order as rotation
 //
 // Rotation philosophy: the shelf only ever SWAPS (never shrinks — evicting
 // with no replacement serves nobody), churns at most one pair per pass
@@ -26,7 +29,10 @@
 // that ended up masking a real outage (mStream #880).
 
 // A peer is "online" when we heard a re-announcement recently. Announcers
-// re-broadcast every ~15s; 90s tolerates a few missed rounds.
+// re-broadcast every ~15s; 90s tolerates a few missed rounds. Every policy
+// below takes the window as an argument defaulting to this, so the caller
+// (discovery-peer-dbs.js onlineWindowMs, which a test switch can widen)
+// feeds one value to all of them.
 export const ONLINE_WINDOW_MS = 90 * 1000;
 
 // Is a candidate's announced embedding space one we can actually search?
@@ -60,15 +66,15 @@ function ts(value) {
 // size. The model term only bites when incompatible candidates are in the
 // pool at all — i.e. when autoFetchIncompatibleModels opted back in, or no
 // local model exists yet (no compatibility signal; everyone ties).
-export function candidateOrder(localModel, now = Date.now()) {
+export function candidateOrder(localModel, now = Date.now(), onlineWindowMs = ONLINE_WINDOW_MS) {
   return (a, b) => {
     if (localModel) {
       const aCompat = a.payload.modelId === localModel ? 1 : 0;
       const bCompat = b.payload.modelId === localModel ? 1 : 0;
       if (aCompat !== bCompat) { return bCompat - aCompat; }
     }
-    const aOnline = now - ts(a.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-    const bOnline = now - ts(b.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
+    const aOnline = now - ts(a.updatedAt) < onlineWindowMs ? 1 : 0;
+    const bOnline = now - ts(b.updatedAt) < onlineWindowMs ? 1 : 0;
     if (aOnline !== bOnline) { return bOnline - aOnline; }
     return (b.payload.rowCount || 0) - (a.payload.rowCount || 0);
   };
@@ -78,8 +84,9 @@ export function candidateOrder(localModel, now = Date.now()) {
 // beats every past evictee, and among past evictees the longest-gone comes
 // back first (no A↔B ping-pong while unheld peers wait). Ties fall through
 // to the regular usefulness order.
-export function rotationCandidateOrder(ledger, localModel, now = Date.now()) {
-  const base = candidateOrder(localModel, now);
+export function rotationCandidateOrder(ledger, localModel, now = Date.now(),
+  onlineWindowMs = ONLINE_WINDOW_MS) {
+  const base = candidateOrder(localModel, now, onlineWindowMs);
   return (a, b) => {
     const aEvicted = ts(ledger[a.from]); // 0 = never held here
     const bEvicted = ts(ledger[b.from]);
@@ -93,12 +100,14 @@ export function rotationCandidateOrder(ledger, localModel, now = Date.now()) {
 // refresh is coming), then the longest-standing membership. Tie-break
 // prefers evicting a snapshot OTHER live peers still hold (seeders ≥ 2),
 // so rotation avoids deleting the swarm's last copy when it has a choice.
-function evictionOrder(catalogByFrom, seederCountOf, now) {
+// Shared by rotation and planRoom: "oldest first" means the same thing on
+// both paths.
+export function evictionOrder(catalogByFrom, seederCountOf, now, onlineWindowMs = ONLINE_WINDOW_MS) {
   return (a, b) => {
     const aCat = catalogByFrom.get(a.endpointId);
     const bCat = catalogByFrom.get(b.endpointId);
-    const aOnline = aCat && now - ts(aCat.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
-    const bOnline = bCat && now - ts(bCat.updatedAt) < ONLINE_WINDOW_MS ? 1 : 0;
+    const aOnline = aCat && now - ts(aCat.updatedAt) < onlineWindowMs ? 1 : 0;
+    const bOnline = bCat && now - ts(bCat.updatedAt) < onlineWindowMs ? 1 : 0;
     if (aOnline !== bOnline) { return aOnline - bOnline; }
     if (!aOnline) {
       const aHeard = aCat ? ts(aCat.updatedAt) : 0;
@@ -128,6 +137,8 @@ function evictionOrder(catalogByFrom, seederCountOf, now) {
 //                  fetch, so model-incompatible candidates are not
 //                  candidates unless the operator opted back in
 //   isBlocked / inBackoff / seederCountOf   injected lookups (pure-testable)
+//   onlineWindowMs  how recently a peer must have announced to count as
+//                  online (fetchable origin; eviction and candidate order)
 //
 // evictFirst is true when the incoming snapshot only fits once the evictee's
 // bytes are gone — the caller must then evict before fetching and accept the
@@ -141,6 +152,7 @@ export function planRotation({
   isBlocked = () => false,
   inBackoff = () => false,
   seederCountOf = () => 0,
+  onlineWindowMs = ONLINE_WINDOW_MS,
 }) {
   if (!autoFetch || !(autoFetchCount > 0) || !(rotationDays > 0)) { return null; }
 
@@ -153,17 +165,17 @@ export function planRotation({
   // origin announced within the online window, or a live (TTL-pruned) holds
   // beacon lists the hash — the swarm path fetches from any live holder, so
   // an offline origin with live seeders is still a perfectly good pick.
-  const fetchable = (c) => now - ts(c.updatedAt) < ONLINE_WINDOW_MS
+  const fetchable = (c) => now - ts(c.updatedAt) < onlineWindowMs
     || seederCountOf(c.payload.hash || '') > 0;
   const candidates = catalog
     .filter((c) => !held.has(c.from) && !isBlocked(c.from) && !inBackoff(c.from)
       && modelCompatible(c.payload, localModel, allowIncompatibleModels)
       && fetchable(c))
-    .sort(rotationCandidateOrder(ledger, localModel, now));
+    .sort(rotationCandidateOrder(ledger, localModel, now, onlineWindowMs));
   if (candidates.length === 0) { return null; }
 
   const catalogByFrom = new Map(catalog.map((c) => [c.from, c]));
-  const evict = [...eligible].sort(evictionOrder(catalogByFrom, seederCountOf, now))[0];
+  const evict = [...eligible].sort(evictionOrder(catalogByFrom, seederCountOf, now, onlineWindowMs))[0];
 
   const totalBytes = shelf.reduce((sum, e) => sum + (e.sizeBytes || 0), 0);
   const headroomAfterEvict = capBytes - (totalBytes - (evict.sizeBytes || 0));
@@ -175,4 +187,52 @@ export function planRotation({
     fetchId: incoming.from,
     evictFirst: (incoming.payload.size || 0) > capBytes - totalBytes,
   };
+}
+
+// Room for ONE chosen snapshot (an admin's Add): which held snapshots to
+// swap out so it fits under the cap. `{ fits: true, evictIds } | { fits: false }`.
+//
+// A deliberate act, not background churn, so unlike planRotation: no
+// rotationDays age gate, and as many evictions as the bytes need — but
+// still never a pinned snapshot (an admin's explicit keep outranks an Add).
+// Evictees come in evictionOrder and stop the moment the snapshot fits. A
+// zero-byte entry frees nothing, so it is never worth evicting.
+//
+//   shelf           registry entries ({ endpointId, sizeBytes, pinned,
+//                   firstFetchedAt, hash, ... })
+//   catalog         discovery-catalog list() entries (last-heard, for the
+//                   eviction order)
+//   incoming        { endpointId, size } — the chosen peer and its announced
+//                   size. Its own shelf entry (a refresh) is replaced by the
+//                   download, so it is neither counted nor evictable
+//   capBytes        the storage cap
+//   reservedBytes   what other in-flight downloads will add: it counts
+//                   against the cap, and nothing here can evict it
+//
+// fits:false = it cannot fit even with every unpinned snapshot gone
+// (everything pinned, or incoming > cap − pinned − reserved). The caller
+// fetches FIRST and evicts once the download is in hand
+// (discovery-peer-dbs.js fetchPeer's `discount`), so a failed download costs
+// no peer its place.
+export function planRoom({
+  shelf, catalog, incoming, capBytes,
+  reservedBytes = 0,
+  now,
+  seederCountOf = () => 0,
+  onlineWindowMs = ONLINE_WINDOW_MS,
+}) {
+  const others = shelf.filter((e) => e.endpointId !== incoming.endpointId);
+  let over = others.reduce((sum, e) => sum + (e.sizeBytes || 0), 0)
+    + reservedBytes + (incoming.size || 0) - capBytes;
+  if (over <= 0) { return { fits: true, evictIds: [] }; }
+
+  const catalogByFrom = new Map(catalog.map((c) => [c.from, c]));
+  const evictIds = [];
+  for (const e of others.filter((x) => x.pinned !== true && x.sizeBytes > 0)
+    .sort(evictionOrder(catalogByFrom, seederCountOf, now, onlineWindowMs))) {
+    evictIds.push(e.endpointId);
+    over -= e.sizeBytes;
+    if (over <= 0) { return { fits: true, evictIds }; }
+  }
+  return { fits: false };
 }

@@ -102,7 +102,16 @@ export function buildFeatures() {
     // whether there is anything to seed from is the route's answer.
     // 2: the body takes `moods`, a mood filter (api/mood-filter.js) — the
     // route's Joi is strict, so a client sends it only from 2 on.
-    discoveryTaste: 2,
+    // 3 = the Peer Recommendations page's half: the networkPeers and
+    // networkOnRandomSeed body keys, network.reason, and peer.label + tile
+    // on network leads.
+    discoveryTaste: 3,
+    // The Peer Recommendations page's peer strip: GET
+    // /api/v1/discovery/p2p/peers (member-readable) and the async admin Add,
+    // POST /api/v1/admin/discovery/p2p/peer-dbs/add. A generation, like
+    // discoveryTaste; the page shows on `discovery && discoveryP2p &&
+    // discoveryTaste >= 3 && discoveryP2pPeers >= 1`.
+    discoveryP2pPeers: 1,
     // A mood filter would find something RIGHT NOW: the mood heads are on
     // and some songs have scores (api/mood-filter.js). The local Discover
     // page shows its filters on this, and so do the song lists (/db/rated,
