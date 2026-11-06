@@ -976,6 +976,25 @@ const MSTREAMPLAYER = (() => {
     return true;
   }
 
+  // The queue down to the song playing, which plays on at position 0 —
+  // Instant Mix's ▶ Play over its own seed, whose other rows follow. Not
+  // removeSongAtPosition in a loop: it fires autoDJ() once the current row
+  // is the last; not clearPlaylist: it drops the song, and Auto DJ queues
+  // two picks ahead of the mix. Nor clearEnd(): the song must still go on
+  // to the next one when it ends.
+  mstreamModule.trimToCurrent = function () {
+    const current = mstreamModule.playlist[mstreamModule.positionCache.val];
+    if (!current) { return false; }
+    const gone = new Set(mstreamModule.playlist.filter((song) => song !== current));
+    mstreamModule.playlist.splice(0, mstreamModule.playlist.length, current);
+    mstreamModule.positionCache.val = 0;
+    if (gone.size > 0) {
+      shuffleCache = shuffleCache.filter((song) => !gone.has(song));
+      shufflePrevious = shufflePrevious.filter((song) => !gone.has(song));
+    }
+    return true;
+  }
+
   mstreamModule.nextSong = function () {
     // Stop the current song
     return goToNextSong();

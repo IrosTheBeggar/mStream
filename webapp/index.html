@@ -105,7 +105,7 @@
           <div class="hystmodal__styled">
             <h5 data-i18n="sonicPath.saveAsPlaylist">Save as Playlist</h5>
             <form action="javascript:savePlaylistFromModal()">
-              <input id="save_playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
+              <input id="save_playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
               <button type="submit" class="button2" data-i18n="modal.save">Save</button>
             </form>
           </div>
@@ -184,7 +184,7 @@
         <div class="hystmodal__styled">
           <h5 data-i18n="modal.savePlaylist">Save Playlist</h5>
           <form action="javascript:savePlaylist()">
-            <input id="playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
+            <input id="playlist_name" autocomplete="off" type="text" required placeholder="Enter your playlist name" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
             <input id="save_playlist" type="submit" class="btn green" value="Save Playlist" data-i18n="playlist.saveButton" data-i18n-attr="value">
           </form>
         </div>
@@ -252,7 +252,7 @@
         <div class="hystmodal__styled">
           <h5 data-i18n="modal.newPlaylist">New Playlist</h5>
           <form id="newPlaylistForm" action="javascript:newPlaylist()">
-            <input autocomplete="off" id="new_playlist_name" type="text" required placeholder="Enter your playlist name" pattern="[a-zA-Z0-9 _-]+" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
+            <input autocomplete="off" id="new_playlist_name" type="text" required placeholder="Enter your playlist name" data-i18n="playlist.namePlaceholder" data-i18n-attr="placeholder">
             <input id="new_playlist" type="submit" class="btn green" value="Create Playlist" data-i18n="playlist.createButton" data-i18n-attr="value">
           </form>
         </div>
@@ -854,7 +854,13 @@
           </div>
           <svg id="mkdir_btn" onclick="openMkdirModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.createFolder">Create Folder</title><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
           <svg id="upload_btn" onclick="openUploadModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.upload">Upload</title><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
-          <svg onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.addAllToQueue">Add All To Queue</title><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
+          <!-- Instant Mix (m.js instantMixBar): an album, artist or playlist
+               page shows it once its rows draw, while the server can mix;
+               it opens the page's mix. -->
+          <button type="button" id="instant_mix_btn" class="mix-bar-btn super-hide" onclick="instantMixFromBar();" aria-label="Instant Mix" data-i18n="mix.title" data-i18n-attr="aria-label">
+            <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24"><title data-i18n="mix.title">Instant Mix</title><path d="M19 9l1.25-2.75L23 5l-2.75-1.25L19 1l-1.25 2.75L15 5l2.75 1.25L19 9zm-7.5.5L9 4 6.5 9.5 1 12l5.5 2.5L9 20l2.5-5.5L17 12l-5.5-2.5zM19 15l-1.25 2.75L15 19l2.75 1.25L19 23l1.25-2.75L23 19l-2.75-1.25L19 15z"/></svg>
+          </button>
+          <svg id="add_all_btn" onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.addAllToQueue">Add All To Queue</title><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
         </div>
         <!-- The mood filters (m.js moodPanelHtml), hidden until the bar's
              Filters button opens them; every other panel hides them. -->
@@ -879,6 +885,7 @@
           <h4 data-i18n="label.welcomeToMStream">Welcome To mStream!</h4>
         </div>
         <div style="visibility:hidden; position: absolute;" class="pop-f" id="pop-f" role="tooltip">
+          <div class="pop-list-item" id="pop-f-mix" style="display:none" onclick="instantMixFromMenu()" data-i18n="mix.title">Instant Mix</div>
           <div class="pop-f pop-playlist">Add To Playlist:</div>
         </div>
       </div>
@@ -1484,6 +1491,9 @@
           </div>
           <div style="visibility:hidden; position: absolute;" class="pop-d" id="pop-d" role="tooltip">
             <div class="pop-list-item" v-on:click="gsi2" >Song Info</div>
+            <!-- Instant Mix of this server's song: m.js shows it for the row
+                 the ⋮ was pressed on (instantMixQueueCapture). -->
+            <div id="pop-d-mix" class="pop-list-item" style="display:none" onclick="instantMixFromQueue()">{{ tt('mix.title') }}</div>
             <div class="pop-list-item" v-on:click="downloadSong2">Download</div>
             <!-- A connected server's song: the Keep a copy window on it. m.js
                  shows it for the row the ⋮ was pressed on (onQueueMoreCapture). -->
@@ -1511,6 +1521,9 @@
   <!-- The Discover page's pure half (window.DISCOVERYPAGE) — m.js reads it
        when the page opens (no load-time dependency). -->
   <script src="alpha/discovery-page.js"></script>
+  <!-- Instant Mix's pure half (window.INSTANTMIX) — m.js reads it when a
+       mix opens (no load-time dependency). -->
+  <script src="alpha/instant-mix.js"></script>
   <script src="alpha/vp.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>

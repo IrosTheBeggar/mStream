@@ -512,6 +512,18 @@ describe('setDurationBounds', () => {
     assert.equal(AUTODJ.state.djDurationEnabled, true);
   });
 
+  test('durationWindow is the same rule, storing nothing (Instant Mix repairs its own window with it)', () => {
+    AUTODJ.setDurationBounds(120, 600, 'min');
+    for (const [a, b, prefer] of [[600, 120, 'min'], [600, 120, 'max'], ['', -1, 'min'], [120.4, 999999, 'max'], [0, 90, 'max']]) {
+      const window = AUTODJ.durationWindow(a, b, prefer);
+      assert.deepEqual(window, AUTODJ.setDurationBounds(a, b, prefer), `${a}/${b} ${prefer}`);
+      AUTODJ.setDurationBounds(120, 600, 'min');
+      assert.deepEqual([AUTODJ.state.djMinDuration, AUTODJ.state.djMaxDuration], [120, 600]);
+      AUTODJ.durationWindow(a, b, prefer);
+      assert.deepEqual([AUTODJ.state.djMinDuration, AUTODJ.state.djMaxDuration], [120, 600], 'nothing stored');
+    }
+  });
+
   test('bounds clamp on rehydrate', () => {
     localStorage.setItem('mstream-dj-djMinDuration', '999999');
     localStorage.setItem('mstream-dj-djMaxDuration', '-4');

@@ -81,6 +81,11 @@ const ALLOWED_EXACT = new Set([
   // table, so a parent can forward the call only because this line exists.
   'POST /api/v1/db/flow',
   'POST /api/v1/discovery/local/embeddings',
+  // Instant Mix on a connected server's item: a read — it ranks and records
+  // nothing — scoped by the key's grants (every member and candidate
+  // resolves through them). A key has no user id, so `minRating` is skipped
+  // and the playlist kind is a 404; a peer playlist goes as `songs`.
+  'POST /api/v1/discovery/local/mix',
   'POST /api/v1/file-explorer',
   'POST /api/v1/file-explorer/recursive',
   'POST /api/v1/file-explorer/m3u',

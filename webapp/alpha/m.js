@@ -352,7 +352,7 @@ function createMusicFileHtml(fileLocation, title, aa, rating, subtitle) {
       <span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      ${keep || `<span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="fileAddToPlaylist">
+      ${keep || `<span title="${escapeHtml(t('dpage.verb.more'))}" aria-label="${escapeHtml(t('dpage.verb.more'))}" onclick="createPopper3(this);" data-file_location="${escapeHtml(fileLocation)}"${peerAttr()} class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
       </span>`}
     </div>
@@ -437,6 +437,10 @@ function setBrowserRootPanel(panelName, showBar) {
   // again (showMoodFilters), with the panel closed — hidden by default on
   // every visit.
   hideMoodFilters();
+  // Instant Mix's ✦: an album, artist or playlist page shows it again once
+  // its rows draw (instantMixBar); a mix page this panel replaces is left.
+  document.getElementById('instant_mix_btn')?.classList.add('super-hide');
+  if (typeof instantMixLeave === 'function') { instantMixLeave(); }
 
   // Inside a peer view every panel says whose library it is showing.
   const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
@@ -770,11 +774,11 @@ async function init() {
     const response = await MSTREAMAPI.ping();
     MSTREAMAPI.currentServer.vpaths = response.vpaths;
     VUEPLAYERCORE.playlists.length = 0;
-    document.getElementById('pop-f').innerHTML = `<div class="pop-f pop-playlist">${t('playlist.addToPlaylist')}</div>`;
+    document.getElementById('pop-f').innerHTML = popFHeadHtml();
 
     response.playlists.forEach(p => {
       VUEPLAYERCORE.playlists.push(p);
-      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(p.name)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(p.name)}</div>`;
+      document.getElementById('pop-f').innerHTML += popFPlaylistHtml(p.name);
       document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`;
     });
 
@@ -816,14 +820,25 @@ async function init() {
     // Admins get the "Invite <peer> to federate" row in the recommendation
     // modal. Identity lives on the layered /api/ endpoint (ping is a frozen
     // flat contract); a server without /api/ or a failed call = not admin,
-    // and the row simply never shows.
+    // and the row simply never shows. The same call carries Instant Mix's
+    // gate (instantMixOn): the route, an integer generation, and a library
+    // with sound to mix from right now — no mix until it answers, nor after
+    // a failure.
     MSTREAMAPI.serverInfo()
       .then((info) => {
         const admin = !!(info && info.user && info.user.admin === true);
         MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
         VUEPLAYERCORE.setAdmin(admin);
+        const features = (info && info.features) || {};
+        MSTREAMAPI.currentServer.discoveryReady = features.discoveryReady === true;
+        MSTREAMAPI.currentServer.instantMix = Number(features.instantMix) || 0;
       })
-      .catch(() => { MSTREAMAPI.currentServer.admin = false; VUEPLAYERCORE.setAdmin(false); });
+      .catch(() => {
+        MSTREAMAPI.currentServer.admin = false;
+        VUEPLAYERCORE.setAdmin(false);
+        MSTREAMAPI.currentServer.discoveryReady = false;
+        MSTREAMAPI.currentServer.instantMix = 0;
+      });
     // Sonic Path is a standalone side-nav panel — reveal its nav entry
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
@@ -901,6 +916,17 @@ async function init() {
 // only after seeing locked=true once, so a scan triggered post-page-load
 // never appeared. Removed entirely.
 
+// The ▾ menu (#pop-f): Instant Mix first (createPopper3 shows it while this
+// server can mix), the playlists' header, then one row per playlist. Every
+// writer of the menu builds it from these two, so none drops the item.
+function popFHeadHtml() {
+  return `<div class="pop-list-item" id="pop-f-mix" style="display:none" onclick="instantMixFromMenu()">${escapeHtml(t('mix.title'))}</div><div class="pop-f pop-playlist">${t('playlist.addToPlaylist')}</div>`;
+}
+
+function popFPlaylistHtml(name) {
+  return `<div class="pop-list-item" data-playlist="${escapeHtml(name)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(name)}</div>`;
+}
+
 function createPopper3(el) {
   // Playlists store paths against THIS library — a peer's path would save
   // as a row that resolves to nothing. Say so instead of opening a picker
@@ -923,6 +949,10 @@ function createPopper3(el) {
   }
 
   curFileTracker = el.getAttribute("data-file_location")
+  // Instant Mix of the row's song, while this server can mix (a connected
+  // server's row never gets this far).
+  const mix = document.getElementById('pop-f-mix');
+  if (mix) { mix.style.display = typeof instantMixOn === 'function' && instantMixOn() ? '' : 'none'; }
   popFInstance = Popper.createPopper(el, document.getElementById('pop-f'), {
     placement: 'bottom-end',
     onFirstUpdate: function (data) {
@@ -2845,12 +2875,25 @@ function onSearchButtonClick() {
 }
 
 async function onBackButton() {
+  // A mix at the bottom of the stack (opened over a view that keeps none):
+  // back to that view.
+  const top = programState[programState.length - 1];
+  if (programState.length === 1 && top && top.state === 'mix') {
+    programState.pop();
+    instantMixLeave();
+    instantMixUnder(top);
+    return;
+  }
   if (programState.length < 2) {
     return;
   }
 
   const thisState = programState.pop();
   const backState = programState[programState.length - 1];
+  // Leaving a mix: its header and listeners go before the page under it
+  // draws.
+  const fromMix = thisState.state === 'mix';
+  if (fromMix) { instantMixLeave(); }
 
   if (backState.state === 'allPlaylists') {
     await getAllPlaylists(undefined);
@@ -2865,7 +2908,9 @@ async function onBackButton() {
   } else if (backState.state === 'genre') {
     await getGenreSongs(backState.name, backState.source);
   } else if (backState.state === 'fileExplorer') {
-    fileExplorerArray.pop();
+    // Under a mix the folder is the one it was opened on: drawn again, not
+    // its parent.
+    if (!fromMix) { fileExplorerArray.pop(); }
     await senddir();
   } else if (backState.state === 'searchPanel') {
     setupSearchPanel(backState.searchTerm, undefined);
@@ -2877,6 +2922,21 @@ async function onBackButton() {
   } else if (backState.state === 'discovery') {
     // An album opened from the Discover page: back to the page as it was.
     discoveryPanel({ keep: true });
+  } else if (backState.state === 'playlist') {
+    // A playlist under the page left (the mix its ✦ opened): opened again
+    // by name, its entry put back as it was.
+    programState.pop();
+    await onPlaylistClick(null, backState);
+  } else if (backState.state === 'mix') {
+    // A mix under the page left (a mix of one of its rows, an album opened
+    // over it): drawn again, from its answer when the page still has it.
+    await instantMixShow(backState);
+  } else if (fromMix) {
+    // A mix over a view with no branch here (a list such as Rated, a panel
+    // that keeps no stack such as Auto DJ): that view again, fresh, as its
+    // nav entry opens it.
+    instantMixUnder(thisState);
+    return;
   }
 
   // Fill in Search Bar
@@ -2901,7 +2961,7 @@ async function getAllPlaylists() {
   try {
     const response = await MSTREAMAPI.getAllPlaylists();
     VUEPLAYERCORE.playlists.length = 0;
-    document.getElementById('pop-f').innerHTML = `<div class="pop-f pop-playlist">${t('playlist.addToPlaylist')}</div>`;
+    document.getElementById('pop-f').innerHTML = popFHeadHtml();
     document.getElementById('live-playlist-select').innerHTML = `<option value="" disabled selected>${t('livePlaylist.selectPlaylist')}</option>`;
 
     // loop through the json array and make an array of corresponding divs
@@ -2911,7 +2971,7 @@ async function getAllPlaylists() {
       const lol = { name: p.name, type: 'playlist' };
       currentBrowsingList.push(lol);
       VUEPLAYERCORE.playlists.push(lol);
-      document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(p.name)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(p.name)}</div>`;
+      document.getElementById('pop-f').innerHTML += popFPlaylistHtml(p.name);
       document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(p.name)}">${escapeHtml(p.name)}</option>`;
     });
     playlists += '</ul>'
@@ -3019,13 +3079,16 @@ function renamePlaylist(el) {
   });
 }
 
-async function onPlaylistClick(el) {
+// `entry`: the page's programState entry, put back as it was (Back, from
+// the mix its ✦ opened) — else a new one for the row clicked.
+async function onPlaylistClick(el, entry) {
   try {
-    const playlistname = decodeURIComponent(el.getAttribute('data-playlistname'));
+    const playlistname = entry ? entry.name : decodeURIComponent(el.getAttribute('data-playlistname'));
     document.getElementById('directoryName').innerHTML = 'Playlist: ' + escapeHtml(playlistname);
     document.getElementById('filelist').innerHTML = getLoadingSvg();
+    document.getElementById('instant_mix_btn')?.classList.add('super-hide');
     currentBrowsingList = [];
-    programState.push({
+    programState.push(entry || {
       state: 'playlist',
       name: playlistname,
       previousScroll: document.getElementById('filelist').scrollTop,
@@ -3051,9 +3114,13 @@ async function onPlaylistClick(el) {
     });
 
     document.getElementById('filelist').innerHTML = files;
+    // A playlist with songs can seed an Instant Mix (the bar's ✦).
+    if (response.length && typeof instantMixBar === 'function') {
+      instantMixBar({ kind: 'playlist', playlist: playlistname }, { kind: 'playlist', title: playlistname });
+    }
   }catch(err) {
     document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`;
-    boilerplateFailure(response, error);
+    boilerplateFailure(err);
   }
 }
 
@@ -3087,7 +3154,7 @@ async function newPlaylist() {
 
     document.getElementById("newPlaylistForm").reset(); 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
-    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(title)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(title)}</div>`;
+    document.getElementById('pop-f').innerHTML += popFPlaylistHtml(title);
     document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`;
   
     if (programState[0].state === 'allPlaylists') {
@@ -3225,7 +3292,7 @@ async function savePlaylist() {
     }
 
     VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist'});
-    document.getElementById('pop-f').innerHTML += `<div class="pop-list-item" data-playlist="${escapeHtml(title)}" onclick="addToPlaylistUI(this.getAttribute('data-playlist'))">&#8226; ${escapeHtml(title)}</div>`;
+    document.getElementById('pop-f').innerHTML += popFPlaylistHtml(title);
     document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`;
   }catch(err) {
     boilerplateFailure(err);
@@ -3329,6 +3396,10 @@ async function getArtistsAlbums(artist) {
     browseKeepDrawn();
     // A connected server's artist: the header, and its cards' marks.
     if (peerContext) { browseArtistHead(artist, response); }
+    // This server's artist can seed an Instant Mix (the bar's ✦).
+    else if (response.albums.length && typeof instantMixBar === 'function') {
+      instantMixBar({ kind: 'artist', artist }, { kind: 'artist', title: artist });
+    }
   }catch(err) {
     if (!browseKeepBack(gen)) { document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`; }
     boilerplateFailure(err);
@@ -3338,7 +3409,8 @@ async function getArtistsAlbums(artist) {
 /////////////// Mood filters
 // The browse lists' mood filters (Albums, Artists, Rated, Recently Added;
 // the server half is src/api/mood-filter.js) — and Discover's, drawn in its
-// own bar. One filter per page for the visit: a value per scale (`valence`,
+// own bar, and Instant Mix's, one of its page's filters (`mix`, kept for
+// the session). One filter per page for the visit: a value per scale (`valence`,
 // `energy`, `voice`) and a `tags` list, a group left out filtering nothing.
 // The bar's #mood_filter_btn shows when the list's answer carries `moods`
 // (this server, or the connected one being browsed, can filter) — or, for
@@ -3360,7 +3432,7 @@ const MOODS = {
   // How sure every group must be — the server's `threshold`. Standard is
   // its default, left off the wire (and a filter's `level` left unset).
   levels: [['strict', 0.7], ['standard', 0.5], ['loose', 0.3]],
-  filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {} },
+  filters: { albums: {}, artists: {}, rated: {}, recent: {}, discover: {}, mix: {} },
   // The song lists' order: 'list' — their own (rating, date added) — or
   // 'match'. Per list for the visit, and not part of the filter.
   sort: { rated: 'list', recent: 'list' },
@@ -3389,11 +3461,13 @@ function moodFilterBody(list, f = MOODS.filters[list] || {}) {
 // One pressed value per scale (pressed again, it lets go), any number of
 // tags, and Clear while anything is set. The lists' buttons call their
 // handlers; Discover's carry data-dp actions for its own dispatcher (and
-// its focus restore after a redraw); Auto DJ's carry none — its panel
-// listens on the row and keeps the filter itself ([f]).
-function moodPanelHtml(list, f = MOODS.filters[list] || {}) {
+// its focus restore after a redraw); Auto DJ's and Instant Mix's carry
+// none — their panels listen on the row and keep the filter themselves
+// ([f]). `clear: false` leaves Clear out: Instant Mix's panel has one for
+// all its rows.
+function moodPanelHtml(list, f = MOODS.filters[list] || {}, { clear = true } = {}) {
   const dp = list === 'discover';
-  const dj = list === 'autodj';
+  const dj = list === 'autodj' || list === 'mix';
   const on = (handler, act, v) => (dp ? `data-dp="${act}" data-v="${v}"` : dj ? '' : `onclick="${handler}"`);
   const scale = ([group, values, label]) => `<div class="mood-seg" role="group" aria-label="${escapeHtml(t(label))}">${values.map((v) =>
     `<button type="button" class="mood-seg-btn" data-mood-group="${group}" data-mood-value="${v}" aria-pressed="${f[group] === v}" ${on(`pickMood('${group}', '${v}')`, 'mood', `${group}:${v}`)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
@@ -3404,7 +3478,7 @@ function moodPanelHtml(list, f = MOODS.filters[list] || {}) {
     `<button type="button" class="mood-seg-btn" data-mood-level="${v}" aria-pressed="${level === v}" ${on(`pickMoodLevel('${v}')`, 'moodLevel', v)}>${escapeHtml(t(`moods.${v}`))}</button>`).join('')}</div>`;
   return MOODS.scales.map(scale).join('') + tags + levels
     + (MOODS.sort[list] !== undefined ? moodSortHtml(list, f) : '')
-    + `<button type="button" class="mood-clear${moodFilterBody(list, f) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>`;
+    + (clear ? `<button type="button" class="mood-clear${moodFilterBody(list, f) ? '' : ' super-hide'}" ${on('clearMoodFilters()', 'moodClear', 'all')}>${escapeHtml(t('moods.clear'))}</button>` : '');
 }
 
 // A song list's Sort: its own order (named for it) or best match first.
@@ -3789,6 +3863,9 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
     discoveryHideHead();
   }
   browseKeepReset(true);
+  // A mix page this one opens over is left; the ✦ waits for the songs.
+  document.getElementById('instant_mix_btn')?.classList.add('super-hide');
+  if (typeof instantMixLeave === 'function') { instantMixLeave(); }
   document.getElementById('directoryName').innerHTML = 'Album: ' + escapeHtml(album);
 
   const page = entry || {
@@ -3832,6 +3909,14 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
     // A connected server's album: the header that gives its credit back,
     // and its songs' marks.
     if (peerContext) { browseAlbumHead(response, { album, artist, year, albumArtist, compilation: page.compilation === true }); }
+    // This server's album can seed an Instant Mix (the bar's ✦) — never the
+    // singles card, nor an album that drew no songs.
+    else if (album && response.length && typeof instantMixBar === 'function') {
+      const first = response[0].metadata || {};
+      const cover = response.find((s) => s.metadata && s.metadata['album-art']);
+      instantMixBar({ kind: 'album', album, artist, albumArtist, year },
+        { kind: 'album', title: album, sub: albumArtist || artist || first['album-artist'] || first.artist || '', art: cover ? cover.metadata['album-art'] : null });
+    }
   }catch(err) {
     if (!browseKeepBack(gen)) { document.getElementById('filelist').innerHTML = `<div>${t('error.serverCallFailed')}</div>`; }
     boilerplateFailure(err);
@@ -4172,7 +4257,7 @@ function renderDiscoverDownloadRow(row) {
     actions.push(`<span title="Play Now" onclick="playNow(this);" data-file_location="${escapeHtml(row.filepath)}" class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="14" width="14" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      <span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(row.filepath)}" class="fileAddToPlaylist">
+      <span title="${escapeHtml(t('dpage.verb.more'))}" aria-label="${escapeHtml(t('dpage.verb.more'))}" onclick="createPopper3(this);" data-file_location="${escapeHtml(row.filepath)}" class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
       </span>`);
   }
@@ -5112,7 +5197,8 @@ function discoveryArtHtml(srcAttr, peer) {
 }
 
 // One song row: art, title, "Artist · Album", the hover verbs. `kind` is
-// 'lib' (verbs play / queue / ⋯ add to playlist) or 'peer' (play now /
+// 'lib' (verbs play / queue / ⋯ the song menu: Instant Mix, add to a
+// playlist) or 'peer' (play now /
 // queue through this server, ⋯ opens the peer window). A click on the
 // row queues it, in both columns.
 function discoverySongRowHtml(r, i, kind) {
@@ -5130,7 +5216,7 @@ function discoverySongRowHtml(r, i, kind) {
   const verbs = peer
     ? verb('peerPlay', 'dpage.verb.playNow', DPAGE_ICONS.play) + verb('fedQueue', 'dpage.verb.queue', DPAGE_ICONS.add) + verb('peerMore', 'dpage.verb.more', '⋯')
     : verb('play', 'dpage.verb.playNow', DPAGE_ICONS.play) + verb('queue', 'dpage.verb.queue', DPAGE_ICONS.add) +
-      verb('more', 'dpage.verb.addToPlaylist', '⋯', ` data-file_location="${escapeHtml(r.filepath)}"`);
+      verb('more', 'dpage.verb.more', '⋯', ` data-file_location="${escapeHtml(r.filepath)}"`);
   // A connected server's row carries its copy's badge ON its subtitle line,
   // after "Artist · Album" (which truncates first), and its thin bar pinned to
   // the row's bottom edge — slots 'p' + i, patched in place on the job poll.
@@ -6033,12 +6119,13 @@ function sonicPathPlay(replaceQueue) {
   }
 }
 
-// The name-a-playlist modal (#savePlaylistModal) shared by the Sonic Path
-// and the Discover page: `getPaths` answers the songs at submit time.
+// The name-a-playlist modal (#savePlaylistModal) shared by the Sonic Path,
+// the Discover page and Instant Mix: `getPaths` answers the songs at submit
+// time; `name`, the name the field starts with (Instant Mix's default).
 let savePlaylistModalPaths = null;
-function openSavePlaylistModal(getPaths) {
+function openSavePlaylistModal(getPaths, name) {
   savePlaylistModalPaths = getPaths;
-  document.getElementById('save_playlist_name').value = '';
+  document.getElementById('save_playlist_name').value = name || '';
   myModal.open('#savePlaylistModal');
 }
 
@@ -6050,6 +6137,14 @@ async function savePlaylistFromModal() {
     await MSTREAMAPI.savePlaylist(title, paths);
     myModal.close();
     iziToast.success({ title: t('sonicPath.playlistSaved'), message: escapeHtml(title), position: 'topCenter', timeout: 2500 });
+    // A new name joins the lists that offer the playlists (the ▾ menu, the
+    // queue's, the live playlist's), as savePlaylist's does — so the next
+    // default name never takes it.
+    if (!VUEPLAYERCORE.playlists.some((p) => p.name === title)) {
+      VUEPLAYERCORE.playlists.push({ name: title, type: 'playlist' });
+      document.getElementById('pop-f').innerHTML += popFPlaylistHtml(title);
+      document.getElementById('live-playlist-select').innerHTML += `<option value="${escapeHtml(title)}">${escapeHtml(title)}</option>`;
+    }
   } catch (_err) {
     iziToast.error({ title: t('sonicPath.playlistSaveFailed'), position: 'topCenter', timeout: 3000 });
   }
@@ -6192,6 +6287,990 @@ function sonicPathPanel() {
   });
 }
 
+///////////////// Instant Mix
+// Instant Mix on a song, an album, an artist or a playlist opens a page of
+// ~50 songs that sound like it (POST /api/v1/discovery/local/mix): the
+// item's header with ▶ Play · Shuffle · Queue all · Save as playlist and
+// the Filters funnel, then the rows. Nothing plays until a verb is
+// pressed. The body, the page's states and Save's default name come from
+// the pure half, alpha/instant-mix.js (INSTANTMIX); this part fetches,
+// draws and wires.
+//
+// The ways in — the song ▾ menu (#pop-f), the queue ⋮ (#pop-d), the bar's
+// ✦ on album, artist and playlist pages — show only while this server can
+// mix right now (instantMixOn), never on a connected server's items. Back
+// goes to the page under the mix (onBackButton): its own branch, or — for
+// a view that keeps no stack — the view it was opened over (the entry's
+// underView: spa.js changeView's lastView).
+//
+// The page keeps its filters in memory for the session (MIX.filters, and
+// MOODS.filters.mix for the mood), never Auto DJ's: every mix starts from
+// them, its panel closed. A change asks again after a pause; a newer ask
+// wins, and the rows on screen stay, dimmed, until the new ones land. The
+// last INSTANTMIX.CACHE_MAX answers are kept by body, so Back and a change
+// undone draw at once — never a "not analysed" or "nothing similar yet"
+// (INSTANTMIX.keeps), which a later open asks again.
+//
+// Controls carry data-mx actions: one delegated listener per event type on
+// #browse-head (onInstantMixHead) and one on #filelist (onInstantMixClick),
+// dropped with the page (MIX.abort).
+const MIX = {
+  filters: null,      // the page's filters (INSTANTMIX.emptyFilters() from the first mix on)
+  open: false,        // the filter panel is open (closed on every new page)
+  seq: 0,             // one per ask; an answer for an older one is not drawn
+  timer: null,        // the re-ask a filter change waits for
+  pending: null,      // the ask out: settles once its answer is drawn or dropped
+  answer: undefined,  // the answer on screen: undefined = none yet
+  key: null,          // its body's cache key (a usable answer's), for a change undone
+  cache: new Map(),   // cacheKey(body) → answer, the newest last
+  entry: null,        // the page's programState entry while it is up
+  abort: null,        // the page's listeners' AbortController
+  funnel: false,      // the page has shown its funnel (a failed re-ask keeps it)
+  moodsGone: false,   // the last answer had no mood echo: no scores here now
+  searchOpen: false,  // the bar's search was open when the page came up
+  bar: null,          // the bar's ✦: { seed, head } of the page that drew it
+  queued: null,       // the song of the queue row whose ⋮ was pressed
+  genres: null,       // the library's genres (the Genre row's): null until fetched
+  genresAsk: null,    // their fetch while it is out
+};
+
+// The playlist's tile (browseHeadTile draws the covers and the artist's).
+const MIX_PLAYLIST_TILE = '<svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zM17 6v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V8h3V6h-5z"/></svg>';
+
+// The ways in show while this server can mix right now: the feature on, a
+// library with sound to mix from, a version with the route — and the app
+// on this server (a connected server's items have none in this version).
+function instantMixOn() {
+  const s = MSTREAMAPI.currentServer;
+  return s.discovery === true && s.discoveryReady === true && s.instantMix >= 1 && !peerContext;
+}
+
+// A song's seed and header from what the click came from: the list on
+// screen (browsingListMetadata), Discover's rows, this mix's rows, the
+// queue — else one lookup. The seed carries the song's BPM and key, which
+// the tempo and key filters build around.
+async function instantMixSongHead(filepath, meta) {
+  const path = String(filepath || '').replace(/^\/+/, '');
+  const same = (p) => String(p || '').replace(/^\/+/, '') === path;
+  const usable = (m) => !!m && typeof m === 'object' && Object.keys(m).length > 0;
+  let m = usable(meta) ? meta : null;
+  if (!m) {
+    const known = browsingListMetadata();
+    const fp = [...known.keys()].find(same);
+    const row = (fp !== undefined && { metadata: known.get(fp) })
+      || [...(discoveryView.shown.allTracks || []), ...((MIX.answer && MIX.answer.songs) || [])].find((r) => r && same(r.filepath) && usable(r.metadata))
+      || MSTREAMPLAYER.playlist.find((s) => !s.federation && same(s.rawFilePath) && usable(s.metadata));
+    if (row) { m = row.metadata; }
+  }
+  if (!m) {
+    try {
+      const res = await MSTREAMAPI.lookupMetadata(filepath);
+      if (res && res.metadata) { m = res.metadata; }
+    } catch (_err) { /* the file's name below */ }
+  }
+  m = m || {};
+  return {
+    seed: { kind: 'song', filepath: path, bpm: Number.isFinite(m.bpm) ? m.bpm : null, key: m['musical-key'] || null },
+    head: { kind: 'song', title: m.title || path.split('/').pop(), sub: m['artist-display'] || m.artist || '', art: m['album-art'] || null },
+  };
+}
+
+// The ▾ menu's Instant Mix: the song of the row it was opened on
+// (curFileTracker) — let go, or that row's next ▾ would close the menu.
+async function instantMixFromMenu() {
+  const filepath = curFileTracker;
+  curFileTracker = undefined;
+  if (!filepath || !instantMixOn()) { return; }
+  const { seed, head } = await instantMixSongHead(filepath);
+  return instantMixOpen(seed, head);
+}
+
+// The queue ⋮'s Instant Mix: the song of the row its menu was opened on.
+async function instantMixFromQueue() {
+  const song = MIX.queued;
+  MIX.queued = null;
+  if (!song || song.federation || !instantMixOn()) { return; }
+  const { seed, head } = await instantMixSongHead(song.rawFilePath, song.metadata);
+  return instantMixOpen(seed, head);
+}
+
+// The bar's ✦: a mix of the page's album, artist or playlist.
+function instantMixFromBar() {
+  return MIX.bar ? instantMixOpen(MIX.bar.seed, MIX.bar.head) : undefined;
+}
+
+// The bar's ✦ for the page that just drew — an album, an artist or a
+// playlist of this server's, with rows: what a press mixes, shown while
+// this server can mix. Every other page hides it (setBrowserRootPanel).
+function instantMixBar(seed, head) {
+  MIX.bar = seed && instantMixOn() ? { seed, head } : null;
+  document.getElementById('instant_mix_btn')?.classList.toggle('super-hide', !MIX.bar);
+}
+
+// The queue row's ⋮ menu (#pop-d) is vp.js's: a press on a ⋮ is seen here
+// on its way down (capture), as Keep a copy's is (onQueueMoreCapture, kept
+// apart), so the menu's Instant Mix is there for the row's song — this
+// server's, while it can mix — before the menu shows.
+function instantMixQueueCapture(e) {
+  const more = e.target && typeof e.target.closest === 'function' ? e.target.closest('.np-queue-item .popperMenu') : null;
+  if (!more) { return; }
+  const row = more.closest('.np-queue-item');
+  const rows = row && row.parentElement ? [...row.parentElement.children].filter((el) => el.classList.contains('np-queue-item')) : [];
+  const song = MSTREAMPLAYER.playlist[rows.indexOf(row)] || null;
+  MIX.queued = song && !song.federation && instantMixOn() ? song : null;
+  const entry = document.getElementById('pop-d-mix');
+  if (entry) { entry.style.display = MIX.queued ? '' : 'none'; }
+}
+document.addEventListener('click', instantMixQueueCapture, true);
+
+// Open a mix page: its entry on the Back stack, with the view it opens over
+// (for one that keeps no stack of its own), then the page, which asks.
+function instantMixOpen(seed, head) {
+  if (!seed || !head || !instantMixOn()) { return; }
+  // a mix opened from a mix: the old page lets go first
+  instantMixLeave();
+  const entry = {
+    state: 'mix',
+    seed,
+    head,
+    underView: lastView,
+    previousScroll: document.getElementById('filelist').scrollTop,
+    previousSearch: document.getElementById('localSearchBar').value
+  };
+  programState.push(entry);
+  // On a phone the page draws in the browser tab: bring it forward (a mix
+  // opened from the queue).
+  const tab = document.querySelector('.m-tab.panel_one_name');
+  if (tab && typeof toggleThing === 'function' && window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+    toggleThing(tab, true);
+  }
+  return instantMixShow(entry);
+}
+
+// Draw the mix page for its entry (opened, or come back to): the chrome, the
+// header from what was clicked, four skeleton rows — or at once the answer
+// kept for these filters — and the ask; the library's genres are fetched
+// meanwhile, for the filter panel. → the ask's promise.
+function instantMixShow(entry) {
+  if (!MIX.filters) { MIX.filters = INSTANTMIX.emptyFilters(); }
+  instantMixChrome();
+  MIX.entry = entry;
+  MIX.answer = undefined;
+  MIX.key = null;
+  MIX.open = false;
+  MIX.funnel = false;
+  MIX.abort = new AbortController();
+  const signal = MIX.abort.signal;
+  const head = document.getElementById('browse-head');
+  head.innerHTML = instantMixHeadHtml(entry.head);
+  head.classList.remove('super-hide');
+  for (const type of ['click', 'mousedown', 'change', 'keydown', 'input', 'focusout']) {
+    head.addEventListener(type, onInstantMixHead, { signal });
+  }
+  document.getElementById('filelist').addEventListener('click', onInstantMixClick, { signal });
+  instantMixDrawList();
+  head.querySelector('.browse-head-title')?.focus();
+  instantMixGenres();
+  return instantMixAsk();
+}
+
+// The library's genres, for the Genre row and its suggestions: Auto DJ's
+// cached list (5 minutes), else one fetch as a mix page opens, so the row
+// is ready when the panel opens — and shows in place if it is open by
+// then. A failed fetch leaves the list it had (none at first): the row
+// then shows only to let a genre already set go.
+function instantMixGenres() {
+  const cached = AUTODJ.getCachedGenresList();
+  if (cached) {
+    MIX.genres = cached;
+    return Promise.resolve();
+  }
+  if (!MIX.genresAsk) {
+    MIX.genresAsk = MSTREAMAPI.getGenres().then((res) => {
+      MIX.genresAsk = null;
+      if (res && res.status === 'ok') {
+        AUTODJ.setCachedGenresList(res.value);
+        MIX.genres = AUTODJ.getCachedGenresList() || [];
+      } else if (!MIX.genres) {
+        MIX.genres = [];
+      }
+      instantMixSyncFilters();
+    });
+  }
+  return MIX.genresAsk;
+}
+
+// The column's chrome on a mix page: the bar shown (Discover hides it) with
+// ← and "Instant Mix" alone — no search, folder, upload, Add All or ✦, no
+// other page's header, switch or filters. The column's title stays.
+function instantMixChrome() {
+  document.getElementById('directory_bar').style.display = '';
+  discoveryHideHead();
+  browseKeepReset(true);
+  hideMoodFilters();
+  for (const id of ['genre_source', 'mkdir_btn', 'upload_btn', 'add_all_btn', 'instant_mix_btn']) {
+    document.getElementById(id)?.classList.add('super-hide');
+  }
+  document.getElementById('local_search_btn').style.display = 'none';
+  // The list's search can't filter a mix: closed while the page is up,
+  // given back when it is left (instantMixLeave).
+  const search = document.getElementById('search_folders');
+  MIX.searchOpen = !!search && !search.classList.contains('super-hide');
+  search?.classList.add('super-hide');
+  document.getElementById('localSearchBar').value = '';
+  const name = document.getElementById('directoryName');
+  name.classList.remove('super-hide');
+  name.innerHTML = escapeHtml(t('mix.title'));
+  currentBrowsingList = [];
+}
+
+// Leaving a mix page (Back, another panel, another mix): the bar's search
+// and Add All back, the header gone, the page's listeners and its re-ask
+// with it. Nothing to do when no mix is up.
+function instantMixLeave() {
+  if (!MIX.entry) { return; }
+  MIX.entry = null;
+  if (MIX.abort) { MIX.abort.abort(); }
+  MIX.abort = null;
+  clearTimeout(MIX.timer);
+  MIX.timer = null;
+  MIX.pending = null;
+  MIX.open = false;
+  document.getElementById('local_search_btn').style.display = '';
+  document.getElementById('add_all_btn')?.classList.remove('super-hide');
+  if (MIX.searchOpen) {
+    document.getElementById('search_folders')?.classList.remove('super-hide');
+    document.getElementById('directoryName')?.classList.add('super-hide');
+  }
+  MIX.searchOpen = false;
+  const head = document.getElementById('browse-head');
+  if (head) {
+    head.classList.add('super-hide');
+    head.innerHTML = '';
+  }
+}
+
+// Back from a mix over a view that has no branch of its own: that view
+// again, as its nav entry opens it — else the file explorer.
+function instantMixUnder(entry) {
+  const v = entry && entry.underView;
+  if (v && typeof v.fn === 'function' && v.el) {
+    changeView(v.fn, v.el);
+    return;
+  }
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
+// What the body is built from beside the filters: the seed (active()'s),
+// the mood filter's wire form and whether this server takes one (the
+// ping's), the app's folder choice and every library, Auto DJ's tempo and
+// key helpers.
+function instantMixCtx(seed) {
+  return {
+    seed,
+    moods: moodFilterBody('mix'),
+    moodFilters: MSTREAMAPI.currentServer.moodFilters === true,
+    ignoreVPaths: localIgnoreVPaths() || [],
+    vpaths: MSTREAMAPI.currentServer.vpaths || [],
+    dj: typeof AUTODJ !== 'undefined' ? AUTODJ : null,
+  };
+}
+
+function instantMixBody(seed) {
+  return INSTANTMIX.requestBody(seed, MIX.filters, instantMixCtx(seed));
+}
+
+// How many of the page's filters are set for its seed: the funnel's mark,
+// and whether an emptied list is the filters' doing.
+function instantMixActive() {
+  return MIX.entry ? INSTANTMIX.active(MIX.filters, moodFilterBody('mix'), instantMixCtx(MIX.entry.seed)) : 0;
+}
+
+// Ask for the mix with the page's filters: the answer kept for that body
+// draws at once, else the route is asked. An answer draws only while it is
+// the newest ask and its page is still up — a late one is kept, never drawn
+// over another page. → a promise that settles once it drew or was dropped.
+function instantMixAsk() {
+  clearTimeout(MIX.timer);
+  MIX.timer = null;
+  const entry = MIX.entry;
+  if (!entry) { return Promise.resolve(); }
+  const seq = ++MIX.seq;
+  const body = instantMixBody(entry.seed);
+  const key = INSTANTMIX.cacheKey(body);
+  const kept = body ? MIX.cache.get(key) : undefined;
+  if (!body || kept) {
+    MIX.pending = null;
+    if (kept) {
+      // the newest last: the oldest is the one that goes
+      MIX.cache.delete(key);
+      MIX.cache.set(key, kept);
+    }
+    instantMixLanded(entry, seq, kept || null);
+    return Promise.resolve();
+  }
+  const ask = MSTREAMAPI.instantMix(body).then((answer) => {
+    if (INSTANTMIX.keeps(answer, { kind: entry.seed.kind, seedPath: entry.seed.filepath })) {
+      MIX.cache.set(key, answer);
+      if (MIX.cache.size > INSTANTMIX.CACHE_MAX) { MIX.cache.delete(MIX.cache.keys().next().value); }
+    }
+    if (MIX.pending === ask) { MIX.pending = null; }
+    instantMixLanded(entry, seq, answer);
+  });
+  MIX.pending = ask;
+  return ask;
+}
+
+// An answer for ask `seq` of `entry`'s page, drawn when it is still the one
+// wanted. A 403 takes the ways in away for the session (discovery went off,
+// as the Sonic Path's does). An answer without the mood echo was built with
+// no mood — this server has no scores now: the mood filter empties, and its
+// row goes (MIX.moodsGone).
+function instantMixLanded(entry, seq, answer) {
+  if (seq !== MIX.seq || MIX.entry !== entry || programState[programState.length - 1] !== entry) { return; }
+  if (answer && answer.disabled === true) { MSTREAMAPI.currentServer.instantMix = 0; }
+  const usable = !!answer && Array.isArray(answer.songs);
+  if (usable && answer.notAnalyzed !== true) {
+    MIX.moodsGone = !answer.moods || typeof answer.moods !== 'object';
+    if (MIX.moodsGone) { MOODS.filters.mix = {}; }
+  }
+  MIX.answer = answer;
+  MIX.key = usable ? INSTANTMIX.cacheKey(instantMixBody(entry.seed)) : null;
+  instantMixDrawList();
+}
+
+// The list for the answer on screen: four skeleton rows before the first,
+// the rows, or the state's one line — and the header's verbs and funnel for
+// that state, in place (the header and an open panel stay). The list goes
+// back to its top.
+function instantMixDrawList() {
+  const entry = MIX.entry;
+  const root = document.getElementById('filelist');
+  if (!entry || !root) { return; }
+  const answer = MIX.answer;
+  const st = INSTANTMIX.viewState(answer, { kind: entry.seed.kind, active: instantMixActive(), seedPath: entry.seed.filepath });
+  let body;
+  if (st === 'loading') {
+    body = `<div class="dpage-rows" aria-busy="true">${discoverySkelHtml('rows', 4)}</div>`;
+  } else if (st === 'ready') {
+    body = `<div class="dpage-rows" aria-label="${escapeHtml(t('mix.title'))}">${answer.songs.map(instantMixRowHtml).join('')}</div>`;
+  } else {
+    body = instantMixLineHtml(st);
+  }
+  root.innerHTML = `<div class="dpage mix-page"><div class="dpage-songs dpage-songs-solo"><div class="dpage-col">${body}</div></div></div>`;
+  root.scrollTop = 0;
+  instantMixHeadState(st);
+}
+
+// A state's one line: no match with Clear beside it, a failure with Try
+// again; not analysed, nothing similar and off alone.
+function instantMixLineHtml(st) {
+  const [key, act, btn] = {
+    off: ['dpage.state.off'],
+    notAnalyzed: ['mix.notAnalyzed'],
+    nothingSimilar: ['mix.nothingSimilar'],
+    noMatch: ['mix.noMatch', 'clear', 'moods.clear'],
+  }[st] || ['mix.failed', 'retry', 'dpage.verb.tryAgain'];
+  const button = act ? ` <button type="button" class="dpage-vb dpage-hint-btn" data-mx="${act}">${escapeHtml(t(btn))}</button>` : '';
+  return `<div class="dpage-hint">${escapeHtml(t(key))}${button}</div>`;
+}
+
+// One row: Discover's markup (art, title, "Artist · Album") and its verbs —
+// ▶ play now, + add to queue, ⋯ the song menu, whose Instant Mix makes a mix
+// of this one. A click on the row queues it.
+function instantMixRowHtml(r, i) {
+  const md = r.metadata || {};
+  const title = md.title || String(r.filepath || '').split('/').pop();
+  const sub = [md['artist-display'] || md.artist, md.album].filter(Boolean).join(' · ');
+  const verb = (act, key, icon, extra) =>
+    `<button type="button" class="dpage-vb" data-mx="${act}" data-i="${i}"${extra || ''} title="${escapeHtml(t(key))}" aria-label="${escapeHtml(t(key))}">${icon}</button>`;
+  return `<div class="discover-row dpage-row pointer" data-mx="queue" data-i="${i}">
+    ${discoveryArtHtml(md['album-art'] ? artImgAttr(md['album-art'], 's') : null)}
+    <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(title)}</div><div class="discover-row-sub">${escapeHtml(sub)}</div></div>
+    <span class="dpage-verbs">${verb('play', 'dpage.verb.playNow', DPAGE_ICONS.play)}${verb('queue', 'dpage.verb.queue', DPAGE_ICONS.add)}${verb('more', 'dpage.verb.more', '⋯', ` data-file_location="${escapeHtml(r.filepath)}"`)}</span>
+  </div>`;
+}
+
+// The header (#browse-head's grid): the item's tile, its name (the page's
+// heading, focused when it opens) and line, the action row — the four verbs
+// and the Filters funnel at its right end, hidden until an answer shows
+// them (instantMixHeadState) — and, under it, the filter panel, closed.
+function instantMixHeadHtml(h) {
+  const tile = h.kind === 'playlist' ? MIX_PLAYLIST_TILE : browseHeadTile({ kind: h.kind === 'artist' ? 'artist' : 'album', art: h.art });
+  const verb = (act, key, cls) => `<button type="button" class="spath-btn${cls ? ` ${cls}` : ''} super-hide" data-mx="${act}">${escapeHtml(t(key))}</button>`;
+  const filters = escapeHtml(t('moods.filters'));
+  return `<div class="browse-head browse-head-${h.kind} mix-head">
+    <div class="browse-head-tile browse-head-tile-${h.kind}" aria-hidden="true">${tile}</div>
+    <div class="browse-head-text"><h2 class="browse-head-title" tabindex="-1">${escapeHtml(h.title)}</h2>${h.sub ? `<div class="browse-head-sub">${escapeHtml(h.sub)}</div>` : ''}</div>
+    <div class="browse-head-acts super-hide"><div class="browse-head-row">${verb('playAll', 'sonicPath.play', 'spath-btn-primary')}${verb('shuffle', 'dpage.verb.shuffle')}${verb('queueAll', 'dpage.verb.queueAll')}${verb('save', 'dpage.verb.saveAsPlaylist')}<button type="button" id="mix_filter_btn" class="mood-filter-btn super-hide" data-mx="filters" aria-expanded="false" aria-controls="mix-filters" aria-label="${filters}" title="${filters}"><svg xmlns="http://www.w3.org/2000/svg" height="22" width="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg></button></div></div>
+  </div>
+  <div class="mood-filters mix-filters super-hide" id="mix-filters" role="region" aria-label="${filters}"></div>`;
+}
+
+// The header for a state, in place: the verbs while there are rows to act
+// on; the funnel once an answer showed it (ready, no match), kept through a
+// failed re-ask, never while nothing could be mixed (not analysed, nothing
+// similar, off) — an open panel closing with it.
+function instantMixHeadState(st) {
+  const head = document.getElementById('browse-head');
+  if (!head) { return; }
+  const ready = st === 'ready';
+  if (ready || st === 'noMatch') { MIX.funnel = true; }
+  const funnel = MIX.funnel && (ready || st === 'noMatch' || st === 'failed');
+  head.querySelectorAll('[data-mx="playAll"], [data-mx="shuffle"], [data-mx="queueAll"], [data-mx="save"]').forEach((b) => b.classList.toggle('super-hide', !ready));
+  document.getElementById('mix_filter_btn')?.classList.toggle('super-hide', !funnel);
+  head.querySelector('.browse-head-acts')?.classList.toggle('super-hide', !ready && !funnel);
+  if (!funnel && MIX.open) { instantMixToggleFilters(); }
+  // an answer without the mood echo took the mood away: its row goes too
+  instantMixSyncFilters();
+  instantMixMarkFilters();
+}
+
+// The funnel: the filter panel under the header opens, its rows drawn
+// fresh (instantMixFiltersHtml), or closes; the funnel says which.
+function instantMixToggleFilters() {
+  const panel = document.getElementById('mix-filters');
+  const btn = document.getElementById('mix_filter_btn');
+  if (!panel || !btn) { return; }
+  MIX.open = !MIX.open;
+  panel.innerHTML = MIX.open ? instantMixFiltersHtml() : '';
+  panel.classList.toggle('super-hide', !MIX.open);
+  btn.setAttribute('aria-expanded', String(MIX.open));
+}
+
+// The filter panel's rows: Auto DJ's, in its order and with its labels —
+// Sources · Minimum Rating · BPM continuity (its tolerance under it while
+// it is on) · Harmonic mixing · Keyword filter · Genre filter · Mood ·
+// Track length, which ends with the panel's Clear — each label beside its
+// control (Mood's above it, across the panel), from the page's filters
+// (MIX.filters, MOODS.filters.mix). A row is drawn only where it can
+// filter this mix: Sources while the app's folder choice leaves two
+// libraries or more, tempo and key on a song with a BPM / a key, Genre
+// while the library has genres (or one is set), Mood where this server
+// filters by mood. No hints, headings or switches that turn a row on: a
+// row filters while it holds a value. Its controls carry data-mxf (the
+// rows' wrappers data-mxf-row) for instantMixFilterEvent and
+// instantMixSyncFilters.
+function instantMixFiltersHtml() {
+  const f = MIX.filters;
+  const seed = (MIX.entry && MIX.entry.seed) || {};
+  const label = (id, key) => `<div class="mix-filter-label" id="mixf-${id}">${escapeHtml(t(key))}</div>`;
+  const row = (name, html, shown = true) => `<div class="mix-filter-row${shown ? '' : ' super-hide'}" data-mxf-row="${name}">${html}</div>`;
+  const toggle = (act, on) => `<label class="toggle-sw"><input type="checkbox" data-mxf="${act}" aria-labelledby="mixf-${act}"${on ? ' checked' : ''}><span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></label>`;
+  // .browser-default: materialize restyles any other text field
+  const field = (act, key, attrs) => `<input type="text" class="dj-filter-input browser-default" data-mxf="${act}" placeholder="${escapeHtml(t(key))}" autocomplete="off" ${attrs}>`;
+  const rows = [];
+
+  const libs = instantMixLibraries();
+  if (libs.length > 1) {
+    const lit = libs.filter((v) => !f.vpathsOff.includes(v));
+    rows.push(row('sources', label('sources', 'autoDJ.sectionSources')
+      + `<div class="dj-vpath-pills" role="group" aria-labelledby="mixf-sources">${libs.map((v) => {
+        const on = lit.includes(v);
+        return `<button type="button" class="dj-vpath-pill${on ? ' on' : ''}" data-mxf="vpath" data-vpath="${escapeHtml(v)}" aria-pressed="${on}"${on && lit.length === 1 ? ' aria-disabled="true"' : ''}>${escapeHtml(v)}</button>`;
+      }).join('')}</div>`));
+  }
+
+  rows.push(row('rating', label('rating', 'autoDJ.minRating')
+    + `<select class="autodj-select browser-default" data-mxf="rating" aria-labelledby="mixf-rating">${ratingOptionsHtml(f.minRating)}</select>`));
+
+  if (instantMixTempo(seed)) {
+    const tol = f.bpmTolerance;
+    rows.push(row('bpm', label('bpm', 'autoDJ.bpmContinuityLabel') + toggle('bpm', f.bpm)));
+    rows.push(row('tolerance', label('tolerance', 'autoDJ.bpmToleranceLabel')
+      + `<div class="mix-filter-tol"><input type="range" class="autodj-slider" data-mxf="tolerance" min="1" max="20" step="1" value="${tol}" aria-labelledby="mixf-tolerance" aria-valuemin="1" aria-valuemax="20" aria-valuenow="${tol}">`
+      + `<span class="mix-filter-value" data-mxf-value="tolerance">${escapeHtml(t('autoDJ.bpmToleranceValue', { n: tol }))}</span></div>`, f.bpm === true));
+  }
+  if (instantMixKey(seed)) {
+    rows.push(row('harmonic', label('harmonic', 'autoDJ.harmonicMixingLabel') + toggle('harmonic', f.harmonic)));
+  }
+
+  rows.push(row('words', label('words', 'autoDJ.keywordFilterLabel')
+    + `<div class="mix-filter-stack"><div class="dj-filter-tags" data-mxf-chips="words" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${filterChipsHtml(f.words, 'word')}</div>`
+    + `${field('word', 'autoDJ.keywordFilterPlaceholder', 'aria-labelledby="mixf-words"')}</div>`));
+
+  const mode = f.genreMode === 'blacklist' ? 'blacklist' : 'whitelist';
+  const modeBtn = (m, key) => `<button type="button" class="dj-genre-mode-btn" data-mxf="genreMode" data-mode="${m}" aria-pressed="${mode === m}">${escapeHtml(t(key))}</button>`;
+  rows.push(row('genres', label('genres', 'autoDJ.genreFilterLabel')
+    + `<div class="mix-filter-stack"><div class="dj-filter-tags" data-mxf-chips="genres" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${filterChipsHtml(f.genres, 'genre')}</div>`
+    + `<div class="mix-filter-line"><div class="dj-genre-mode" role="group" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">${modeBtn('whitelist', 'autoDJ.genreModeWhitelist')}${modeBtn('blacklist', 'autoDJ.genreModeBlacklist')}</div>`
+    + `<div class="dj-genre-combo">${field('genre', 'autoDJ.genrePlaceholder', 'aria-autocomplete="list" aria-controls="mix-genre-suggest" aria-labelledby="mixf-genres"')}<div class="dj-genre-suggest" id="mix-genre-suggest" role="listbox" hidden></div></div></div></div>`,
+    (MIX.genres || []).length > 0 || f.genres.length > 0));
+
+  if (MSTREAMAPI.currentServer.moodFilters === true) {
+    rows.push(row('mood', `<div class="mix-filter-wide">${label('mood', 'autoDJ.moodFilterLabel')}`
+      + `<div class="dj-moods" role="group" aria-labelledby="mixf-mood">${moodPanelHtml('mix', MOODS.filters.mix, { clear: false })}</div></div>`, !MIX.moodsGone));
+  }
+
+  const length = (act, caption, aria, sec) => `<label class="dj-duration-field"><span class="dj-duration-field-label">${escapeHtml(t(caption))}</span>`
+    + `<input type="number" class="dj-filter-input dj-duration-num browser-default" data-mxf="${act}" min="0" max="1440" step="any" placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}" value="${escapeHtml(instantMixMinutes(sec))}" aria-label="${escapeHtml(t(aria))}"></label>`;
+  const bound = f.minDuration > 0 || f.maxDuration > 0;
+  rows.push(row('length', label('length', 'autoDJ.durationFilterLabel')
+    + `<div class="dj-duration-inputs" role="group" aria-labelledby="mixf-length">`
+    + length('minDuration', 'autoDJ.durationMinLabel', 'autoDJ.durationMinInputLabel', f.minDuration)
+    + length('maxDuration', 'autoDJ.durationMaxLabel', 'autoDJ.durationMaxInputLabel', f.maxDuration)
+    + `<span class="mix-filter-unknown${bound ? '' : ' super-hide'}" data-mxf-row="unknown">${toggle('unknown', f.allowUnknownDuration)}<span class="mix-filter-label" id="mixf-unknown">${escapeHtml(t('autoDJ.durationUnknownLabel'))}</span></span>`
+    + `<button type="button" class="mood-clear${instantMixActive() > 0 ? '' : ' super-hide'}" data-mxf="clear">${escapeHtml(t('moods.clear'))}</button></div>`));
+
+  return rows.join('');
+}
+
+// The libraries the Sources pills choose from: those the app's folder
+// choice leaves (localIgnoreVPaths) — the pills only narrow it, and never
+// write it, nor Auto DJ's own.
+function instantMixLibraries() {
+  const hidden = localIgnoreVPaths() || [];
+  return (MSTREAMAPI.currentServer.vpaths || []).filter((v) => !hidden.includes(v));
+}
+
+// What tempo and key build on (AUTODJ's helpers, as the body does): a
+// song's BPM that has windows, a song's key that has a Camelot code. An
+// album, an artist or a playlist has no single tempo or key: no rows.
+function instantMixTempo(seed) {
+  return seed.kind === 'song' && Number.isFinite(seed.bpm) && !!AUTODJ.buildBpmRanges(seed.bpm, INSTANTMIX.BPM_TOLERANCE)?.length;
+}
+
+function instantMixKey(seed) {
+  return seed.kind === 'song' && !!AUTODJ.toCamelot(seed.key);
+}
+
+// Seconds as the Track length fields show them — minutes, the float tail
+// trimmed (150 → "2.5"); no bound, empty — and minutes as typed back to
+// seconds (a blank, a '-' or an 'e' is no bound). Auto DJ's rules.
+function instantMixMinutes(sec) {
+  const n = Number(sec);
+  return Number.isFinite(n) && n > 0 ? String(Math.round((n / 60) * 100) / 100) : '';
+}
+
+function instantMixSeconds(raw) {
+  const mins = Number(raw);
+  return Number.isFinite(mins) && mins > 0 ? Math.round(mins * 60) : 0;
+}
+
+// An event inside the open filter panel (onInstantMixHead hands it over),
+// committed as Auto DJ commits its own: at once for a pill, the select, a
+// switch, a mode, a mood and a chip's ×; Enter or a comma for a word or a
+// genre, a suggestion on mousedown (before the field's blur hides the
+// list); `change` for the lengths and the tolerance, whose readout follows
+// the drag.
+function instantMixFilterEvent(ev) {
+  const el = ev.target.closest('[data-mxf], [data-mood-group], [data-mood-tag], [data-mood-level], .dj-filter-tag-rm, .dj-genre-suggest-row');
+  if (!el || !MIX.entry) { return; }
+  const f = MIX.filters;
+  const act = el.getAttribute('data-mxf');
+  if (ev.type === 'click') {
+    if (act === 'vpath') {
+      // a library in or out — the last one in stays (inert)
+      const v = el.getAttribute('data-vpath');
+      const off = new Set(f.vpathsOff);
+      if (off.has(v)) { off.delete(v); }
+      else if (instantMixLibraries().filter((x) => !off.has(x)).length > 1) { off.add(v); }
+      else { return; }
+      instantMixCommit(() => { f.vpathsOff = [...off]; });
+    } else if (act === 'genreMode') {
+      const mode = el.getAttribute('data-mode') === 'blacklist' ? 'blacklist' : 'whitelist';
+      if (mode !== f.genreMode) { instantMixCommit(() => { f.genreMode = mode; }); }
+    } else if (act === 'clear') {
+      instantMixClearFilters();
+    } else if (el.classList.contains('dj-filter-tag-rm')) {
+      const genre = el.hasAttribute('data-genre');
+      const name = el.getAttribute(genre ? 'data-genre' : 'data-word');
+      const key = genre ? 'genres' : 'words';
+      instantMixCommit(() => { f[key] = f[key].filter((v) => v !== name); }, key);
+      // the chip went with its ×: the keyboard goes to the row's field
+      document.getElementById('mix-filters')?.querySelector(`[data-mxf="${genre ? 'genre' : 'word'}"]`)?.focus();
+    } else if (!act && !el.classList.contains('dj-genre-suggest-row')) {
+      instantMixMood(el);
+    }
+  } else if (ev.type === 'mousedown') {
+    if (el.classList.contains('dj-genre-suggest-row')) {
+      ev.preventDefault();
+      instantMixAddName('genre', el.getAttribute('data-genre'), true);
+    }
+  } else if (ev.type === 'change') {
+    if (act === 'rating') {
+      const rating = Math.max(0, Math.min(10, parseInt(el.value, 10) || 0));
+      instantMixCommit(() => { f.minRating = rating; });
+    } else if (act === 'bpm' || act === 'harmonic' || act === 'unknown') {
+      const key = act === 'unknown' ? 'allowUnknownDuration' : act;
+      instantMixCommit(() => { f[key] = el.checked === true; });
+    } else if (act === 'tolerance') {
+      const n = Math.max(1, Math.min(20, parseInt(el.value, 10) || INSTANTMIX.BPM_TOLERANCE));
+      instantMixCommit(() => { f.bpmTolerance = n; });
+    } else if (act === 'minDuration' || act === 'maxDuration') {
+      instantMixLengths(act === 'maxDuration' ? 'max' : 'min');
+    }
+  } else if (ev.type === 'input') {
+    if (act === 'tolerance') {
+      const n = Math.max(1, Math.min(20, parseInt(el.value, 10) || INSTANTMIX.BPM_TOLERANCE));
+      const readout = document.getElementById('mix-filters')?.querySelector('[data-mxf-value="tolerance"]');
+      if (readout) { readout.textContent = t('autoDJ.bpmToleranceValue', { n }); }
+      el.setAttribute('aria-valuenow', String(n));
+    } else if (act === 'genre') {
+      instantMixSuggest();
+    }
+  } else if (ev.type === 'keydown') {
+    if ((act === 'word' || act === 'genre') && (ev.key === 'Enter' || ev.key === ',')) {
+      ev.preventDefault();
+      instantMixAddName(act, el.value);
+    } else if (act === 'genre' && ev.key === 'Escape') {
+      document.getElementById('mix-genre-suggest')?.setAttribute('hidden', '');
+    }
+  } else if (ev.type === 'focusout' && act === 'genre') {
+    // a grace for a suggestion's mousedown to land first
+    setTimeout(() => { document.getElementById('mix-genre-suggest')?.setAttribute('hidden', ''); }, 150);
+  }
+}
+
+// A mood button: the lists' rules (pickMood, toggleMoodTag, pickMoodLevel)
+// on the page's own mood filter — pressed again, a value lets go; tags
+// toggle; one strictness is always pressed, the pressed one does nothing.
+function instantMixMood(btn) {
+  const m = MOODS.filters.mix;
+  const group = btn.getAttribute('data-mood-group');
+  const tag = btn.getAttribute('data-mood-tag');
+  const level = btn.getAttribute('data-mood-level');
+  if (level) {
+    if (level === moodLevel(m)) { return; }
+    instantMixCommit(() => { if (level === 'standard') { delete m.level; } else { m.level = level; } });
+  } else if (group) {
+    const value = btn.getAttribute('data-mood-value');
+    instantMixCommit(() => { m[group] = m[group] === value ? undefined : value; });
+  } else if (tag) {
+    instantMixCommit(() => {
+      const tags = new Set(m.tags || []);
+      if (tags.has(tag)) { tags.delete(tag); } else { tags.add(tag); }
+      m.tags = [...tags];
+    });
+  }
+}
+
+// A word (Keyword filter) or a genre added, as Auto DJ adds them
+// (INSTANTMIX.addName): its field emptied — left as typed when nothing was
+// added (blank, there already, the list full), so it can be fixed — and a
+// genre's suggestions drawn again. `focus`: a suggestion pressed hands the
+// keyboard back to the field.
+function instantMixAddName(kind, raw, focus) {
+  const key = kind === 'genre' ? 'genres' : 'words';
+  const next = INSTANTMIX.addName(MIX.filters[key], raw, kind);
+  if (!next) { return; }
+  instantMixCommit(() => { MIX.filters[key] = next; }, key);
+  const input = document.getElementById('mix-filters')?.querySelector(`[data-mxf="${kind}"]`);
+  if (!input) { return; }
+  input.value = '';
+  if (kind === 'genre') { instantMixSuggest(); }
+  if (focus) { input.focus(); }
+}
+
+// The genre field's suggestions (genreSuggestHtml, Auto DJ's) from the
+// library's list, for what the field holds — hidden while it is empty. The
+// panel is its own scroll box (45vh): a list opened under a field near its
+// foot would be cut off there, so the panel scrolls it into view — never
+// past the field itself.
+function instantMixSuggest() {
+  const panel = document.getElementById('mix-filters');
+  const input = panel && panel.querySelector('[data-mxf="genre"]');
+  const list = document.getElementById('mix-genre-suggest');
+  if (!input || !list) { return; }
+  const html = genreSuggestHtml(input.value, MIX.filters.genres, MIX.genres || []);
+  list.innerHTML = html;
+  if (!html) {
+    list.setAttribute('hidden', '');
+    return;
+  }
+  list.removeAttribute('hidden');
+  const top = panel.getBoundingClientRect().top + panel.clientTop;
+  const over = list.getBoundingClientRect().bottom - (top + panel.clientHeight);
+  const room = input.getBoundingClientRect().top - top;
+  if (over > 0 && room > 0) { panel.scrollTop += Math.ceil(Math.min(over, room)); }
+}
+
+// The Track length fields, committed together: minutes as typed, the
+// window repaired keeping the side just edited (AUTODJ.durationWindow, Auto
+// DJ's rule), then written back as they will be sent.
+function instantMixLengths(edited) {
+  const panel = document.getElementById('mix-filters');
+  const min = panel && panel.querySelector('[data-mxf="minDuration"]');
+  const max = panel && panel.querySelector('[data-mxf="maxDuration"]');
+  if (!min || !max) { return; }
+  const w = AUTODJ.durationWindow(instantMixSeconds(min.value), instantMixSeconds(max.value), edited);
+  instantMixCommit(() => {
+    MIX.filters.minDuration = w.min;
+    MIX.filters.maxDuration = w.max;
+  });
+  min.value = instantMixMinutes(w.min);
+  max.value = instantMixMinutes(w.max);
+}
+
+// A row's commit: the change (`edit`, on MIX.filters or MOODS.filters.mix),
+// the panel's states in place (a chip list, `chips`, drawn again), then the
+// page asks again — unless nothing the body carries moved (a tolerance
+// with tempo off, a mode with no genre, a strictness with no mood).
+function instantMixCommit(edit, chips) {
+  const was = INSTANTMIX.cacheKey(instantMixBody(MIX.entry.seed));
+  edit();
+  instantMixSyncFilters(chips);
+  instantMixFilterChanged({ ask: INSTANTMIX.cacheKey(instantMixBody(MIX.entry.seed)) !== was });
+}
+
+// The open panel's controls for the page's filters, in place, so the one
+// with the keyboard keeps it: the pills (and their last one on), the
+// select, the switches, the tolerance's row, the genre mode, the moods,
+// the unknown-length switch (while a bound is set), Clear (while a filter
+// is), the Genre row once there are genres, the Mood row while the server
+// applies moods. `chips` names a chip list to draw again ('words',
+// 'genres'). Never a text field nor the slider: what is being typed or
+// dragged stays.
+function instantMixSyncFilters(chips) {
+  const panel = document.getElementById('mix-filters');
+  if (!panel || !MIX.open || !MIX.filters) { return; }
+  const f = MIX.filters;
+  const pills = [...panel.querySelectorAll('[data-mxf="vpath"]')];
+  const lit = pills.filter((b) => !f.vpathsOff.includes(b.getAttribute('data-vpath')));
+  for (const b of pills) {
+    const on = lit.includes(b);
+    b.classList.toggle('on', on);
+    b.setAttribute('aria-pressed', String(on));
+    if (on && lit.length === 1) { b.setAttribute('aria-disabled', 'true'); } else { b.removeAttribute('aria-disabled'); }
+  }
+  const select = panel.querySelector('[data-mxf="rating"]');
+  if (select) { select.value = String(f.minRating); }
+  for (const [act, on] of [['bpm', f.bpm], ['harmonic', f.harmonic], ['unknown', f.allowUnknownDuration]]) {
+    const box = panel.querySelector(`[data-mxf="${act}"]`);
+    if (box) { box.checked = on === true; }
+  }
+  panel.querySelector('[data-mxf-row="tolerance"]')?.classList.toggle('super-hide', f.bpm !== true);
+  const mode = f.genreMode === 'blacklist' ? 'blacklist' : 'whitelist';
+  panel.querySelectorAll('[data-mxf="genreMode"]').forEach((b) => { b.setAttribute('aria-pressed', String(b.getAttribute('data-mode') === mode)); });
+  const m = MOODS.filters.mix || {};
+  panel.querySelectorAll('[data-mood-group]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(m[b.getAttribute('data-mood-group')] === b.getAttribute('data-mood-value')));
+  });
+  panel.querySelectorAll('[data-mood-tag]').forEach((b) => {
+    b.setAttribute('aria-pressed', String((m.tags || []).includes(b.getAttribute('data-mood-tag'))));
+  });
+  panel.querySelectorAll('[data-mood-level]').forEach((b) => {
+    b.setAttribute('aria-pressed', String(moodLevel(m) === b.getAttribute('data-mood-level')));
+  });
+  panel.querySelector('[data-mxf-row="mood"]')?.classList.toggle('super-hide', MIX.moodsGone);
+  // shown once there is something to choose (the genres fetched) or to let
+  // go; never hidden while open, which would drop the keyboard
+  if ((MIX.genres || []).length > 0 || f.genres.length > 0) { panel.querySelector('[data-mxf-row="genres"]')?.classList.remove('super-hide'); }
+  panel.querySelector('[data-mxf-row="unknown"]')?.classList.toggle('super-hide', !(f.minDuration > 0 || f.maxDuration > 0));
+  panel.querySelector('[data-mxf="clear"]')?.classList.toggle('super-hide', instantMixActive() === 0);
+  if (chips === 'words' || chips === 'genres') {
+    const list = panel.querySelector(`[data-mxf-chips="${chips}"]`);
+    if (list) { list.innerHTML = filterChipsHtml(f[chips], chips === 'words' ? 'word' : 'genre'); }
+  }
+}
+
+// The funnel's mark, in place: orange with its dot while a filter is set.
+function instantMixMarkFilters() {
+  document.getElementById('mix_filter_btn')?.classList.toggle('mood-on', instantMixActive() > 0);
+}
+
+// The list dimmed (aria-busy) while a re-ask is out, the old rows kept.
+function instantMixBusy(on) {
+  const page = document.querySelector('#filelist .mix-page');
+  if (!page) { return; }
+  page.classList.toggle('mix-busy', on);
+  if (on) { page.setAttribute('aria-busy', 'true'); } else { page.removeAttribute('aria-busy'); }
+}
+
+// A filter changed (a row's commit, Clear): the funnel's mark in place, then
+// the page asks again after a pause — a burst of presses is one ask, and a
+// newer ask wins: one still out is for other filters, and never draws.
+// Back to the filters of the answer on screen (a change undone), nothing is
+// asked. `ask: false` when nothing the body carries changed.
+function instantMixFilterChanged({ ask = true } = {}) {
+  instantMixMarkFilters();
+  if (!ask || !MIX.entry) { return; }
+  clearTimeout(MIX.timer);
+  MIX.timer = null;
+  MIX.seq++;
+  if (MIX.key !== null && INSTANTMIX.cacheKey(instantMixBody(MIX.entry.seed)) === MIX.key) {
+    MIX.pending = null;
+    instantMixBusy(false);
+    return;
+  }
+  MIX.timer = setTimeout(instantMixAsk, 250);
+  instantMixBusy(true);
+}
+
+// Every filter off (the no-match line's Clear, the panel's): the page's own
+// and its mood. An open panel draws its rows emptied; the keyboard goes back
+// to the funnel (the Clear pressed goes away).
+function instantMixClearFilters() {
+  MIX.filters = INSTANTMIX.emptyFilters();
+  MOODS.filters.mix = {};
+  const panel = document.getElementById('mix-filters');
+  if (panel && MIX.open) { panel.innerHTML = instantMixFiltersHtml(); }
+  instantMixFilterChanged();
+  document.getElementById('mix_filter_btn')?.focus();
+}
+
+// The header's events (one listener per type on #browse-head): the verbs
+// and the funnel by their data-mx; anything inside the open filter panel is
+// its rows' (instantMixFilterEvent).
+function onInstantMixHead(ev) {
+  const target = ev.target && typeof ev.target.closest === 'function' ? ev.target : null;
+  if (!target) { return; }
+  if (target.closest('#mix-filters')) {
+    instantMixFilterEvent(ev);
+    return;
+  }
+  const el = ev.type === 'click' ? target.closest('[data-mx]') : null;
+  if (el) { instantMixAction(el.getAttribute('data-mx'), el); }
+}
+
+// The list's clicks: a row, its verbs, a state line's button.
+function onInstantMixClick(ev) {
+  const el = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-mx]') : null;
+  if (el) { instantMixAction(el.getAttribute('data-mx'), el); }
+}
+
+// One action. A row's control carries data-i, the row's index in the list
+// drawn.
+function instantMixAction(act, el) {
+  const rows = MIX.answer && Array.isArray(MIX.answer.songs) ? MIX.answer.songs : [];
+  const i = el.getAttribute('data-i');
+  const row = i === null ? null : rows[Number(i)];
+  if (act === 'play' && row) {
+    VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
+  } else if (act === 'queue' && row) {
+    VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
+    iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+  } else if (act === 'more' && row) {
+    createPopper3(el);
+  } else if (act === 'playAll' || act === 'shuffle') {
+    instantMixPlay(act === 'shuffle');
+  } else if (act === 'queueAll') {
+    instantMixQueueAll();
+  } else if (act === 'save') {
+    instantMixSave();
+  } else if (act === 'filters') {
+    instantMixToggleFilters();
+  } else if (act === 'retry') {
+    // Try again goes with the line it sits in: the keyboard moves to the
+    // page's heading, as when the page opens, not to the body
+    document.getElementById('browse-head')?.querySelector('.browse-head-title')?.focus();
+    instantMixBusy(true);
+    instantMixAsk();
+  } else if (act === 'clear') {
+    instantMixClearFilters();
+  }
+}
+
+// The rows the verbs act on: the answer for the page's filters — a change
+// not asked yet is asked now, and an ask out is waited for (a change made
+// meanwhile too). None when the page was left meanwhile, or the answer has
+// no rows.
+async function instantMixRows() {
+  const entry = MIX.entry;
+  while (MIX.timer || MIX.pending) {
+    if (MIX.timer) { instantMixAsk(); }
+    if (MIX.pending) { await MIX.pending; }
+  }
+  if (!entry || MIX.entry !== entry || programState[programState.length - 1] !== entry) { return []; }
+  const st = INSTANTMIX.viewState(MIX.answer, { kind: entry.seed.kind, active: instantMixActive(), seedPath: entry.seed.filepath });
+  return st === 'ready' ? MIX.answer.songs.slice() : [];
+}
+
+// ▶ Play (Shuffle: the rows in a random order — the player's own shuffle is
+// left as it is): the queue becomes the mix and its first row plays. A
+// first row that is this server's song playing now plays on instead: the
+// rest of the queue goes (MSTREAMPLAYER.trimToCurrent), the other rows
+// follow it.
+async function instantMixPlay(shuffle) {
+  const rows = await instantMixRows();
+  if (!rows.length) { return; }
+  const list = shuffle ? INSTANTMIX.shuffle(rows) : rows;
+  const add = (r, autoPlayOff) => VUEPLAYERCORE.addSongWizard(r.filepath, r.metadata || {}, false, undefined, false, autoPlayOff);
+  const strip = (p) => String(p || '').replace(/^\/+/, '');
+  const current = MSTREAMPLAYER.playlist[MSTREAMPLAYER.positionCache.val];
+  if (!shuffle && current && !current.federation && MSTREAMPLAYER.playerStats.playing === true
+      && strip(current.rawFilePath) === strip(list[0].filepath)) {
+    MSTREAMPLAYER.trimToCurrent();
+    list.slice(1).forEach((r) => add(r, true));
+    return;
+  }
+  MSTREAMPLAYER.clearPlaylist();
+  list.forEach((r, n) => add(r, n > 0));
+}
+
+// Queue all: the rows after what is queued, as Discover's Queue all does.
+async function instantMixQueueAll() {
+  const rows = await instantMixRows();
+  if (!rows.length) { return; }
+  for (const r of rows) {
+    VUEPLAYERCORE.addSongWizard(r.filepath, r.metadata || {}, false, undefined, false, true);
+  }
+  iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
+}
+
+// Save as playlist: the name-a-playlist modal, its field holding "‹item›
+// Mix" — "‹item› Mix 2", 3 … when a playlist already has that name.
+async function instantMixSave() {
+  const entry = MIX.entry;
+  const rows = await instantMixRows();
+  if (!rows.length || !entry) { return; }
+  const name = INSTANTMIX.defaultName(entry.head.title, VUEPLAYERCORE.playlists, (n) => t('mix.defaultName', { name: n }));
+  openSavePlaylistModal(() => rows.map((r) => r.filepath), name);
+}
+
+// Pieces of Auto DJ's filter rows that Instant Mix's panel draws too
+// (instantMixFiltersHtml), so the two never drift.
+//
+// Min-rating select: 0..10 in 0.5-star increments. Labels match
+// velvet's "★" visual vocabulary so the panel reads as a rating
+// chooser at a glance — backend stays continuous so half-star
+// ratings still work (e.g. ★ 3 catches 3, 3.5, 4, 4.5, 5).
+// 0 is rendered as "Any" via `autoDJ.ratingAny`.
+function ratingOptionsHtml(selected) {
+  let html = `<option value="0" ${selected === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
+  for (let i = 1; i <= 10; i++) {
+    const stars = +(i / 2).toFixed(1); // 0.5, 1, 1.5, …, 5
+    html += `<option value="${i}" ${selected === i ? 'selected' : ''}>★ ${stars}</option>`;
+  }
+  return html;
+}
+
+// The chips of a keyword list (`kind` 'word') or a genre list ('genre'),
+// each with its × — which carries the exact stored form, so a remove
+// always finds its entry.
+function filterChipsHtml(items, kind) {
+  const genre = kind === 'genre';
+  return items.map((v) => `
+    <span class="dj-filter-tag" role="listitem">
+      ${escapeHtml(v)}<button type="button" class="dj-filter-tag-rm" data-${genre ? 'genre' : 'word'}="${escapeHtml(v)}" aria-label="${escapeHtml(genre ? t('autoDJ.genreTagRemove', { genre: v }) : t('autoDJ.keywordFilterTagRemove', { word: v }))}">×</button>
+    </span>
+  `).join('');
+}
+
+// The genre field's suggestions for what it holds (`query`): the library's
+// genres (`list`) that contain it, case-insensitively, less those already
+// `selected` — at most 50 rows, then a "+N more" footer so the dropdown
+// never grows unwieldy on huge libraries; a hint when none match. '' for
+// an empty field (the dropdown hides).
+function genreSuggestHtml(query, selected, list) {
+  const SUGGEST_VISIBLE_LIMIT = 50;
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) { return ''; }
+  const chosen = new Set(selected.map(g => g.toLowerCase()));
+  const matches = list
+    .filter(g => g.toLowerCase().includes(q) && !chosen.has(g.toLowerCase()));
+  if (matches.length === 0) {
+    return `<div class="dj-genre-suggest-empty">${t('autoDJ.genreNoMatchesHint')}</div>`;
+  }
+  const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
+  const extra   = matches.length - visible.length;
+  return visible.map((g, i) => `
+      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
+    `).join('') + (extra > 0
+    ? `<div class="dj-genre-suggest-more">${t('autoDJ.genreMoreSuggestions', { n: extra })}</div>`
+    : '');
+}
+
 let _autoDjPanelAbortController = null;
 
 async function autoDjPanel() {
@@ -6248,17 +7327,8 @@ async function autoDjPanel() {
       </div>
     </div>` : '';
 
-  // Min-rating select: 0..10 in 0.5-star increments. Labels match
-  // velvet's "★" visual vocabulary so the panel reads as a rating
-  // chooser at a glance — backend stays continuous so half-star
-  // ratings still work (e.g. ★ 3 catches 3, 3.5, 4, 4.5, 5).
-  // 0 is rendered as "Any" via `autoDJ.ratingAny`.
-  let ratingOptions = `<option value="0" ${AUTODJ.state.djMinRating === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
-  for (let i = 1; i <= 10; i++) {
-    const stars = +(i / 2).toFixed(1); // 0.5, 1, 1.5, …, 5
-    const label = `★ ${stars}`;
-    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${label}</option>`;
-  }
+  // Min-rating select (ratingOptionsHtml: Any, ★ 0.5 … ★ 5).
+  const ratingOptions = ratingOptionsHtml(AUTODJ.state.djMinRating);
 
   // Similar-artists toggle row. When no API key is configured the
   // toggle is rendered disabled with an explanatory hint so the
@@ -6322,11 +7392,7 @@ async function autoDjPanel() {
   // call the inline `_renderFilterTags()` helper below to avoid
   // a full panel re-render (which would lose input focus + steal
   // the typed-but-not-yet-Enter'd word from the field).
-  const filterTagsHtml = AUTODJ.state.djFilterWords.map(w => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-    </span>
-  `).join('');
+  const filterTagsHtml = filterChipsHtml(AUTODJ.state.djFilterWords, 'word');
   const keywordFilterRow = `
     <div class="autodj-opt-row autodj-opt-col">
       <div class="dj-filter-head">
@@ -6364,11 +7430,7 @@ async function autoDjPanel() {
   // input. The hint text below the label swaps to the appropriate
   // explanation. genresListLoadState (auth / error / ready) and
   // cachedGenresList.length are the two inputs driving the state.
-  const genreTagsHtml = AUTODJ.state.djGenres.map(g => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-    </span>
-  `).join('');
+  const genreTagsHtml = filterChipsHtml(AUTODJ.state.djGenres, 'genre');
   const genreFilterDisabled = (genresListLoadState !== 'ready') || (cachedGenresList.length === 0);
   const genreInputDisabled = genreFilterDisabled || !AUTODJ.state.djGenreEnabled;
   let genreHintKey = 'autoDJ.genreFilterHint';
@@ -6883,12 +7945,7 @@ async function autoDjPanel() {
   const filterTagsEl = document.getElementById('dj-filter-tags');
   const filterInpEl  = document.getElementById('dj-filter-input');
   function _renderFilterTags() {
-    const words = AUTODJ.getFilterWords();
-    filterTagsEl.innerHTML = words.map(w => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-      </span>
-    `).join('');
+    filterTagsEl.innerHTML = filterChipsHtml(AUTODJ.getFilterWords(), 'word');
   }
 
   // Toggle controls just the filter on/off; the word list survives
@@ -6950,20 +8007,12 @@ async function autoDjPanel() {
   // _renderFilterTags). Also reused after the suggestion dropdown's
   // "click to add" handler.
   function _renderGenreTags() {
-    const gs = AUTODJ.getGenres();
-    genreTagsEl.innerHTML = gs.map(g => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-      </span>
-    `).join('');
+    genreTagsEl.innerHTML = filterChipsHtml(AUTODJ.getGenres(), 'genre');
   }
 
-  // Render the suggestion dropdown. Filters the cached genres list
-  // case-insensitively by the input's current value; excludes genres
-  // already in the user's list; caps at 50 visible rows with a
-  // "+N more" footer so the dropdown never grows unwieldy on huge
-  // libraries.
-  const SUGGEST_VISIBLE_LIMIT = 50;
+  // Render the suggestion dropdown (genreSuggestHtml: the cached genres
+  // list that matches the input's current value, less those already in
+  // the user's list) — hidden while the input is empty.
   function _renderGenreSuggest() {
     if (!genreSuggEl || !genreInpEl) { return; }
     // Read live DOM state, not the closure variable. `genreInputDisabled`
@@ -6977,27 +8026,13 @@ async function autoDjPanel() {
       genreSuggEl.setAttribute('hidden', '');
       return;
     }
-    const q = String(genreInpEl.value || '').trim().toLowerCase();
-    if (!q) {
+    const html = genreSuggestHtml(genreInpEl.value, AUTODJ.getGenres(), cachedGenresList);
+    if (!html) {
       genreSuggEl.setAttribute('hidden', '');
       genreSuggEl.innerHTML = '';
       return;
     }
-    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
-    const matches = cachedGenresList
-      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
-    if (matches.length === 0) {
-      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${t('autoDJ.genreNoMatchesHint')}</div>`;
-      genreSuggEl.removeAttribute('hidden');
-      return;
-    }
-    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
-    const extra   = matches.length - visible.length;
-    genreSuggEl.innerHTML = visible.map((g, i) => `
-      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
-    `).join('') + (extra > 0
-      ? `<div class="dj-genre-suggest-more">${t('autoDJ.genreMoreSuggestions', { n: extra })}</div>`
-      : '');
+    genreSuggEl.innerHTML = html;
     genreSuggEl.removeAttribute('hidden');
   }
 
@@ -7549,7 +8584,7 @@ function renderSearchRow(key, value, peer) {
       <span title="Play Now" onclick="searchPlayNow(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="songDropdown">
         <svg xmlns="http://www.w3.org/2000/svg" height="12" width="12" viewBox="0 0 24 24"><path fill="none" d="M0 0h24v24H0z"/><path d="M15.5 5H11l5 7-5 7h4.5l5-7z"/><path d="M8.5 5H4l5 7-5 7h4.5l5-7z"/></svg>
       </span>
-      ${keep || `<span title="Add To Playlist" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="fileAddToPlaylist">
+      ${keep || `<span title="${escapeHtml(t('dpage.verb.more'))}" aria-label="${escapeHtml(t('dpage.verb.more'))}" onclick="createPopper3(this);" data-file_location="${escapeHtml(value.filepath)}"${attr} class="fileAddToPlaylist">
         <svg class="pop-f" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 292.362 292.362"><path class="pop-f" d="M286.935 69.377c-3.614-3.617-7.898-5.424-12.848-5.424H18.274c-4.952 0-9.233 1.807-12.85 5.424C1.807 72.998 0 77.279 0 82.228c0 4.948 1.807 9.229 5.424 12.847l127.907 127.907c3.621 3.617 7.902 5.428 12.85 5.428s9.233-1.811 12.847-5.428L286.935 95.074c3.613-3.617 5.427-7.898 5.427-12.847 0-4.948-1.814-9.229-5.427-12.85z"/></svg>
       </span>`}
     </div>` : ''}

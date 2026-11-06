@@ -375,6 +375,207 @@ export function buildArtistFilter(opts) {
   return { clauses, params };
 }
 
+// ── Song filters (shared with Instant Mix) ──────────────────────────────────
+//
+// What a song must be to be served, whatever the session: its libraries, a
+// minimum rating, its tempo and key, its genres, its length and its mood.
+// POST /api/v1/discovery/local/mix (api/discovery-mix.js) takes exactly
+// these keys with exactly these schemas, and applies the library ones
+// through songFilterConditions below as runRandomSongs does — so a filter
+// added here reaches both routes (and bumps server-info's `instantMix`).
+// What stays with random-songs is a session's: the cooldowns (ignoreList,
+// ignoreArtists), the sonic anchor, and the waterfall's own fallbacks
+// (bpmRangesWide, artists), which a ranked list has no use for.
+
+// One bpmRanges item: min/max within [0, 1000], min <= max (the reasons
+// are at random-songs' schema, in setup() below).
+export const BPM_RANGE_ITEM = Joi.object({
+  min: Joi.number().min(0).max(1000).required(),
+  max: Joi.number().min(0).max(1000).required(),
+}).custom((v, helpers) => {
+  if (v.min > v.max) {
+    return helpers.error('any.custom', { message: 'bpm range min must be <= max' });
+  }
+  return v;
+}, 'bpm range ordering');
+
+export const SONG_FILTER_KEYS = Object.freeze({
+  ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
+  // minRating accepts 0..10 — the alpha-UI rating dropdown
+  // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
+  // option and every autoDJ() call sends that value by default,
+  // even when no filter is intended (see
+  // webapp/assets/js/mstream.player.js:71). effectiveMinRating
+  // treats `0` (falsy) as no-filter, matching the pre-V32 route's
+  // behaviour. Rejecting 0 at the Joi layer would break every call
+  // from the existing webapp.
+  minRating: Joi.number().integer().min(0).max(10).optional(),
+  // BPM filter — the windows a song's tempo must fall in (random-songs'
+  // waterfall relaxes them step by step; a mix holds them hard).
+  bpmRanges: Joi.array().items(BPM_RANGE_ITEM).max(16).optional(),
+  requireBpm: Joi.boolean().optional(),
+  // Key filters — musicalKeys are Camelot codes ('1A'..'12B').
+  // Per-item shape is intentionally loose (no `valid(...)`) so
+  // future code-set expansions (sharp/flat variants) don't need
+  // a Joi update — unrecognised codes are dropped silently by
+  // expandCamelotCodes. The .custom() check below catches the
+  // all-typos case so the user doesn't get a silently-disabled
+  // harmonic filter with no error signal.
+  musicalKeys: Joi.array().items(Joi.string()).max(24)
+    .custom((codes, helpers) => {
+      if (codes.length > 0 && expandCamelotCodes(codes).length === 0) {
+        return helpers.error('any.custom', { message: 'no recognised Camelot codes (expected 1A..12B)' });
+      }
+      return codes;
+    }, 'camelot-codes parseable')
+    .optional(),
+  requireMusicalKey: Joi.boolean().optional(),
+  // Genre filter (V35 plan). `genres` is the list, `genreMode` flips
+  // the operator: whitelist (EXISTS, default) plays only matching
+  // tracks; blacklist (NOT EXISTS) skips them. Per-item 1-200 chars
+  // matches the longest real genre name in the wild (some MB long
+  // forms run ~80 chars; 200 is comfortable headroom). The 200-item
+  // list cap suits even very tag-rich libraries — real-world ceilings
+  // top out around 500 distinct genres, of which the user typically
+  // selects a small subset.
+  genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
+  genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
+  // Which genre links the list matches (V79 track_genres.source): 'tag'
+  // (the files' own) or 'model' (the discovery model's). Omitted, both.
+  genreSource: Joi.string().valid('tag', 'model').optional(),
+  // Track-length window, in SECONDS (the units of tracks.duration and
+  // of the `duration` field on the wire). Both bounds are independent
+  // and optional; 0 means "no bound on this side" so a client can send
+  // a persisted zero without meaning it. The 86400 ceiling (24h) is
+  // generous headroom over the longest real audiobook chapter — like
+  // the BPM bounds it exists to reject garbage loudly rather than
+  // silently emit a clause that matches nothing.
+  //
+  // `allowUnknownDuration` flips NULL handling: absent/false excludes
+  // rows the scanner couldn't read a length from, true lets them
+  // through alongside the in-range rows. See buildDurationFilter. A
+  // backwards window is checkDurationWindow's, at the object level.
+  minDuration: Joi.number().min(0).max(86400).optional(),
+  maxDuration: Joi.number().min(0).max(86400).optional(),
+  allowUnknownDuration: Joi.boolean().optional(),
+  // The browse lists' mood filter (api/mood-filter.js), validated —
+  // strictly, a 400 on anything else — by each route's parseMoods.
+  moods: Joi.any(),
+});
+
+// The backwards-window check both routes' schemas run as an object-level
+// .custom() (why, at random-songs' schema in setup() below).
+export function checkDurationWindow(v, helpers) {
+  if (v.minDuration > 0 && v.maxDuration > 0 && v.minDuration > v.maxDuration) {
+    return helpers.error('any.custom', { message: 'minDuration must be <= maxDuration' });
+  }
+  return v;
+}
+
+// The rating floor a request applies: null for none — minRating 0 or
+// absent, or a caller with no user id (a federation key has no stars to
+// filter on; runRandomSongs explains the rule beside its own copy).
+export function effectiveMinRating(req, body) {
+  return (body.minRating && Number(body.minRating) > 0 && req.user?.id)
+    ? Number(body.minRating)
+    : null;
+}
+
+// The song filters as SQL over alias `t` — { ratingJoin, baseConditions,
+// baseParams } — minus tempo and key, which random-songs relaxes step by
+// step (buildBpmKeyFilter per waterfall step) and a mix adds whole. They
+// are runRandomSongs' ALWAYS-ON base conditions (the waterfall relaxes BPM
+// / key / artists within them, never them) and the hard WHERE of every
+// Instant Mix probe. `ratingJoin` goes right after the FROM; its user id
+// leads baseParams, binding ahead of every WHERE param. `minRating` is
+// effectiveMinRating's answer, `body.moods` the route's parsed, applicable
+// filter (null while the server has no scores to filter by).
+export function songFilterConditions(req, body, { minRating = effectiveMinRating(req, body) } = {}) {
+  // A caller who sees every library gets no library clause at all — it is a
+  // no-op for them (see libraryFilter), and as a WHERE term it is worse than
+  // useless in a candidate query: the planner serves it from
+  // idx_tracks_library, i.e. one index probe plus a table seek per track,
+  // where a candidate query (which visits every in-scope row anyway) wants a
+  // straight table scan. It also hoists any term the index alone can answer
+  // — the artist cooldown's `t.id NOT IN (...)` — ahead of the BPM/key terms
+  // that would have rejected most rows first. Measured at 100k tracks
+  // (candidate query alone): a selective BPM+key step under a 15-artist
+  // cooldown 32 ms → 9 ms, the same cooldown without BPM/key 40 ms → 27 ms.
+  // A partial scope keeps the clause (and the index): with a small visible
+  // library the seek is the win. (The mix's probe is driven by its id list,
+  // so the shape costs it nothing either way.)
+  //
+  // The user_metadata join is the only one a candidate query can need (see
+  // runRandomSongs' narrow select), and only for minRating.
+  const filter = libraryFilter(req.user, body.ignoreVPaths);
+  const scoped = !filter.coversAllLibraries;
+  const baseConditions = scoped ? [filter.clause] : [];
+  const baseParams = [
+    ...(minRating !== null ? [req.user.id] : []),
+    ...(scoped ? filter.params : []),
+  ];
+  const ratingJoin = minRating !== null
+    ? '\n    LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ?'
+    : '';
+
+  // An unrated track (no user_metadata row, or a NULL rating) counts as 0
+  // stars, which never passes a minRating > 0 — the same rows a bare
+  // `um.rating >= ?` keeps. The COALESCE is a PLAN guard, not a semantic
+  // one: the bare form rejects NULL, so SQLite turns the LEFT JOIN into
+  // an inner join and, with only `tracks t` beside it, drives from
+  // idx_user_metadata_user_rating — then re-walks the in-scope tracks for
+  // every rated row, because nothing indexes COALESCE(audio_hash,
+  // file_hash). Measured 11.6 s per query at 25k tracks (vs 12.6 ms);
+  // the plan is pinned by test/db/autodj-cooldown.test.mjs.
+  if (minRating !== null) {
+    baseConditions.push('COALESCE(um.rating, 0) >= ?');
+    baseParams.push(minRating);
+  }
+
+  // Genre filter is an ALWAYS-ON base condition (never relaxed by the
+  // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
+  // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
+  // Empty `genres` array → no-op regardless of mode.
+  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode, source: body.genreSource });
+  if (genre.clauses.length > 0) {
+    baseConditions.push(...genre.clauses);
+    baseParams.push(...genre.params);
+  }
+
+  // Track-length window — the other ALWAYS-ON base condition (see
+  // buildDurationFilter). Unknown-duration rows are excluded unless the
+  // request opts in via allowUnknownDuration. Both bounds absent → no-op.
+  const duration = buildDurationFilter({
+    minDuration: body.minDuration,
+    maxDuration: body.maxDuration,
+    allowUnknownDuration: body.allowUnknownDuration,
+  });
+  if (duration.clauses.length > 0) {
+    baseConditions.push(...duration.clauses);
+    baseParams.push(...duration.params);
+  }
+
+  // Mood filter (api/mood-filter.js) — ALWAYS-ON like the genre filter:
+  // the waterfall relaxes BPM / key / artists within it and never the
+  // mood, so a filter nothing in scope meets is runRandomSongs' 400 rather
+  // than a pick off the user's mood. One track_moods probe per candidate
+  // row.
+  if (body.moods) {
+    baseConditions.push(trackMoodClause(body.moods));
+  }
+
+  // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
+  // DJ candidates — the player can't stream an .m3u, so serving one spins
+  // the client's queue-ahead loop on an unplayable pick. Being artist-less,
+  // such rows also survive any ignoreArtists cooldown, which made one the
+  // pinned pick of an entire session (see the artistless-rows rule in
+  // runRandomSongs' step loop). COALESCE keeps legacy NULL-format rows as
+  // candidates.
+  baseConditions.push("COALESCE(t.format, '') <> 'm3u'");
+
+  return { ratingJoin, baseConditions, baseParams };
+}
+
 // ── Predicates for the post-fallback tier classification ────────────────────
 //
 // "Known-good" = the row's value is present AND inside the requested set.
@@ -755,87 +956,11 @@ export function runRandomSongs(req, body) {
     ? Number(body.minRating)
     : null;
 
-  // A caller who sees every library gets no library clause at all — it is a
-  // no-op for them (see libraryFilter), and as a WHERE term it is worse than
-  // useless here: the planner serves it from idx_tracks_library, i.e. one
-  // index probe plus a table seek per track, where a candidate query (which
-  // visits every in-scope row anyway) wants a straight table scan. It also
-  // hoists any term the index alone can answer — the artist cooldown's
-  // `t.id NOT IN (...)` — ahead of the BPM/key terms that would have
-  // rejected most rows first. Measured at 100k tracks (candidate query
-  // alone): a selective BPM+key step under a 15-artist cooldown 32 ms →
-  // 9 ms, the same cooldown without BPM/key 40 ms → 27 ms. A partial scope
-  // keeps the clause (and the index): with a small visible library the
-  // seek is the win.
-  //
-  // The user_metadata join is the only one the candidate query can need
-  // (see its narrow select below), and only for minRating. Its user id
-  // binds ahead of every WHERE param.
-  const filter = libraryFilter(req.user, body.ignoreVPaths);
-  const scoped = !filter.coversAllLibraries;
-  const baseConditions = scoped ? [filter.clause] : [];
-  const baseParams = [
-    ...(minRating !== null ? [req.user.id] : []),
-    ...(scoped ? filter.params : []),
-  ];
-  const ratingJoin = minRating !== null
-    ? '\n    LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ?'
-    : '';
-
-  // An unrated track (no user_metadata row, or a NULL rating) counts as 0
-  // stars, which never passes a minRating > 0 — the same rows a bare
-  // `um.rating >= ?` keeps. The COALESCE is a PLAN guard, not a semantic
-  // one: the bare form rejects NULL, so SQLite turns the LEFT JOIN into
-  // an inner join and, with only `tracks t` beside it, drives from
-  // idx_user_metadata_user_rating — then re-walks the in-scope tracks for
-  // every rated row, because nothing indexes COALESCE(audio_hash,
-  // file_hash). Measured 11.6 s per query at 25k tracks (vs 12.6 ms);
-  // the plan is pinned by test/db/autodj-cooldown.test.mjs.
-  if (minRating !== null) {
-    baseConditions.push('COALESCE(um.rating, 0) >= ?');
-    baseParams.push(minRating);
-  }
-
-  // Genre filter is an ALWAYS-ON base condition (never relaxed by the
-  // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
-  // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
-  // Empty `genres` array → no-op regardless of mode.
-  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode, source: body.genreSource });
-  if (genre.clauses.length > 0) {
-    baseConditions.push(...genre.clauses);
-    baseParams.push(...genre.params);
-  }
-
-  // Track-length window — the other ALWAYS-ON base condition (see
-  // buildDurationFilter). Unknown-duration rows are excluded unless the
-  // request opts in via allowUnknownDuration. Both bounds absent → no-op.
-  const duration = buildDurationFilter({
-    minDuration: body.minDuration,
-    maxDuration: body.maxDuration,
-    allowUnknownDuration: body.allowUnknownDuration,
-  });
-  if (duration.clauses.length > 0) {
-    baseConditions.push(...duration.clauses);
-    baseParams.push(...duration.params);
-  }
-
-  // Mood filter (api/mood-filter.js) — ALWAYS-ON like the genre filter:
-  // the waterfall relaxes BPM / key / artists within it and never the
-  // mood, so a filter nothing in scope meets is the 400 below rather
-  // than a pick off the user's mood. `body.moods` is the route's parsed,
-  // applicable filter (null while the server has no scores to filter
-  // by); one track_moods probe per candidate row.
-  if (body.moods) {
-    baseConditions.push(trackMoodClause(body.moods));
-  }
-
-  // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
-  // DJ candidates — the player can't stream an .m3u, so serving one spins
-  // the client's queue-ahead loop on an unplayable pick. Being artist-less,
-  // such rows also survive any ignoreArtists cooldown, which made one the
-  // pinned pick of an entire session (see the artistless-rows rule in the
-  // step loop below). COALESCE keeps legacy NULL-format rows as candidates.
-  baseConditions.push("COALESCE(t.format, '') <> 'm3u'");
+  // The song filters — libraries, rating, genre, length, mood and the m3u
+  // rule — as ALWAYS-ON base conditions (songFilterConditions above, the
+  // builder Instant Mix shares). The rating join's user id binds ahead of
+  // every WHERE param.
+  const { ratingJoin, baseConditions, baseParams } = songFilterConditions(req, body, { minRating });
 
   // Sonic pool as a BASE condition, enforced in SQL: the allowed hashes
   // bind as one JSON array through json_each, so every candidate query can
@@ -1213,15 +1338,7 @@ export function setup(mstream) {
     // principle; the webapp already clamps its ranges to [20, 300]
     // (AUTODJ.buildBpmRanges), so 0-1000 is generous headroom for
     // other clients.
-    const bpmRangeItem = Joi.object({
-      min: Joi.number().min(0).max(1000).required(),
-      max: Joi.number().min(0).max(1000).required(),
-    }).custom((v, helpers) => {
-      if (v.min > v.max) {
-        return helpers.error('any.custom', { message: 'bpm range min must be <= max' });
-      }
-      return v;
-    }, 'bpm range ordering');
+    const bpmRangeItem = BPM_RANGE_ITEM;
 
     // Array-length caps are defense-in-depth against accidental or
     // malicious payloads that would generate thousands of SQL
@@ -1252,37 +1369,15 @@ export function setup(mstream) {
       // — the chain never cascades into a relaxed step to fill a batch.
       limit: Joi.number().integer().min(1).max(PICK_LIMIT_MAX).default(1),
       ignoreList: Joi.array().items(Joi.number().integer().min(0)).max(500).optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).max(50).optional(),
-      // minRating accepts 0..10 — the alpha-UI rating dropdown
-      // (webapp/alpha/m.js's autoDjPanel) uses 0 as the "Disabled"
-      // option and every autoDJ() call sends that value by default,
-      // even when no filter is intended (see
-      // webapp/assets/js/mstream.player.js:71). The runRandomSongs
-      // body below treats `0` (falsy) as no-filter, matching the
-      // pre-V32 route's behaviour. Rejecting 0 at the Joi layer would
-      // break every call from the existing webapp.
-      minRating: Joi.number().integer().min(0).max(10).optional(),
+      // The song filters Instant Mix shares, each with its schema and its
+      // note at SONG_FILTER_KEYS above: ignoreVPaths, minRating, bpmRanges,
+      // requireBpm, musicalKeys, requireMusicalKey, genres, genreMode,
+      // genreSource, the length window and moods. The keys below are
+      // random-songs' own — its waterfall's fallbacks and a session's state.
+      ...SONG_FILTER_KEYS,
       // BPM filters — bpmRanges is the canonical form; bpmRangesWide
       // is the relaxation step 2/4 of the waterfall falls back to.
-      bpmRanges: Joi.array().items(bpmRangeItem).max(16).optional(),
       bpmRangesWide: Joi.array().items(bpmRangeItem).max(16).optional(),
-      requireBpm: Joi.boolean().optional(),
-      // Key filters — musicalKeys are Camelot codes ('1A'..'12B').
-      // Per-item shape is intentionally loose (no `valid(...)`) so
-      // future code-set expansions (sharp/flat variants) don't need
-      // a Joi update — unrecognised codes are dropped silently by
-      // expandCamelotCodes. The .custom() check below catches the
-      // all-typos case so the user doesn't get a silently-disabled
-      // harmonic filter with no error signal.
-      musicalKeys: Joi.array().items(Joi.string()).max(24)
-        .custom((codes, helpers) => {
-          if (codes.length > 0 && expandCamelotCodes(codes).length === 0) {
-            return helpers.error('any.custom', { message: 'no recognised Camelot codes (expected 1A..12B)' });
-          }
-          return codes;
-        }, 'camelot-codes parseable')
-        .optional(),
-      requireMusicalKey: Joi.boolean().optional(),
       // PR D — similar-artists scope and cooldown.
       //   • artists:       canonical library names (typically the output
       //                    of GET /api/v1/lastfm/similar-artists). When
@@ -1297,36 +1392,6 @@ export function setup(mstream) {
       //                    empty pool still gets a pick.
       artists: Joi.array().items(Joi.string()).max(100).optional(),
       ignoreArtists: Joi.array().items(Joi.string()).max(100).optional(),
-      // Genre filter (V35 plan). `genres` is the list, `genreMode` flips
-      // the operator: whitelist (EXISTS, default) plays only matching
-      // tracks; blacklist (NOT EXISTS) skips them. Per-item 1-200 chars
-      // matches the longest real genre name in the wild (some MB long
-      // forms run ~80 chars; 200 is comfortable headroom). The 200-item
-      // list cap suits even very tag-rich libraries — real-world ceilings
-      // top out around 500 distinct genres, of which the user typically
-      // selects a small subset.
-      genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
-      genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
-      // Which genre links the list matches (V79 track_genres.source): 'tag'
-      // (the files' own) or 'model' (the discovery model's). Omitted, both.
-      genreSource: Joi.string().valid('tag', 'model').optional(),
-      // Track-length window, in SECONDS (the units of tracks.duration and
-      // of the `duration` field on the wire). Both bounds are independent
-      // and optional; 0 means "no bound on this side" so a client can send
-      // a persisted zero without meaning it. The 86400 ceiling (24h) is
-      // generous headroom over the longest real audiobook chapter — like
-      // the BPM bounds it exists to reject garbage loudly rather than
-      // silently emit a clause that matches nothing.
-      //
-      // `allowUnknownDuration` flips NULL handling: absent/false excludes
-      // rows the scanner couldn't read a length from, true lets them
-      // through alongside the in-range rows. See buildDurationFilter.
-      minDuration: Joi.number().min(0).max(86400).optional(),
-      maxDuration: Joi.number().min(0).max(86400).optional(),
-      allowUnknownDuration: Joi.boolean().optional(),
-      // The browse lists' mood filter (api/mood-filter.js), validated —
-      // strictly, a 400 on anything else — by parseMoods below.
-      moods: Joi.any(),
       // Sonic similarity (discovery embeddings) — both-or-neither, enforced
       // by the .and() below.
       //   • similarTo:     1-8 file paths. One = plain seed; several average
@@ -1374,12 +1439,7 @@ export function setup(mstream) {
       // boundary. Only fires when BOTH bounds are real (>0) — a lone
       // bound, or a persisted 0 meaning "no bound", constrains nothing
       // on its side and can't be backwards.
-      .custom((v, helpers) => {
-        if (v.minDuration > 0 && v.maxDuration > 0 && v.minDuration > v.maxDuration) {
-          return helpers.error('any.custom', { message: 'minDuration must be <= maxDuration' });
-        }
-        return v;
-      }, 'duration window ordering');
+      .custom(checkDurationWindow, 'duration window ordering');
     const { value } = joiValidate(schema, req.body || {});
 
     // The answer echoes the filter it applied ({} when none) while this

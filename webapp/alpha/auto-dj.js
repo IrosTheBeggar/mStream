@@ -1291,7 +1291,10 @@
   // Note this does NOT touch djDurationEnabled: bounds survive the
   // toggle, matching how the keyword word-list and genre list survive
   // theirs.
-  function setDurationBounds(minSeconds, maxSeconds, prefer) {
+  //
+  // Rules 1 and 2 are durationWindow's, which stores nothing: Instant
+  // Mix's Track length row (m.js) repairs its own window with it.
+  function durationWindow(minSeconds, maxSeconds, prefer) {
     const clamp = (v) => {
       const n = Number(v);
       if (!Number.isFinite(n) || n <= 0) { return 0; }
@@ -1302,6 +1305,11 @@
     if (min > 0 && max > 0 && min > max) {
       if (prefer === 'max') { min = max; } else { max = min; }
     }
+    return { min, max };
+  }
+
+  function setDurationBounds(minSeconds, maxSeconds, prefer) {
+    const { min, max } = durationWindow(minSeconds, maxSeconds, prefer);
     setState({ djMinDuration: min, djMaxDuration: max });
     return { min, max };
   }
@@ -1452,8 +1460,9 @@
     // Track-length window (toggle on state.djDurationEnabled, unknown
     // policy on state.djAllowUnknownDuration — both plain setState
     // flags; the bounds go through this helper because they clamp and
-    // constrain each other).
+    // constrain each other — durationWindow is the same rule, unstored).
     setDurationBounds,
+    durationWindow,
 
     // Songs per fetch (state.djLimit — set through the clamping setter;
     // LIMIT_MAX is the ceiling the panel renders and the server enforces).
