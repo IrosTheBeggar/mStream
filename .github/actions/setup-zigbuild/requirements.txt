@@ -1,0 +1,8 @@
+# cargo-zigbuild + zig for the Linux gnu sidecar builds (action.yml).
+# Pinned and hashed (pip --require-hashes): bump a version and its hash
+# together. The hashes are the x86_64 Linux wheels' — the action only runs
+# on the x64 ubuntu runners.
+cargo-zigbuild==0.24.0 \
+    --hash=sha256:484412e39e4c6039474535ce97ee75a22bab22d58233056f8ec8a8f9034bb957
+ziglang==0.16.0 \
+    --hash=sha256:9fcda73f62b851dd72a54b710ad40a209896db14cfb13649e62191243556342b

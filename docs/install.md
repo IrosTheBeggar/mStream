@@ -283,7 +283,7 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   path (or run `desktop-file-install`). Headless boxes just run
   `mstream-server`. The tray app needs glibc ≥ 2.31 (Debian 11 / Ubuntu
   20.04 or newer); on older distros (e.g. RHEL/Rocky 8) run
-  `mstream-server` directly — the server itself has a much lower floor.
+  `mstream-server` directly — see the glibc floor below.
 * **linux-arm64 and musl bundles ship server-only** (no tray launcher): those
   targets are overwhelmingly headless (Pi servers, Alpine/NAS containers).
   Their entry point is `mstream-server`, exactly as before.
@@ -313,9 +313,20 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   which runtime ran and why the other was passed over; set
   `scanOptions.embeddingRuntime` to `wasm` to skip the attempt on an install
   known to lack a working addon.
-* The fast Rust library scanner needs glibc ≥ 2.34 on glibc systems; on older
-  glibc it automatically falls back to a portable static build, so scanning stays
-  fast. ffmpeg (transcoding/waveforms) is auto-downloaded on first use, or
+* **glibc floor (linux-x64 / linux-arm64 bundles)** — the server, the Rust
+  library scanner and Quick Connect run on glibc ≥ 2.28: Debian 10, Ubuntu
+  20.04, RHEL/Rocky/Alma 8 and anything newer (Debian 11's 2.31 included).
+  `install.sh` refuses a first install on an older host and says so (an
+  upgrade of a working install goes ahead with a warning; `MSTREAM_KEY`
+  forces one). A hand-extracted bundle on such a host still boots — the
+  server binary itself needs only glibc 2.17 — but the scanner falls back
+  to the portable static build the bundle also ships (so scanning stays
+  fast) and Quick Connect stays off; the log names the glibc version each
+  needed. The tray app needs 2.31, and the optional discovery-network
+  sidecar (`discoveryP2p`, off by default) currently 2.34. Releases before
+  6.33 needed 2.34 for the scanner and Quick Connect.
+* ffmpeg (transcoding/waveforms) is auto-downloaded on first use — unpacking
+  it needs the `xz` tool (`apt install xz-utils` on a minimal Debian) — or
   install it via your package manager.
 
 ---
