@@ -485,6 +485,35 @@ export function pullMetaData(filepath, user) {
   return renderMetadataObj(row);
 }
 
+// The batch reads' first step: resolve each "<vpath>/<relpath>" filepath to
+// (library_id, relativePath) up front — cached lib lookup, no SQL.
+// getVPathInfo applies the same per-vpath access check pullMetaData does;
+// a path that fails it (revoked vpath, unknown library — it throws) is
+// caught here, per path, and left out, so one bad path never fails the
+// batch: the caller answers every path it does not get back as a miss.
+// Distinct paths that normalise to the same track are grouped so the query
+// stays minimal and duplicates in the list all resolve to the same row.
+//
+// Returns a Map batchKey(library_id, rel) -> { library_id, rel, fps:
+// [filepath, ...] }; a row's batchKey(row.library_id, row.filepath) finds
+// the paths that asked for it.
+const batchKey = (libraryId, rel) => `${libraryId} ${rel}`;
+
+function resolveBatchPaths(filepaths, user) {
+  const pending = new Map();
+  for (const fp of filepaths) {
+    let info;
+    try { info = vpath.getVPathInfo(fp, user); } catch (_e) { continue; }
+    const lib = db.getLibraryByName(info.vpath);
+    if (!lib) { continue; }
+    const key = batchKey(lib.id, info.relativePath);
+    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, fps: [] };
+    entry.fps.push(fp);
+    pending.set(key, entry);
+  }
+  return pending;
+}
+
 // Batched equivalent of pullMetaData: resolve metadata for many
 // "<vpath>/<relpath>" filepaths in ONE query instead of one query per path.
 // Returns a Map<filepath, { filepath, metadata }> whose entries match
@@ -509,24 +538,9 @@ export function pullMetaDataBatch(filepaths, user) {
     return result;
   }
 
-  // Resolve each path to (library_id, relativePath) up front — cached lib
-  // lookup, no SQL. getVPathInfo applies the same per-vpath access check
-  // pullMetaData did; anything that fails it (revoked vpath, unknown library)
-  // gets the null wrapper now and is never queried. Distinct paths that
-  // normalise to the same track are grouped so the query stays minimal and
-  // duplicates in the list all resolve to the same row.
-  const keyOf = (libraryId, rel) => `${libraryId} ${rel}`;
-  const pending = new Map();   // key -> { library_id, rel, fps: [filepath, ...] }
-  for (const fp of filepaths) {
-    let info;
-    try { info = vpath.getVPathInfo(fp, user); } catch (_e) { result.set(fp, miss(fp)); continue; }
-    const lib = db.getLibraryByName(info.vpath);
-    if (!lib) { result.set(fp, miss(fp)); continue; }
-    const key = keyOf(lib.id, info.relativePath);
-    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, fps: [] };
-    entry.fps.push(fp);
-    pending.set(key, entry);
-  }
+  // A path that fails resolution (revoked vpath, unknown library) is never
+  // queried, and gets the null wrapper with the misses below.
+  const pending = resolveBatchPaths(filepaths, user);
 
   // One batched query per chunk. Row-value IN keeps it to a single statement
   // even when the list spans libraries; the (filepath, library_id) index makes
@@ -547,15 +561,16 @@ export function pullMetaDataBatch(filepaths, user) {
     // statements per row — a 1000-track playlist is ~5 ms, not ~60.
     enrichRows(d, rows);
     for (const row of rows) {
-      const entry = pending.get(keyOf(row.library_id, row.filepath));
+      const entry = pending.get(batchKey(row.library_id, row.filepath));
       if (!entry) { continue; }
       const rendered = renderMetadataObj(row);
       for (const fp of entry.fps) { result.set(fp, rendered); }
     }
   }
 
-  // Resolved paths with no matching track row (e.g. file deleted since it was
-  // added) get the same null wrapper a pullMetaData miss would return.
+  // Unresolved paths, and resolved paths with no matching track row (e.g.
+  // file deleted since it was added), get the same null wrapper a
+  // pullMetaData miss would return.
   for (const fp of filepaths) {
     if (!result.has(fp)) { result.set(fp, miss(fp)); }
   }
