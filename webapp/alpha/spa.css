@@ -1945,6 +1945,82 @@ select {
 .mood-filter-btn.mood-on .mood-filter-dot { display: inline; }
 .mood-filter-btn:focus { background-color: transparent; }
 .mood-filter-btn[aria-expanded="true"], .mood-filter-btn[aria-expanded="true"]:focus { background-color: #31353d; }
+
+/* Flow ordering (m.js addAllFlow / flowQueue). Add All In Flow Order sits
+   beside Add All in the browse bar, the same box as the Filters button; a
+   spinner replaces its icon while the answer is out. */
+.flow-add-btn {
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+  margin: 0 2px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.flow-add-btn svg path:not([fill="none"]) { fill: #fff; transition: fill .15s; }
+.flow-add-btn:hover svg path:not([fill="none"]) { fill: #999; }
+.flow-add-btn .spinner { display: none; }
+.flow-add-btn[aria-busy="true"] { cursor: progress; }
+.flow-add-btn[aria-busy="true"] .flow-add-icon { display: none; }
+.flow-add-btn[aria-busy="true"] .spinner { display: inline-block; }
+.flow-add-btn:focus { background-color: transparent; }
+.flow-add-btn:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: -2px;
+}
+/* Flow in the Now Playing bar, and its two choices. */
+.flow-wrap {
+  position: relative;
+  display: inline-flex;
+}
+#playlist-buttons .flow-btn {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 6px;
+  line-height: 0;
+  cursor: pointer;
+}
+#playlist-buttons .flow-btn:focus { background-color: transparent; }
+#playlist-buttons .flow-btn[aria-busy="true"] { cursor: progress; }
+#playlist-buttons .flow-btn:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+.flow-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 30;
+  background: #262a31;
+  border-radius: 6px;
+  padding: 4px 0;
+  min-width: 160px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, .45);
+}
+.flow-menu-item {
+  appearance: none;
+  display: block;
+  width: 100%;
+  text-align: left;
+  white-space: nowrap;
+  background: transparent;
+  border: none;
+  color: #fff;
+  font-size: 14px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.flow-menu-item:focus { background-color: transparent; outline: none; }
+.flow-menu-item:hover:not(:disabled), .flow-menu-item:focus-visible { background-color: #31353d; }
+.flow-menu-item:disabled { opacity: .4; cursor: default; }
 .mood-filters {
   display: flex;
   flex-wrap: wrap;
@@ -2022,7 +2098,8 @@ select {
   outline-offset: -2px;
 }
 @media (pointer: coarse) {
-  .mood-filter-btn { width: 44px; height: 44px; }
+  .mood-filter-btn, .flow-add-btn { width: 44px; height: 44px; }
+  .flow-menu-item { padding: 13px 14px; }
   .mood-seg-btn, .mood-chip, .mood-clear { height: 44px; }
 }
 /* Auto DJ's Mood row: the same segments and chips, laid out in the row
