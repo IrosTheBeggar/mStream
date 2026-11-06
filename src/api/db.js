@@ -852,15 +852,16 @@ export function setup(mstream) {
   // mood pin, null while analyzeMoods is off; `model` is the configured
   // discovery model, read from the registry rather than a loaded index, so
   // it is there with no index loaded. The schema is strict (a bare array,
-  // an unknown key, no paths or too many are a 400), and a body over
-  // maxRequestSize is a 413 before the route runs: a client sends at most
-  // MOOD_SCORES_MAX_PATHS a call, fewer when that is too big.
+  // an unknown key, no paths or too many are a 400, and so is no JSON body,
+  // which Express leaves undefined), and a body over maxRequestSize is a 413
+  // before the route runs: a client sends at most MOOD_SCORES_MAX_PATHS a
+  // call, fewer when that is too big.
   const moodScoresSchema = Joi.object({
     filepaths: Joi.array().items(Joi.string()).min(1).max(MOOD_SCORES_MAX_PATHS).required(),
   });
 
   mstream.post('/api/v1/db/mood-scores', (req, res) => {
-    const { value } = joiValidate(moodScoresSchema, req.body);
+    const { value } = joiValidate(moodScoresSchema, req.body ?? {});
     const scanOptions = config.program.scanOptions;
     const modelId = scanOptions?.discoveryModel;
     const spec = Object.hasOwn(EMBEDDING_MODELS, modelId) ? EMBEDDING_MODELS[modelId] : null;

@@ -16,9 +16,10 @@
  * Covers the shape, a key for every path as sent, the stored doubles going
  * out unrounded (0 and 1 included), a NULL head, an all-NULL row and no row,
  * the uniform null (not visible, unknown library, path escape, never there,
- * deleted), the 400s, the 2000-path cap, the 413, the card's two-place byte
- * rule agreeing with the SQL filter of /db/recent/added at the three bars
- * clients offer, the flag, `model` and `moodVersion`, and the federation key.
+ * deleted), the 400s (no JSON body among them), the 2000-path cap, the 413,
+ * the card's two-place byte rule agreeing with the SQL filter of
+ * /db/recent/added at the three bars clients offer, the flag, `model` and
+ * `moodVersion`, and the federation key.
  */
 
 import { describe, before, after, test } from 'node:test';
@@ -93,7 +94,9 @@ function plantScores(srv, table) {
 }
 
 async function post(srv, route, body, { user = 'admin', headers = {}, raw = false } = {}) {
-  const h = { 'Content-Type': 'application/json', ...headers };
+  // A header given as null is left off (no Content-Type at all).
+  const h = Object.fromEntries(Object.entries({ 'Content-Type': 'application/json', ...headers })
+    .filter(([, v]) => v != null));
   if (user && srv === server) { h['x-access-token'] = tokens[user]; }
   const r = await fetch(`${srv.baseUrl}${route}`, {
     method: 'POST', headers: h, body: raw ? body : JSON.stringify(body),
@@ -237,6 +240,24 @@ describe('mood-scores: validation', () => {
     ]) {
       const r = await post(server, ROUTE, body);
       assert.equal(r.status, 400, `${why}: ${r.text}`);
+    }
+  });
+
+  test('400s: no body, and a body that is not JSON (Express leaves req.body undefined)', async () => {
+    // A string body makes fetch add text/plain; bytes go with no type at all.
+    const json = JSON.stringify({ filepaths: [P.Neon] });
+    for (const srv of [server, bare]) {
+      const mode = srv === server ? 'users' : 'public mode';
+      for (const [body, headers, why] of [
+        [undefined, { 'Content-Type': null }, 'no body, no Content-Type'],
+        [undefined, {}, 'no body, Content-Type JSON'],
+        [new TextEncoder().encode(json), { 'Content-Type': null }, 'JSON bytes, no Content-Type'],
+        [json, { 'Content-Type': 'text/plain' }, 'JSON text sent as text/plain'],
+      ]) {
+        const r = await post(srv, ROUTE, body, { headers, raw: true });
+        assert.equal(r.status, 400, `${mode}, ${why}: ${r.text}`);
+        assert.equal(r.body?.error, '"filepaths" is required', `${mode}, ${why}`);
+      }
     }
   });
 
