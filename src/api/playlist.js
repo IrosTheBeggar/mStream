@@ -49,6 +49,9 @@ export function setup(mstream) {
       // carries under features; ping lists keys by hand, so it is added
       // here too (the drift-lock test checks).
       flowOrder: features.flowOrder,
+      // Mood scores read-out (POST /api/v1/db/mood-scores) generation — the
+      // same fact /api/ carries under features (the drift-lock test checks).
+      moodScores: features.moodScores,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —

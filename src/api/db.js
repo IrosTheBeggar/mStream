@@ -3,13 +3,16 @@ import path from 'path';
 import * as vpath from '../util/vpath.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
+import * as config from '../state/config.js';
 import { joiValidate, dualId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
-import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches } from './mood-filter.js';
+import { MOOD_COLUMNS } from '../db/mood-sync.js';
+import { EMBEDDING_MODELS, activeMoodVersion } from '../db/discovery-features-lib.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches, moodFiltersReady } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -577,6 +580,60 @@ export function pullMetaDataBatch(filepaths, user) {
   return result;
 }
 
+// POST /api/v1/db/mood-scores' `tracks`: every path asked for, spelled as
+// sent, → its track_moods scores in MOOD_COLUMNS order, or null. Built with
+// Object.fromEntries, so a path named "__proto__" gets its own key like any
+// other (an assignment would set the object's prototype instead).
+//
+// null means "no scores to give": a path this caller cannot see, in an
+// unknown library, escaping its library, deleted or never there — all
+// alike, so library names cannot be probed — a track with no track_moods
+// row (not analysed yet), and every path while moodFiltersReady() is false
+// (analyzeMoods off, or nothing scored). A row is an array, never null: a
+// NULL head is null at its index and an all-NULL row an array of nulls, so
+// a client keeps a song with a missing head in an album's count. The
+// stored doubles go out as they are — no rounding (mood-sync stores the
+// worker's 4-place values) and no `|| null`, which would turn a 0 into a
+// NULL.
+//
+// The LEFT JOIN keeps tracks the outer loop, so each pair is one probe of
+// the UNIQUE(filepath, library_id) index and one of track_moods' key;
+// `scored` tells an all-NULL row from no row.
+//
+// MOOD_SCORES_MAX_PATHS is the route's cap per call: for paths of 40-110
+// characters, about 0.2-0.35 MB of answer.
+export const MOOD_SCORES_MAX_PATHS = 2000;
+
+export function pullMoodScoresBatch(filepaths, user) {
+  const tracks = new Map(filepaths.map((fp) => [fp, null]));
+  const d = db.getDB();
+  if (!d || !moodFiltersReady()) { return Object.fromEntries(tracks); }
+
+  const pending = resolveBatchPaths(filepaths, user);
+  const entries = [...pending.values()];
+  const heads = MOOD_COLUMNS.map((k) => `tm.${k}`).join(', ');
+  // 500 pairs per chunk = 1000 bound parameters, under SQLite's limit.
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const values = slice.map(() => '(?,?)').join(',');
+    const rows = d.prepare(`
+      SELECT t.library_id, t.filepath, tm.track_id IS NOT NULL AS scored, ${heads}
+        FROM tracks t
+        LEFT JOIN track_moods tm ON tm.track_id = t.id
+       WHERE (t.library_id, t.filepath) IN (VALUES ${values})
+    `).all(...slice.flatMap((e) => [e.library_id, e.rel]));
+    for (const row of rows) {
+      if (!row.scored) { continue; }
+      const entry = pending.get(batchKey(row.library_id, row.filepath));
+      if (!entry) { continue; }
+      const scores = MOOD_COLUMNS.map((k) => row[k]);
+      for (const fp of entry.fps) { tracks.set(fp, scores); }
+    }
+  }
+  return Object.fromEntries(tracks);
+}
+
 // The flow orderer's lean twin of pullMetaDataBatch (POST /api/v1/db/flow,
 // api/flow.js): the same visibility step and the same row-value IN chunks,
 // but only the tracks columns an ordering reads — no trackQuery, whose
@@ -784,6 +841,35 @@ export function setup(mstream) {
       returnThis[f] = batch.get(f);
     });
     res.json(returnThis);
+  });
+
+  // ── Mood scores ─────────────────────────────────────────────────────────
+
+  // The mood heads' scores of the files a client asks for, read-only: what a
+  // client that filters offline (the terminal player writing an MP3
+  // player's card) copies. `tracks` is pullMoodScoresBatch's; `heads` names
+  // each array's slots (clients index by name); `moodVersion` is the active
+  // mood pin, null while analyzeMoods is off; `model` is the configured
+  // discovery model, read from the registry rather than a loaded index, so
+  // it is there with no index loaded. The schema is strict (a bare array,
+  // an unknown key, no paths or too many are a 400), and a body over
+  // maxRequestSize is a 413 before the route runs: a client sends at most
+  // MOOD_SCORES_MAX_PATHS a call, fewer when that is too big.
+  const moodScoresSchema = Joi.object({
+    filepaths: Joi.array().items(Joi.string()).min(1).max(MOOD_SCORES_MAX_PATHS).required(),
+  });
+
+  mstream.post('/api/v1/db/mood-scores', (req, res) => {
+    const { value } = joiValidate(moodScoresSchema, req.body);
+    const scanOptions = config.program.scanOptions;
+    const modelId = scanOptions?.discoveryModel;
+    const spec = Object.hasOwn(EMBEDDING_MODELS, modelId) ? EMBEDDING_MODELS[modelId] : null;
+    res.json({
+      model: spec ? { id: modelId, version: spec.version } : null,
+      moodVersion: activeMoodVersion(scanOptions),
+      heads: MOOD_COLUMNS,
+      tracks: pullMoodScoresBatch(value.filepaths, req.user),
+    });
   });
 
   // ── Artists ─────────────────────────────────────────────────────────────
