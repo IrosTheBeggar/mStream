@@ -3,13 +3,16 @@ import path from 'path';
 import * as vpath from '../util/vpath.js';
 import * as dbQueue from '../db/task-queue.js';
 import * as db from '../db/manager.js';
+import * as config from '../state/config.js';
 import { joiValidate, dualId } from '../util/validation.js';
 import WebError from '../util/web-error.js';
 import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
-import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches } from './mood-filter.js';
+import { MOOD_COLUMNS } from '../db/mood-sync.js';
+import { EMBEDDING_MODELS, activeMoodVersion } from '../db/discovery-features-lib.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches, moodFiltersReady } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -485,6 +488,35 @@ export function pullMetaData(filepath, user) {
   return renderMetadataObj(row);
 }
 
+// The batch reads' first step: resolve each "<vpath>/<relpath>" filepath to
+// (library_id, relativePath) up front — cached lib lookup, no SQL.
+// getVPathInfo applies the same per-vpath access check pullMetaData does;
+// a path that fails it (revoked vpath, unknown library — it throws) is
+// caught here, per path, and left out, so one bad path never fails the
+// batch: the caller answers every path it does not get back as a miss.
+// Distinct paths that normalise to the same track are grouped so the query
+// stays minimal and duplicates in the list all resolve to the same row.
+//
+// Returns a Map batchKey(library_id, rel) -> { library_id, rel, fps:
+// [filepath, ...] }; a row's batchKey(row.library_id, row.filepath) finds
+// the paths that asked for it.
+const batchKey = (libraryId, rel) => `${libraryId} ${rel}`;
+
+function resolveBatchPaths(filepaths, user) {
+  const pending = new Map();
+  for (const fp of filepaths) {
+    let info;
+    try { info = vpath.getVPathInfo(fp, user); } catch (_e) { continue; }
+    const lib = db.getLibraryByName(info.vpath);
+    if (!lib) { continue; }
+    const key = batchKey(lib.id, info.relativePath);
+    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, fps: [] };
+    entry.fps.push(fp);
+    pending.set(key, entry);
+  }
+  return pending;
+}
+
 // Batched equivalent of pullMetaData: resolve metadata for many
 // "<vpath>/<relpath>" filepaths in ONE query instead of one query per path.
 // Returns a Map<filepath, { filepath, metadata }> whose entries match
@@ -509,24 +541,9 @@ export function pullMetaDataBatch(filepaths, user) {
     return result;
   }
 
-  // Resolve each path to (library_id, relativePath) up front — cached lib
-  // lookup, no SQL. getVPathInfo applies the same per-vpath access check
-  // pullMetaData did; anything that fails it (revoked vpath, unknown library)
-  // gets the null wrapper now and is never queried. Distinct paths that
-  // normalise to the same track are grouped so the query stays minimal and
-  // duplicates in the list all resolve to the same row.
-  const keyOf = (libraryId, rel) => `${libraryId} ${rel}`;
-  const pending = new Map();   // key -> { library_id, rel, fps: [filepath, ...] }
-  for (const fp of filepaths) {
-    let info;
-    try { info = vpath.getVPathInfo(fp, user); } catch (_e) { result.set(fp, miss(fp)); continue; }
-    const lib = db.getLibraryByName(info.vpath);
-    if (!lib) { result.set(fp, miss(fp)); continue; }
-    const key = keyOf(lib.id, info.relativePath);
-    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, fps: [] };
-    entry.fps.push(fp);
-    pending.set(key, entry);
-  }
+  // A path that fails resolution (revoked vpath, unknown library) is never
+  // queried, and gets the null wrapper with the misses below.
+  const pending = resolveBatchPaths(filepaths, user);
 
   // One batched query per chunk. Row-value IN keeps it to a single statement
   // even when the list spans libraries; the (filepath, library_id) index makes
@@ -547,19 +564,74 @@ export function pullMetaDataBatch(filepaths, user) {
     // statements per row — a 1000-track playlist is ~5 ms, not ~60.
     enrichRows(d, rows);
     for (const row of rows) {
-      const entry = pending.get(keyOf(row.library_id, row.filepath));
+      const entry = pending.get(batchKey(row.library_id, row.filepath));
       if (!entry) { continue; }
       const rendered = renderMetadataObj(row);
       for (const fp of entry.fps) { result.set(fp, rendered); }
     }
   }
 
-  // Resolved paths with no matching track row (e.g. file deleted since it was
-  // added) get the same null wrapper a pullMetaData miss would return.
+  // Unresolved paths, and resolved paths with no matching track row (e.g.
+  // file deleted since it was added), get the same null wrapper a
+  // pullMetaData miss would return.
   for (const fp of filepaths) {
     if (!result.has(fp)) { result.set(fp, miss(fp)); }
   }
   return result;
+}
+
+// POST /api/v1/db/mood-scores' `tracks`: every path asked for, spelled as
+// sent, → its track_moods scores in MOOD_COLUMNS order, or null. Built with
+// Object.fromEntries, so a path named "__proto__" gets its own key like any
+// other (an assignment would set the object's prototype instead).
+//
+// null means "no scores to give": a path this caller cannot see, in an
+// unknown library, escaping its library, deleted or never there — all
+// alike, so library names cannot be probed — a track with no track_moods
+// row (not analysed yet), and every path while moodFiltersReady() is false
+// (analyzeMoods off, or nothing scored). A row is an array, never null: a
+// NULL head is null at its index and an all-NULL row an array of nulls, so
+// a client keeps a song with a missing head in an album's count. The
+// stored doubles go out as they are — no rounding (mood-sync stores the
+// worker's 4-place values) and no `|| null`, which would turn a 0 into a
+// NULL.
+//
+// The LEFT JOIN keeps tracks the outer loop, so each pair is one probe of
+// the UNIQUE(filepath, library_id) index and one of track_moods' key;
+// `scored` tells an all-NULL row from no row.
+//
+// MOOD_SCORES_MAX_PATHS is the route's cap per call: for paths of 40-110
+// characters, about 0.2-0.35 MB of answer.
+export const MOOD_SCORES_MAX_PATHS = 2000;
+
+export function pullMoodScoresBatch(filepaths, user) {
+  const tracks = new Map(filepaths.map((fp) => [fp, null]));
+  const d = db.getDB();
+  if (!d || !moodFiltersReady()) { return Object.fromEntries(tracks); }
+
+  const pending = resolveBatchPaths(filepaths, user);
+  const entries = [...pending.values()];
+  const heads = MOOD_COLUMNS.map((k) => `tm.${k}`).join(', ');
+  // 500 pairs per chunk = 1000 bound parameters, under SQLite's limit.
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const values = slice.map(() => '(?,?)').join(',');
+    const rows = d.prepare(`
+      SELECT t.library_id, t.filepath, tm.track_id IS NOT NULL AS scored, ${heads}
+        FROM tracks t
+        LEFT JOIN track_moods tm ON tm.track_id = t.id
+       WHERE (t.library_id, t.filepath) IN (VALUES ${values})
+    `).all(...slice.flatMap((e) => [e.library_id, e.rel]));
+    for (const row of rows) {
+      if (!row.scored) { continue; }
+      const entry = pending.get(batchKey(row.library_id, row.filepath));
+      if (!entry) { continue; }
+      const scores = MOOD_COLUMNS.map((k) => row[k]);
+      for (const fp of entry.fps) { tracks.set(fp, scores); }
+    }
+  }
+  return Object.fromEntries(tracks);
 }
 
 // The flow orderer's lean twin of pullMetaDataBatch (POST /api/v1/db/flow,
@@ -769,6 +841,36 @@ export function setup(mstream) {
       returnThis[f] = batch.get(f);
     });
     res.json(returnThis);
+  });
+
+  // ── Mood scores ─────────────────────────────────────────────────────────
+
+  // The mood heads' scores of the files a client asks for, read-only: what a
+  // client that filters offline (the terminal player writing an MP3
+  // player's card) copies. `tracks` is pullMoodScoresBatch's; `heads` names
+  // each array's slots (clients index by name); `moodVersion` is the active
+  // mood pin, null while analyzeMoods is off; `model` is the configured
+  // discovery model, read from the registry rather than a loaded index, so
+  // it is there with no index loaded. The schema is strict (a bare array,
+  // an unknown key, no paths or too many are a 400, and so is no JSON body,
+  // which Express leaves undefined), and a body over maxRequestSize is a 413
+  // before the route runs: a client sends at most MOOD_SCORES_MAX_PATHS a
+  // call, fewer when that is too big.
+  const moodScoresSchema = Joi.object({
+    filepaths: Joi.array().items(Joi.string()).min(1).max(MOOD_SCORES_MAX_PATHS).required(),
+  });
+
+  mstream.post('/api/v1/db/mood-scores', (req, res) => {
+    const { value } = joiValidate(moodScoresSchema, req.body ?? {});
+    const scanOptions = config.program.scanOptions;
+    const modelId = scanOptions?.discoveryModel;
+    const spec = Object.hasOwn(EMBEDDING_MODELS, modelId) ? EMBEDDING_MODELS[modelId] : null;
+    res.json({
+      model: spec ? { id: modelId, version: spec.version } : null,
+      moodVersion: activeMoodVersion(scanOptions),
+      heads: MOOD_COLUMNS,
+      tracks: pullMoodScoresBatch(value.filepaths, req.user),
+    });
   });
 
   // ── Artists ─────────────────────────────────────────────────────────────

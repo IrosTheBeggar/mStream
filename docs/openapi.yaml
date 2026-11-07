@@ -1788,6 +1788,15 @@ paths:
                           `discoveryTaste`; gate on `flowOrder >= 1`. A
                           version fact, on with discovery off. Absent on
                           older servers.
+                      moodScores:
+                        type: integer
+                        description: >
+                          Mood scores read-out generation: this server
+                          answers `POST /api/v1/db/mood-scores`. An integer
+                          like `flowOrder`; gate on `moodScores >= 1`. A
+                          version fact, present whether or not any song has
+                          scores (that is `moodFilters`). Absent on older
+                          servers.
                       sync:
                         type: boolean
                         description: >
@@ -1872,6 +1881,7 @@ paths:
                   moodFilters: true
                   sync: true
                   flowOrder: 1
+                  moodScores: 1
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -1945,6 +1955,12 @@ paths:
                     description: >
                       Flow ordering generation — the same fact as
                       `features.flowOrder` on `GET /api`. Absent on older
+                      servers.
+                  moodScores:
+                    type: integer
+                    description: >
+                      Mood scores read-out generation — the same fact as
+                      `features.moodScores` on `GET /api`. Absent on older
                       servers.
                   supportedAudioFiles:
                     type: object
@@ -2212,6 +2228,102 @@ paths:
                 type: object
                 additionalProperties: { $ref: "#/components/schemas/Metadata" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # The mood heads' scores, read-only, for a client that filters offline (the
+  # terminal player copying them onto an MP3 player's card). The scores go out
+  # exactly as stored — no rounding (the worker stores 4 places), 0 and 1 as
+  # plain numbers, a NULL head as null — so a client's own two-place rule sees
+  # the doubles the server's filters compare. `tracks[path]` is null both for
+  # a song with no scores and for a path the caller cannot see (another
+  # library, an unknown one, a path escape, a deleted or never-scanned file),
+  # and the two are identical on purpose.
+  /api/v1/db/mood-scores:
+    post:
+      tags: [Library]
+      summary: Mood scores for a list of tracks
+      description: |
+        The mood heads' scores of each file asked for, as stored in the
+        server's mood table (the discovery model's heads, mirrored per
+        track). Read-only; scoped to the caller's libraries.
+
+        **One key per path, spelled as sent** (duplicates collapse into one).
+        The value is an array in `heads` order, or null. Clients index by
+        name in `heads`, never by position; `heads` may grow, and a reply
+        missing a head a client needs should be read as an error.
+
+        - A scored track: the stored doubles, unrounded.
+        - A NULL head: null at its index (never 0). An all-NULL row is an
+          array of nulls, which differs from no row.
+        - No row (not analysed yet), a library the caller lacks, an unknown
+          library, a path escaping its library, a deleted or never-existing
+          file: null, with status 200. The cases cannot be told apart.
+        - `analyzeMoods` off, or nothing scored yet: every path null. Gate on
+          `features.moodScores`, not on `moodFilters`.
+
+        `moodVersion` is the active mood pin (null while `analyzeMoods` is
+        off), not a row's. `model` is the configured discovery model, there
+        with no discovery index loaded. A federation key may call it.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [filepaths]
+              properties:
+                filepaths:
+                  type: array
+                  minItems: 1
+                  maxItems: 2000
+                  items: { type: string, minLength: 1 }
+                  description: Library paths (`vpath/relative/path`).
+            example:
+              filepaths: ["Music/Artist A/scored.flac", "Music/Artist A/no-row.flac"]
+      responses:
+        "200":
+          description: The scores, a key per path asked for.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [model, moodVersion, heads, tracks]
+                properties:
+                  model:
+                    type: object
+                    nullable: true
+                    description: The configured discovery model (`scanOptions.discoveryModel`) and its version.
+                    properties:
+                      id: { type: string }
+                      version: { type: string }
+                  moodVersion:
+                    type: string
+                    nullable: true
+                    description: The active mood-head pin; null while `analyzeMoods` is off.
+                  heads:
+                    type: array
+                    items: { type: string }
+                    description: "The name of each slot of a `tracks` array: `danceable`, `happy`, `sad`, `relaxed`, `aggressive`, `party`, `acoustic`, `instrumental`."
+                  tracks:
+                    type: object
+                    description: Path as sent → scores in `heads` order, or null (no row, or not visible).
+                    additionalProperties:
+                      type: array
+                      nullable: true
+                      items: { type: number, nullable: true, minimum: 0, maximum: 1 }
+              example:
+                model: { id: effnet-discogs, version: "1" }
+                moodVersion: "1"
+                heads: [danceable, happy, sad, relaxed, aggressive, party, acoustic, instrumental]
+                tracks:
+                  "Music/Artist A/scored.flac": [0.81, 0.29, 0, 0.7, 0.1234, 1, 0.57, 0.58]
+                  "Music/Artist A/null-head.flac": [0.81, 0.29, null, 0.7, 0.1234, 1, 0.57, 0.58]
+                  "Music/Artist A/all-null.flac": [null, null, null, null, null, null, null, null]
+                  "Music/Artist A/no-row.flac": null
+                  "Hidden/Artist B/x.flac": null
+        "400": { description: "Request validation failed: a bare array, an unknown key, no `filepaths`, an empty list, more than 2000 paths, or a path that is not a non-empty string." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "413": { description: "The body is over the server's request size limit (`maxRequestSize`); send fewer paths a call." }
 
   /api/v1/db/artists:
     get: &artistsOp

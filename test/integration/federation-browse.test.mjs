@@ -182,6 +182,13 @@ describe('federation browse proxy — guards', () => {
     });
     assert.equal(res.status, 404);
 
+    // The mood scores read is on the allowlist for a later peer read: the
+    // screen passes it, so the answer is the unknown peer's 404, not a 403.
+    const moods = await fetch(`${srv.baseUrl}/api/v1/federation/peers/424242/api/api/v1/db/mood-scores`, {
+      method: 'POST', headers: json(adminToken), body: JSON.stringify({ filepaths: ['shared/song.txt'] }),
+    });
+    assert.equal(moods.status, 404);
+
     const art = await fetch(`${srv.baseUrl}/api/v1/federation/peers/424242/art/cover.jpg`, {
       headers: json(adminToken),
     });
