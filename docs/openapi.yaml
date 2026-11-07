@@ -2037,6 +2037,11 @@ paths:
                           codecs:
                             type: object
                             description: The same object `GET /api` carries as `features.transcode.codecs`.
+                          bulk:
+                            type: object
+                            description: The same object `GET /api` carries as `features.transcode.bulk`.
+                            properties:
+                              concurrency: { type: integer }
                   noMkdir: { type: boolean }
                   noUpload: { type: boolean }
                   noFileModify: { type: boolean }
