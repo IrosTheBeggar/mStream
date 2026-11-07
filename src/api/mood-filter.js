@@ -116,7 +116,11 @@ export function parseMoodsQuery(raw) {
  */
 export function moodFiltersReady() {
   if (config.program.scanOptions?.analyzeMoods === false) { return false; }
-  return !!db.getDB().prepare('SELECT 1 FROM track_moods LIMIT 1').get();
+  // No database open (an in-process test, a server before its DB): nothing
+  // to filter by. /api/ and ping build their features through this.
+  const d = db.getDB();
+  if (!d) { return false; }
+  return !!d.prepare('SELECT 1 FROM track_moods LIMIT 1').get();
 }
 
 /**
