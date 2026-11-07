@@ -80,6 +80,12 @@ const ALLOWED_EXACT = new Set([
   // just `unplaced`. The outbound browse proxy screens against this same
   // table, so a parent can forward the call only because this line exists.
   'POST /api/v1/db/flow',
+  // The mood scores of the caller's own list of songs, for a client that
+  // filters offline. A read, grant-scoped like the metadata batch: a path
+  // outside the key's libraries is null, the same as one with no scores.
+  // Listed now so a later peer read through the browse proxy (which
+  // screens against this same table) needs no server release.
+  'POST /api/v1/db/mood-scores',
   'POST /api/v1/discovery/local/embeddings',
   'POST /api/v1/file-explorer',
   'POST /api/v1/file-explorer/recursive',

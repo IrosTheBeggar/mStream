@@ -165,6 +165,13 @@ export function buildFeatures() {
     // `>= n`. A version fact, unconditional: the route orders by BPM, key and
     // moods with discovery off, so there is nothing to probe.
     flowOrder: 1,
+    // Mood scores read-out (POST /api/v1/db/mood-scores): the scores of a
+    // list of songs, for a client that filters offline (the terminal
+    // player's card writer). An integer GENERATION like `flowOrder`. A
+    // version fact, present whether or not any song has scores: whether
+    // some do is `moodFilters`, and with none the route answers every path
+    // null.
+    moodScores: 1,
     // The peer stream proxy (/api/v1/federation/peers/:id/stream/*,
     // api/federation-stream.js) forwards X-mStream-Purpose: `{ purpose:
     // true }`, so a client copying a peer's files through this server knows
