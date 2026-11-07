@@ -56,8 +56,19 @@ function sliceConst(name) {
 
 const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'adoptPeer', 'browseApi', 'localIgnoreVPaths',
   'artUrl', 'artImgAttr', 'albumCredit', 'renderAlbum', 'renderArtist', 'createMusicFileHtml',
-  'setBrowserRootPanel', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
+  'setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'showMoodFilters', 'artistsBody', 'albumSongsBody', 'getAllArtists', 'getArtistsAlbums',
   'getAllAlbums', 'getAlbumsOnClick', 'getAlbumSongs', 'queueAlbum', 'runLocalSearch'];
+
+// Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
+// browseHead* …): the renderers and panels call it; with its gate never
+// read it draws nothing and asks nothing.
+const KEEP_FNS = [...SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote)\(/gm)].map((m) => m[1]);
+const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    let keepGatePending = null;
+    let keepGateAsk = 0;
+    let browseKeepQueued = null;
+    const discoveryView = { flags: { discoveryPlugins: false } };
+    ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
 
 const KNOWN_IDS = ['filelist', 'localSearchBar', 'directoryName', 'directory_bar',
   'local_search_btn', 'upload_btn', 'mkdir_btn'];
@@ -96,9 +107,12 @@ function makeSandbox(api, { altLayout = {}, peer = null } = {}) {
     'use strict';
     let currentBrowsingList = [];
     let programState = [];
+    let fileExplorerArray = [];
     let peerContext = ${peer ? JSON.stringify(peer) : 'null'};
     let browseGeneration = 0;
     ${sliceConst('entityMap')}
+    ${sliceConst('MOODS')}
+    ${keepState()}
     ${FNS.map(sliceFn).join('\n\n')}
     return {
       ${FNS.join(', ')},

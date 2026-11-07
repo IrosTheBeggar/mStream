@@ -6,7 +6,11 @@ const MSTREAMAPI = (() => {
     host: "",
     username: "",
     token: "",
-    vpaths: []
+    vpaths: [],
+    // The ping's `discoveryTaste` generation (0 = the server has no Discover
+    // page). m.js init() sets it with the other ping flags:
+    // `Number(response.discoveryTaste) || 0`.
+    discoveryTaste: 0
   };
   
   async function req(type, url, dataObject, opts) {
@@ -142,6 +146,18 @@ const MSTREAMAPI = (() => {
     return discoveryReq('api/v1/discovery/local/embeddings', { filePaths });
   };
 
+  // The Discover page (docs/discovery-page-plan.md §3.1): a random batch of
+  // seeds from this account's play history (a new one on every call — the
+  // route keeps nothing), then library / network / peers sections for them,
+  // in one call — the page sends two in parallel (library+network,
+  // peers; alpha/discovery-page.js buildRequests). Same degrade contract as
+  // the calls above: {disabled:true} on 403 (discovery off, or an account
+  // that has no history here: a federation key, a guest, a jukebox), null on
+  // any other failure. Reveal via ping's `discovery && discoveryTaste >= 1`.
+  mstreamModule.discoveryTaste = (body) => {
+    return discoveryReq('api/v1/discovery/taste', body || {});
+  };
+
   // Discovery plug-ins — what this server lets a user do with a network or
   // peer recommendation. Reveal via the ping's discoveryPlugins flag, never
   // a probe; the list itself is fetched on the first row menu.
@@ -170,16 +186,40 @@ const MSTREAMAPI = (() => {
   // already getting this", "a file already exists at …" — not a shrug.
   const jobsRoute = (tail) => mstreamModule.currentServer.host + 'api/v1/discovery/plugin-jobs' + (tail || '');
   // `choice` = { url }: an upload picked from the plug-in's lookup. `scope`
-  // = album | artist | artist-missing for a job that acts on more than the song.
-  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope) => {
+  // = album | artist | artist-missing | folder for a job that acts on more
+  // than the song.
+  // `destination` = { vpath, base, layout }: the collection destination the
+  // window showed — the job is pinned to it, or refused with 409
+  // { error: 'destination_changed', destination } when it is no longer the
+  // saved one (the strip's Retry sends the place the job ran with). Absent =
+  // no check.
+  // `landing` = where a folder job lands (DISCOVERJOBS.folderLanding; a
+  // job's own params.landing for its Retry): { vpath?, path } a library
+  // and a folder in it ('' its root; no vpath = the destination's), or
+  // { tags: true } by the layout; none = as on the peer. Sent for a folder
+  // job only — the route refuses it on any other.
+  mstreamModule.discoveryJobStart = (name, recommendation, choice, scope, destination, landing) => {
     const body = { recommendation };
     if (choice) { body.choice = choice; }
     if (scope && scope !== 'song') { body.scope = scope; }
+    if (destination) { body.destination = { vpath: destination.vpath, base: destination.base || '', layout: destination.layout }; }
+    if (scope === 'folder' && landing) {
+      if (landing.tags === true) {
+        body.landing = { tags: true };
+      } else if (typeof landing.path === 'string' || landing.vpath) {
+        body.landing = landing.vpath ? { vpath: landing.vpath, path: landing.path || '' } : { path: landing.path || '' };
+      }
+    }
     return req('POST', mstreamModule.currentServer.host + 'api/v1/discovery/plugins/' + encodeURIComponent(name) + '/jobs', body);
   };
   mstreamModule.discoveryJobs = () => req('GET', jobsRoute());
   mstreamModule.discoveryJob = (id) => req('GET', jobsRoute('/' + encodeURIComponent(id)));
   mstreamModule.discoveryJobLookup = (recommendation) => req('POST', jobsRoute('/lookup'), { recommendation });
+  // The single lookup for a page of rows (1–100 recommendations) in one
+  // request: { results: [{ key, keys, jobs }] } in input order. Only on a
+  // server that advertises discoveryTaste >= 1 — older ones answer the
+  // per-row lookup above alone.
+  mstreamModule.discoveryJobLookupBatch = (recommendations) => req('POST', jobsRoute('/lookup/batch'), { recommendations });
   mstreamModule.discoveryJobCancel = (id) => req('POST', jobsRoute('/' + encodeURIComponent(id) + '/cancel'), {});
   mstreamModule.discoveryJobsClear = () => req('POST', jobsRoute('/clear'), {});
   // What the plug-ins brought into the library (the Downloads view). Own
@@ -353,6 +393,11 @@ const MSTREAMAPI = (() => {
     // file) — what the recommendation modal's header shows beyond the
     // similar row's own fields.
     metadata: (peerId, filepath) => peerReq(peerId, 'POST', 'api/v1/db/metadata', { filepath }),
+    // Many tracks' metadata in one call (the body is the paths themselves):
+    // { [filepath]: { filepath, metadata } }, metadata null for a path the
+    // peer has no row for — the folder copy's "By your layout" reads its
+    // songs' tags with it.
+    metadataBatch: (peerId, filepaths) => peerReq(peerId, 'POST', 'api/v1/db/metadata/batch', Array.isArray(filepaths) ? filepaths : []),
   };
 
   ///////////////////// Federation requests (admin) — the Discover modal's
@@ -395,8 +440,9 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/db/rated", postObject);
   }
 
-  mstreamModule.getRecentlyAdded =  (limit, ignoreVPaths) => {
-    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths });
+  // `moods`: an optional mood filter (the newest `limit` songs that match).
+  mstreamModule.getRecentlyAdded =  (limit, ignoreVPaths, moods) => {
+    return req('POST', mstreamModule.currentServer.host + "api/v1/db/recent/added", { limit: limit, ignoreVPaths, ...(moods && { moods }) });
   }
 
   mstreamModule.getRecentlyPlayed =  (limit, ignoreVPaths) => {

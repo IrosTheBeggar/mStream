@@ -37,6 +37,10 @@ import * as config from './config.js';
 //   'announcement' → { from, payload }   a peer's signed catalog announcement
 //                                        (signature already verified in Rust)
 //   'neighbor'     → { up, id }          gossip mesh membership changes
+//   'neighbors'    → { reset: true }     (sidecar ≥ v1.4.0) the sidecar
+//                                        re-created its gossip subscriber:
+//                                        the neighbor set starts over and
+//                                        the replayed 'neighbor' ups follow
 //   'dm'           → { from, payload }   a direct message from a peer. `from`
 //                                        is the QUIC-authenticated endpoint
 //                                        id; payload is size-capped but
@@ -58,6 +62,14 @@ events.on('neighbor', (msg) => {
   // Feeds the panel's Activity ring (and plain log readers). Self-throttling:
   // the active view caps how many links exist to churn.
   winston.info(`[discovery-p2p] mesh neighbor ${msg.up === true ? 'up' : 'down'}: ${msg.id.slice(0, 12)}…`);
+});
+// A sidecar (≥ v1.4.0) that lost its gossip subscriber re-creates it and
+// says so; the downs we missed in between never arrive, so the set starts
+// over and the actor's NeighborUp replay rebuilds it.
+events.on('neighbors', (msg) => {
+  if (!msg || msg.reset !== true) { return; }
+  neighborIds.clear();
+  winston.info('[discovery-p2p] mesh neighbor set reset — the sidecar re-subscribed to the catalog topic');
 });
 export function getNeighborIds() { return [...neighborIds]; }
 

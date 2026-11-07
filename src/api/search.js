@@ -15,7 +15,9 @@ import winston from 'winston';
 import * as db from '../db/manager.js';
 import { joiValidate } from '../util/validation.js';
 import { parseSearchQuery, buildFtsExpression } from '../util/search-query.js';
-import { libraryFilter, renderMetadataByIds, toLiteMetadata } from './db.js';
+import {
+  libraryFilter, renderMetadataByIds, toLiteMetadata, ALBUM_CREDIT_COLUMNS, ALBUM_ITEM_GROUP, albumCredit,
+} from './db.js';
 
 // ── Search response shapers ─────────────────────────────────────────────────
 //
@@ -24,7 +26,7 @@ import { libraryFilter, renderMetadataByIds, toLiteMetadata } from './db.js';
 // route through these — envelope parity is structural, not just covered
 // by tests. The shapers expect these column names on the row:
 //   - shapeArtistRow: { name, album_art_file }
-//   - shapeAlbumRow:  { name, album_art_file, album_artist, year }
+//   - shapeAlbumRow:  { name, album_art_file, year, credit_variants, credit }
 //   - shapeTitleRow:  { id, title, album_art_file, artist_name, library_name, filepath }
 //   - shapeFileRow:   { id, library_name, filepath, album_art_file }
 //   - shapeLyricsRow: { id, title, album_art_file, artist_name, library_name, filepath, snippet }
@@ -52,14 +54,18 @@ export function shapeArtistRow(r) {
   };
 }
 
-// An album hit also names the album's own credit and year (the album row's
-// artist and year — null for an untagged one): what a client needs to open
-// the exact album, or to ask a paired server for the same one.
+// An album hit is one album CARD — the rows /db/albums collapses into one
+// item — and names its credit and year as that item does: the credit by
+// albumCredit (src/api/db.js), the one credit its visible rows name (a row
+// that names none does not vote) and null when they disagree or none names
+// one, so a compilation reads Various Artists and an untagged album split
+// across its track artists reads null. What a client needs to open the
+// exact album, or to ask a paired server for the same one.
 export function shapeAlbumRow(r) {
   return {
     name: r.name,
     album_art_file: r.album_art_file || null,
-    album_artist: r.album_artist || null,
+    album_artist: albumCredit(r),
     year: Number.isFinite(Number(r.year)) && r.year !== null && r.year !== '' ? Number(r.year) : null,
     filepath: false,
   };
@@ -157,13 +163,22 @@ function likeArtistsRows(d, filter, search) {
   `).all(`%${search}%`, ...filter.params);
 }
 
+// Album hits are /db/albums cards, on both paths: the matching album rows
+// grouped by ALBUM_ITEM_GROUP and credited by ALBUM_CREDIT_COLUMNS, so one
+// album is one hit, and LIMIT counts cards. A card's rows share their name,
+// so they match or miss together. Visibility is the listing's EXISTS probe
+// per row — an album shows when any of its tracks is visible, and only its
+// visible rows vote on the credit, as there. Ties among same-name cards
+// break the listing's way (newest first, then art).
 function likeAlbumsRows(d, filter, search) {
   return d.prepare(`
-    SELECT DISTINCT al.name, al.album_art_file, al.year, pa.name AS album_artist
-    FROM albums al JOIN tracks t ON t.album_id = al.id
+    SELECT al.name, al.album_art_file, al.year,${ALBUM_CREDIT_COLUMNS}
+    FROM albums al
     LEFT JOIN artists pa ON pa.id = al.artist_id
-    WHERE al.name LIKE ? AND ${filter.clause}
-    ORDER BY al.name COLLATE NOCASE LIMIT 30
+    WHERE al.name LIKE ?
+      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+    ${ALBUM_ITEM_GROUP}
+    ORDER BY al.name COLLATE NOCASE, al.year DESC, al.album_art_file LIMIT 30
   `).all(`%${search}%`, ...filter.params);
 }
 
@@ -269,8 +284,10 @@ function enrichTrackRows(user, rowGroups) {
 // FROM tracks WHERE <scope>)`. The IN form made SQLite materialise every
 // visible artist_id / album_id in the library before FTS had narrowed
 // anything down — a whole-library pass on every keystroke (2026-07 audit).
-// EXISTS runs per candidate instead, and FTS only ever emits 30:
-// 24.5 → 1.6 ms (artists) and 27.8 → 2.9 ms (albums) at 25k tracks.
+// EXISTS runs per candidate instead, and FTS only ever emitted 30:
+// 24.5 → 1.6 ms (artists) and 27.8 → 2.9 ms (albums) at 25k tracks. Album
+// hits have since become cards, which probe every match — ftsAlbumsRows
+// has their figures.
 // Equivalent: album/artist ids are primary keys and so never NULL, which is
 // the only case where IN and EXISTS could differ here.
 function ftsArtistsRows(d, filter, parsed) {
@@ -294,6 +311,18 @@ function ftsArtistsRows(d, filter, parsed) {
   `).all(expr, ...filter.params);
 }
 
+// Albums are cards, as on the LIKE path (likeAlbumsRows), ranked by their
+// best row — a card's rows share their name, so they share its rank too.
+// Ranking cards reads every match where the ungrouped query let FTS5 stop
+// at the 30th row, so the statement is two steps: `cards` ranks and cuts
+// the visible cards, and only those 30 join back to their rows (by name,
+// over idx_albums_name) for the credit, the probe again picking the rows
+// that vote. Crediting every match instead costs about a fifth more.
+// Measured without ANALYZE, as on a real library: at 100k tracks (12k
+// album rows) a word in a third of the names went 2.0 → 4.4 ms and one in
+// 5% 0.37 → 0.81 ms; at 700k tracks (82k rows) 17 → 40 and 2.7 → 7.8 ms.
+// The LIKE side, whose tracks join became the probe, went 27 → 5.0 and
+// 17 → 1.3 ms at 100k, 267 → 59 and 175 → 14 ms at 700k.
 function ftsAlbumsRows(d, filter, parsed) {
   const expr = buildFtsExpression({
     column: 'name',
@@ -302,14 +331,23 @@ function ftsAlbumsRows(d, filter, parsed) {
   });
   if (expr === null) return null;
   return d.prepare(`
-    SELECT al.name, al.album_art_file, al.year, pa.name AS album_artist
-    FROM fts_albums fa
-    JOIN albums al ON al.id = fa.rowid
+    WITH cards AS (
+      SELECT al.name, al.year, al.album_art_file, MIN(fa.rank) AS best
+      FROM fts_albums fa
+      JOIN albums al ON al.id = fa.rowid
+      WHERE fa.fts_albums MATCH ?
+        AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      ${ALBUM_ITEM_GROUP}
+      ORDER BY best, al.name COLLATE NOCASE, al.year DESC, al.album_art_file LIMIT 30
+    )
+    SELECT al.name, al.album_art_file, al.year,${ALBUM_CREDIT_COLUMNS}
+    FROM cards c
+    JOIN albums al ON al.name = c.name AND al.year IS c.year AND al.album_art_file IS c.album_art_file
     LEFT JOIN artists pa ON pa.id = al.artist_id
-    WHERE fa.fts_albums MATCH ?
-      AND EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
-    ORDER BY rank LIMIT 30
-  `).all(expr, ...filter.params);
+    WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+    ${ALBUM_ITEM_GROUP}
+    ORDER BY MIN(c.best), al.name COLLATE NOCASE, al.year DESC, al.album_art_file
+  `).all(expr, ...filter.params, ...filter.params);
 }
 
 // Title category: scope MATCH to fts_tracks.{title} only. A multi-word

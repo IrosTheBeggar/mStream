@@ -482,6 +482,48 @@ describe('search artist/album visibility', () => {
     const visible = (await post('/api/v1/db/search', { search: 'Hidden Album' })).body.albums || [];
     assert.ok(visible.map((a) => a.name).includes('Hidden Album'));
   });
+
+  // Album hits are /db/albums cards (search.js likeAlbumsRows / ftsAlbumsRows):
+  // the two Twin rows are one hit, credited like the listing's one card.
+  test('two album rows sharing (name, year, art) are one hit, credited as /db/albums credits the card', async () => {
+    scopeTo(null);
+    const [card] = (await post('/api/v1/db/albums', {})).body.albums.filter((a) => a.name === 'Twin');
+    assert.equal(card.album_artist, null, 'Solo and Collab disagree');
+    for (const algorithm of ['basic', 'fts5', 'combo']) {
+      const hits = (await post('/api/v1/db/search', { search: 'Twin', algorithm })).body.albums.filter((a) => a.name === 'Twin');
+      assert.deepEqual(hits.map((a) => [a.year, a.album_art_file, a.album_artist]), [[2002, 'art-twin.jpg', null]], algorithm);
+    }
+  });
+
+  test("a card's credit counts only the rows the caller can see, as the listing's does", async () => {
+    // One card, a row per library, each by its own artist: whoever sees one
+    // row sees that row's artist; whoever sees both sees a disagreement.
+    const d = manager.getDB();
+    const left = Number(d.prepare("INSERT INTO artists (name) VALUES ('Shelf Left')").run().lastInsertRowid);
+    const right = Number(d.prepare("INSERT INTO artists (name) VALUES ('Shelf Right')").run().lastInsertRowid);
+    const rows = [[left, LIB_A], [right, LIB_B]].map(([artist, lib], i) => {
+      const album = Number(d.prepare("INSERT INTO albums (name, artist_id, year) VALUES ('Half Shelf', ?, 2006)").run(artist).lastInsertRowid);
+      d.prepare('INSERT INTO tracks (filepath, library_id, title, artist_id, album_id, audio_hash) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(`half-shelf-${i}.mp3`, lib, `Half Shelf ${i}`, artist, album, `h-half-${i}`);
+      return album;
+    });
+    try {
+      for (const [scope, credit] of [[null, null], [[LIB_A], 'Shelf Left'], [[LIB_B], 'Shelf Right']]) {
+        scopeTo(scope);
+        const card = (await post('/api/v1/db/albums', {})).body.albums.filter((a) => a.name === 'Half Shelf');
+        assert.deepEqual(card.map((a) => a.album_artist), [credit], `listing, scope ${JSON.stringify(scope)}`);
+        for (const algorithm of ['basic', 'fts5', 'combo']) {
+          const hits = (await post('/api/v1/db/search', { search: 'half shelf', algorithm })).body.albums;
+          assert.deepEqual(hits.map((a) => a.album_artist), [credit], `${algorithm}, scope ${JSON.stringify(scope)}`);
+        }
+      }
+    } finally {
+      scopeTo(null);
+      d.prepare("DELETE FROM tracks WHERE filepath LIKE 'half-shelf-%'").run();
+      for (const id of rows) { d.prepare('DELETE FROM albums WHERE id = ?').run(id); }
+      d.prepare("DELETE FROM artists WHERE name IN ('Shelf Left', 'Shelf Right')").run();
+    }
+  });
 });
 
 // ── genre-songs paging ──────────────────────────────────────────────────────

@@ -45,6 +45,8 @@ import { startServer } from '../helpers/server.mjs';
 import { resolveSidecarBinary } from '../../src/state/discovery-p2p.js';
 import { mergeSeedLists } from '../../src/state/discovery-seeds.js';
 import { signSeedList } from '../../src/state/discovery-seeds-verify.js';
+import { searchSpaces, toQueryVector } from '../../src/api/discovery-p2p.js';
+import { isNovel } from '../../src/db/discovery-novelty.js';
 
 const SIDECAR_BIN = resolveSidecarBinary();
 
@@ -646,6 +648,17 @@ describe('discovery p2p — similarity search + novelty filter', () => {
     assert.deepEqual([legacy.album, legacy.year, legacy.isrc, legacy.releaseGroupMbid], [null, null, null, null]);
   });
 
+  test('rows keep their exact wire shape — the shared walk adds nothing to this route', async () => {
+    const body = await (await similar({ filePath: `testlib/${trackA.filepath}` })).json();
+    assert.deepEqual(Object.keys(body), ['query', 'searched', 'results']);
+    for (const row of body.results) {
+      assert.deepEqual(Object.keys(row), ['artist', 'title', 'album', 'year', 'isrc', 'releaseGroupMbid',
+        'duration', 'similarity', 'recordingMbid', 'exportId', 'peer'],
+      'no seedIndex (the Discover page asks for it explicitly) and no source (stamped by its caller)');
+      assert.deepEqual(Object.keys(row.peer), ['endpointId', 'name']);
+    }
+  });
+
   test('newArtistsOnly also drops artists the local library knows', async () => {
     const r = await similar({ filePath: `testlib/${trackA.filepath}`, newArtistsOnly: true });
     const body = await r.json();
@@ -685,6 +698,235 @@ describe('discovery p2p — similarity search + novelty filter', () => {
     const body = await r.json();
     assert.ok(body.storage.usedBytes > 0);
     assert.equal(body.autoFetch, false);
+  });
+});
+
+// ── The shelf walk itself (searchSpaces), in-process ───────────────────────
+// The route above and the Discover page share src/api/discovery-p2p.js's
+// walk. It keeps only the best rows while it walks (and skips the novelty
+// chain for rows that cannot make the cut) instead of collecting every novel
+// row and sorting them all, so it is pinned here against that original
+// collect-sort-slice algorithm, ties and exclusions included. No server: the
+// spaces are handcrafted in the readEmbeddings() shape.
+describe('discovery p2p — the shelf walk (searchSpaces)', () => {
+  const DIM = 6;
+
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const unit = (xs) => {
+    const n = Math.sqrt(xs.reduce((s, x) => s + x * x, 0)) || 1;
+    return xs.map((x) => x / n);
+  };
+
+  // rows: [{ artist, title, mbid?, vec }]
+  function space(name, rows, dim = DIM) {
+    const matrix = new Float32Array(rows.length * dim);
+    rows.forEach((r, i) => matrix.set(r.vec, i * dim));
+    const col = (f) => rows.map(f);
+    return {
+      hash: name, modelId: 'm', dim, count: rows.length, matrix,
+      ids: col((_r, i) => `${name}:${i}`),
+      mbids: col((r) => r.mbid ?? null),
+      artists: col((r) => r.artist),
+      titles: col((r) => r.title),
+      durations: col(() => 180),
+      albums: col((r) => r.album ?? null),
+      years: col(() => null),
+      isrcs: col(() => null),
+      releaseGroupMbids: col(() => null),
+      peerName: `Peer ${name}`,
+      endpointId: name.padEnd(64, '0'),
+    };
+  }
+
+  // The route's walk as it was before the refactor: every novel row, one
+  // stable sort, then the cut.
+  function collectSortSlice(spaces, q, exclude, { newArtistsOnly = false, limit }) {
+    const dim = q.length;
+    const results = [];
+    const searched = { peers: 0, tracks: 0 };
+    for (const sp of spaces) {
+      if (!sp || sp.dim !== dim) { continue; }
+      searched.peers += 1;
+      searched.tracks += sp.count;
+      for (let i = 0; i < sp.count; i++) {
+        let dot = 0;
+        for (let k = 0; k < dim; k++) { dot += q[k] * sp.matrix[i * dim + k]; }
+        if (!isNovel(exclude, { artist: sp.artists[i], title: sp.titles[i], recordingMbid: sp.mbids[i], similarityVsSeed: dot },
+          { newArtistsOnly })) { continue; }
+        results.push({
+          artist: sp.artists[i], title: sp.titles[i], album: sp.albums[i], year: sp.years[i], isrc: sp.isrcs[i],
+          releaseGroupMbid: sp.releaseGroupMbids[i], duration: sp.durations[i], similarity: dot,
+          recordingMbid: sp.mbids[i], exportId: sp.ids[i], peer: { endpointId: sp.endpointId, name: sp.peerName },
+        });
+      }
+    }
+    results.sort((a, b) => b.similarity - a.similarity);
+    return { results: results.slice(0, limit), searched };
+  }
+
+  // A shelf built to collide: vectors from a small palette (so many rows
+  // tie exactly), the query itself among them (near-dups), artists and
+  // titles from small pools (so owned artist+title and newArtistsOnly bite),
+  // a few owned MBIDs.
+  function randomShelf(seed) {
+    const rnd = mulberry32(seed);
+    const palette = Array.from({ length: 7 }, () => unit(Array.from({ length: DIM }, () => rnd() - 0.3)));
+    const q = Float32Array.from(palette[0]);
+    const spaces = [];
+    const peers = 1 + Math.floor(rnd() * 4);
+    for (let p = 0; p < peers; p++) {
+      const n = Math.floor(rnd() * 40);
+      spaces.push(space(String.fromCharCode(97 + p), Array.from({ length: n }, () => ({
+        artist: `Artist ${Math.floor(rnd() * 6)}`,
+        title: `Song ${Math.floor(rnd() * 12)}`,
+        mbid: rnd() < 0.2 ? `mbid-${Math.floor(rnd() * 5)}` : null,
+        vec: palette[Math.floor(rnd() * palette.length)],
+      }))));
+      if (rnd() < 0.2) { spaces.push(null); }
+    }
+    const exclude = {
+      mbids: new Set(['mbid-1', 'mbid-3']),
+      artistTitles: new Set(['artist1 song1', 'artist2 song5', 'artist4 song0']),
+      artists: new Set(['artist0', 'artist3']),
+    };
+    return { q, spaces, exclude };
+  }
+
+  test('ranks exactly like collect-sort-slice: same rows, same tie order, same counts', async () => {
+    let compared = 0;
+    for (let seed = 1; seed <= 60; seed++) {
+      const { q, spaces, exclude } = randomShelf(seed);
+      for (const newArtistsOnly of [false, true]) {
+        for (const limit of [1, 3, 8, 500]) {
+          const want = collectSortSlice(spaces, q, exclude, { newArtistsOnly, limit });
+          const got = await searchSpaces(spaces, q, { excludeSets: exclude, newArtistsOnly, limit });
+          assert.deepEqual(got, want, `seed ${seed}, limit ${limit}, newArtistsOnly ${newArtistsOnly}`);
+          compared += want.results.length;
+        }
+      }
+    }
+    assert.ok(compared > 1000, `the fixture must actually rank rows (${compared})`);
+  });
+
+  test('headroom widens the cut to ceil(limit × headroom), still in walk order', async () => {
+    const { q, spaces, exclude } = randomShelf(7);
+    const wide = collectSortSlice(spaces, q, exclude, { limit: 8 });
+    const got = await searchSpaces(spaces, q, { excludeSets: exclude, limit: 3, headroom: 2.5 });
+    assert.equal(wide.results.length, 8, 'fixture has enough novel rows');
+    assert.deepEqual(got.results, wide.results);
+  });
+
+  test('a BLOB query (any byteOffset) or a plain array searches exactly like its Float32Array', async () => {
+    const { q, spaces, exclude } = randomShelf(11);
+    const want = await searchSpaces(spaces, q, { excludeSets: exclude, limit: 10 });
+    const bytes = Buffer.from(q.buffer, q.byteOffset, q.byteLength);
+    for (const offset of [0, 1, 2, 3]) {
+      const host = Buffer.alloc(bytes.length + offset);
+      bytes.copy(host, offset);
+      const blob = host.subarray(offset);   // what a DB driver may hand back
+      assert.deepEqual(await searchSpaces(spaces, blob, { excludeSets: exclude, limit: 10 }), want, `offset ${offset}`);
+      assert.deepEqual(await searchSpaces(spaces, new Uint8Array(blob), { excludeSets: exclude, limit: 10 }), want);
+    }
+    assert.deepEqual(await searchSpaces(spaces, Array.from(q), { excludeSets: exclude, limit: 10 }), want);
+  });
+
+  test('toQueryVector: a Float32Array passes through, a torn BLOB is refused', async () => {
+    const v = new Float32Array([1, 0, 0, 0]);
+    assert.equal(toQueryVector(v), v, 'an index entry.vec is used as-is, not copied');
+    assert.throws(() => toQueryVector(Buffer.alloc(6)), TypeError);
+    assert.throws(() => toQueryVector(Buffer.alloc(0)), TypeError);
+    assert.throws(() => toQueryVector('AAAAAA=='), TypeError);
+    await assert.rejects(searchSpaces([], Buffer.alloc(7), { excludeSets: { mbids: new Set(), artistTitles: new Set(), artists: new Set() } }),
+      TypeError, 'searchSpaces rejects, never throws synchronously');
+  });
+
+  test('only spaces in the query\'s dim are searched and counted', async () => {
+    const none = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
+    const q = unit([1, 0, 0, 0, 0, 0]);
+    const good = space('a', [{ artist: 'X', title: 'One', vec: unit([0.5, 1, 0, 0, 0, 0]) }]);
+    const otherDim = space('b', [{ artist: 'Y', title: 'Two', vec: unit([1, 0, 0, 0]) }], 4);
+    const { results, searched } = await searchSpaces([null, otherDim, good], q, { excludeSets: none, limit: 5 });
+    assert.deepEqual(searched, { peers: 1, tracks: 1 });
+    assert.deepEqual(results.map((r) => r.title), ['One']);
+    assert.equal(results[0].peer.name, 'Peer a');
+  });
+
+  test('a NaN float from a corrupt snapshot neither ranks nor blocks the rows after it', async () => {
+    const none = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
+    const q = unit([1, 0, 0, 0, 0, 0]);
+    const sp = space('a', [
+      { artist: 'Bad', title: 'NaN', vec: [NaN, 0, 0, 0, 0, 0] },
+      { artist: 'A', title: 'Low', vec: unit([0.2, 1, 0, 0, 0, 0]) },
+      { artist: 'B', title: 'High', vec: unit([0.9, 0.4, 0, 0, 0, 0]) },
+      { artist: 'C', title: 'Mid', vec: unit([0.5, 0.8, 0, 0, 0, 0]) },
+    ]);
+    const { results } = await searchSpaces([sp], q, { excludeSets: none, limit: 1 });
+    assert.deepEqual(results.map((r) => r.title), ['High']);
+    const all = await searchSpaces([sp], q, { excludeSets: none, limit: 10 });
+    assert.deepEqual(all.results.map((r) => r.title), ['High', 'Mid', 'Low']);
+  });
+
+  test('seedVecs: each row names the seed it sits closest to; without them the row shape is untouched', async () => {
+    const none = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
+    const seedA = unit([1, 0, 0, 0, 0, 0]);
+    const seedB = unit([0, 0, 1, 0, 0, 0]);
+    const centroid = unit([1, 0, 1, 0, 0, 0]);
+    const sp = space('a', [
+      { artist: 'A', title: 'Near A', vec: unit([1, 0.3, 0.4, 0, 0, 0]) },
+      { artist: 'B', title: 'Near B', vec: unit([0.4, 0.3, 1, 0, 0, 0]) },
+    ]);
+    const plain = await searchSpaces([sp], centroid, { excludeSets: none, limit: 5 });
+    assert.ok(plain.results.every((r) => !('seedIndex' in r)));
+    const { results } = await searchSpaces([sp], centroid, {
+      excludeSets: none, limit: 5,
+      seedVecs: [Float32Array.from(seedA), Buffer.from(Float32Array.from(seedB).buffer), new Float32Array(4).fill(1)],
+    });
+    const byTitle = Object.fromEntries(results.map((r) => [r.title, r.seedIndex]));
+    assert.deepEqual(byTitle, { 'Near A': 0, 'Near B': 1 }, 'a seed in another dim never wins');
+    const lone = await searchSpaces([sp], centroid, { excludeSets: none, limit: 5, seedVecs: [new Float32Array(4).fill(1)] });
+    assert.ok(lone.results.every((r) => r.seedIndex === null), 'no seed shares the dim → null, not a wrong index');
+  });
+
+  test('rows that can no longer make the cut skip the novelty chain', async () => {
+    // The chain's artist+title probe runs once per row that reaches it, so
+    // a counting set measures how many rows paid for the chain.
+    let probes = 0;
+    const artistTitles = new Set();
+    const counting = { mbids: new Set(), artists: new Set(), artistTitles: { has: (k) => { probes += 1; return artistTitles.has(k); } } };
+    const q = unit([1, 0, 0, 0, 0, 0]);
+    const rows = Array.from({ length: 500 }, (_v, i) => ({
+      artist: `A${i}`, title: `T${i}`, vec: unit([0.9 - i / 1000, 0.5, 0, 0, 0, 0]),   // best first
+    }));
+    const { results } = await searchSpaces([space('a', rows)], q, { excludeSets: counting, limit: 10 });
+    assert.equal(results.length, 10);
+    assert.equal(probes, 10, 'the 490 rows below the 10th best never reach the chain');
+  });
+
+  test('the walk gives the event loop a turn between peer passes', async () => {
+    const none = { mbids: new Set(), artistTitles: new Set(), artists: new Set() };
+    const q = unit([1, 0, 0, 0, 0, 0]);
+    const row = (t) => ({ artist: t, title: t, vec: unit([0.5, 1, 0, 0, 0, 0]) });
+    let ticked = false;
+    const sawTick = [];
+    function* shelf() {
+      yield space('a', [row('one')]);
+      sawTick.push(ticked);
+      yield space('b', [row('two')]);
+      sawTick.push(ticked);
+    }
+    setImmediate(() => { ticked = true; });
+    const { searched } = await searchSpaces(shelf(), q, { excludeSets: none, limit: 5 });
+    assert.equal(searched.peers, 2);
+    assert.deepEqual(sawTick, [true, true], 'a queued setImmediate ran before the next matrix was pulled');
   });
 });
 

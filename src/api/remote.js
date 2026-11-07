@@ -1,4 +1,3 @@
-import url from 'url';
 import path from 'path';
 import fs from 'fs/promises';
 import Joi from 'joi';
@@ -58,13 +57,16 @@ export function setupAfterAuth(mstream, server) {
     try {
       let decoded;
       const allUsers = db.getAllUsers ? db.getAllUsers() : [];
+      // A request target (`/?token=…&code=…`) needs a base to parse. Not
+      // url.parse(): it is deprecated (DEP0169), and Bun 1.4.4 warns at runtime.
+      const query = new URL(info.req.url, 'http://localhost').searchParams;
       if (allUsers.length !== 0) {
-        const token = url.parse(info.req.url, true).query.token;
+        const token = query.get('token');
         if (!token) { throw new Error('Token Not Found'); }
         decoded = jwt.verify(token, config.program.secret);
       }
 
-      info.req.code = url.parse(info.req.url, true).query.code;
+      info.req.code = query.get('code');
       if (info.req.code in clients) { throw new Error('Code In Use'); }
 
       info.req.jwt = jwt.sign({

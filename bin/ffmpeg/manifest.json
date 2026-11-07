@@ -3,26 +3,26 @@
   "schema": 1,
   "btbn": {
     "repo": "BtbN/FFmpeg-Builds",
-    "tag": "autobuild-2026-09-30-13-08"
+    "tag": "autobuild-2026-10-31-12-59"
   },
   "assets": {
     "linux-x64": {
       "source": "btbn",
-      "file": "ffmpeg-N-127021-ge0c94b2d1c-linux64-gpl.tar.xz",
-      "sha256": "3a2a94e704752287833604501a79505c2319ad1d8b2f5577c63f2b1b7a6f2b66",
-      "size": 154317776
+      "file": "ffmpeg-N-128227-g4811625b5f-linux64-gpl.tar.xz",
+      "sha256": "67929be39bbb696f41d3295686597a439aeac902f61d82be660ccc1453c1fdfb",
+      "size": 157360624
     },
     "linux-arm64": {
       "source": "btbn",
-      "file": "ffmpeg-N-127021-ge0c94b2d1c-linuxarm64-gpl.tar.xz",
-      "sha256": "b1944308d6306839f6ce22095920de7e6f31f9ec901834fe1257e013d9fc3aa7",
-      "size": 129813452
+      "file": "ffmpeg-N-128227-g4811625b5f-linuxarm64-gpl.tar.xz",
+      "sha256": "9064bc53f3b268865f5a5370c9f7e98d86bbdde5820ec7f6928df2beaa1d586e",
+      "size": 132627620
     },
     "win32-x64": {
       "source": "btbn",
-      "file": "ffmpeg-N-127021-ge0c94b2d1c-win64-gpl.zip",
-      "sha256": "85c4a4636b93d681a07588ffa6f1d8f5c064d9c3fb0622066662906b6fd718a1",
-      "size": 198589424
+      "file": "ffmpeg-N-128227-g4811625b5f-win64-gpl.zip",
+      "sha256": "3a5cdb3b83dd1b62b29d946d3655a14d787e5e81d947ad68202a1a400095d2f8",
+      "size": 201662768
     },
     "darwin-x64": {
       "source": "martinriedl",

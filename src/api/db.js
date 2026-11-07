@@ -9,6 +9,7 @@ import { ALBUM_TRACK_ORDER } from '../db/track-order.js';
 import { nameKey } from '../db/name-key.js';
 import { PERFORMER_ROLES, TRACK_ROLES, PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { creditDisplay } from '../db/artist-extraction.js';
+import { parseMoods, applicableMoods, albumMoodClause, artistMoodClause, trackMoodClause, moodMatches } from './mood-filter.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -36,6 +37,13 @@ export function renderMetadataObj(row) {
       composer: creditDisplay(row.credit_composers || []) || null,
       hash: row.file_hash || null,
       album: row.album_name || null,
+      // The album's own credit (trackQuery's album_credit): its ALBUMARTIST
+      // consensus, else its primary artist — "Various Artists" on every song
+      // of a compilation, where `artist` is each song's own. The credit
+      // /db/albums lists and Discover rows carry as `albumArtist`, so a
+      // client keeps an album whole from any of its songs. Null for a song
+      // with no album. Absent from servers before 2026-10-23.
+      'album-artist': row.album_credit || null,
       track: row.track_number || null,
       disk: row.disc_number || null,
       title: row.title || null,
@@ -159,7 +167,7 @@ export function renderMetadataObj(row) {
 // under the same `metadata` key; the lite-vs-full distinction will be named
 // explicitly in the v2 API.
 export const LITE_METADATA_FIELDS = [
-  'title', 'artist', 'artist-display', 'artists', 'album', 'album-art', 'year', 'track', 'disk',
+  'title', 'artist', 'artist-display', 'artists', 'album', 'album-artist', 'album-art', 'year', 'track', 'disk',
   'duration', 'rating', 'bpm', 'musical-key', 'genres',
   'has-lyrics', 'has-synced-lyrics', 'replaygain-track',
 ];
@@ -214,6 +222,28 @@ export function libraryFilter(user, ignoreVPaths) {
   };
 }
 
+// The browse lists' optional mood filter (api/mood-filter.js) — { moods,
+// echo }. POST body only: the federation browse proxy forwards no query
+// string, and a connected server's list must filter the same way. The
+// answer carries `moods` (the echo) only while this server has scores to
+// filter by; a client shows its filters on that key. The song lists
+// (rated, recent/added) take the same filter but answer bare arrays, with
+// no room for the echo: clients show theirs on server-info's `moodFilters`.
+// A filtered song list's songs each carry their match (withMoodMatches).
+function browseMoods(req) {
+  return applicableMoods(parseMoods(req.body?.moods));
+}
+
+// A filtered song list's songs, each with `moodMatch` — 0..1, how surely
+// it fits the filter (mood-filter.js moodMatches) — in the list's own
+// order: a client's Sort by match reorders them. `songs[i]` renders
+// `ids[i]`. Unfiltered, the songs as they are.
+function withMoodMatches(moods, ids, songs) {
+  if (!moods) { return songs; }
+  const match = moodMatches(db.getDB(), moods, ids);
+  return songs.map((song, i) => ({ ...song, moodMatch: match.get(ids[i]) ?? null }));
+}
+
 // Base query: tracks joined with artists, albums, library, optionally
 // user_metadata, and (when `includeGenres` is set) a track_genres
 // aggregation.
@@ -231,6 +261,17 @@ export function libraryFilter(user, ignoreVPaths) {
 //
 // char(31) (ASCII unit separator) is the join delimiter so no legal
 // genre name can collide with it.
+//
+// `um.skip_count` rides along so callers can tell "tried and bounced"
+// (skipped, never finished) from "never heard" — the Discover page's fresh
+// filter needs it. renderMetadataObj picks its fields by name, so the
+// column never reaches the wire envelope unless a renderer asks for it.
+//
+// `album_credit` is the album's own credit (metadata 'album-artist'): its
+// ALBUMARTIST consensus, else its primary artist — `pa`, the alias every
+// album query here gives that artist, so a caller narrowing by the credit
+// (album-songs) reads it from this join. One primary-key probe per row,
+// like the artist and album joins beside it; NULL for a song with no album.
 export function trackQuery(userId, { includeGenres = false } = {}) {
   const aggJoin = includeGenres ? `
     LEFT JOIN (
@@ -242,11 +283,13 @@ export function trackQuery(userId, { includeGenres = false } = {}) {
   const aggCol = includeGenres ? ', tg_agg.genres_concat' : '';
   return `
     SELECT t.*, a.name AS artist_name, al.name AS album_name,
+           COALESCE(al.album_artist, pa.name) AS album_credit,
            l.name AS library_name,
-           um.rating, um.play_count, um.last_played${aggCol}
+           um.rating, um.play_count, um.last_played, um.skip_count${aggCol}
     FROM tracks t
     LEFT JOIN artists a ON t.artist_id = a.id
     LEFT JOIN albums al ON t.album_id = al.id
+    LEFT JOIN artists pa ON pa.id = al.artist_id
     LEFT JOIN libraries l ON t.library_id = l.id
     LEFT JOIN user_metadata um ON COALESCE(t.audio_hash, t.file_hash) = um.track_hash AND um.user_id = ${userId ? '?' : 'NULL'}${aggJoin}
   `;
@@ -519,6 +562,181 @@ export function pullMetaDataBatch(filepaths, user) {
   return result;
 }
 
+// The flow orderer's lean twin of pullMetaDataBatch (POST /api/v1/db/flow,
+// api/flow.js): the same visibility step and the same row-value IN chunks,
+// but only the tracks columns an ordering reads — no trackQuery, whose
+// user_metadata / artist / album joins would be wasted here (and a
+// federation key's user has no id to join user_metadata on anyway).
+//
+// Returns an array ALIGNED to `filepaths`: { id, hash, bpm, musicalKey,
+// artistId, albumId } per resolved path, null for a path that cannot be
+// resolved for this user. Unknown files, forbidden libraries and path
+// escapes are all the same null — the caller cannot tell them apart, so
+// neither can a client probing library names. Duplicates resolve to the
+// same row object. `hash` is the canonical audio_hash || file_hash, the key
+// the similarity index uses.
+export function resolveFlowTracks(filepaths, user) {
+  const out = new Array(filepaths.length).fill(null);
+  const d = db.getDB();
+  if (!d) { return out; }
+
+  const keyOf = (libraryId, rel) => `${libraryId} ${rel}`;
+  const pending = new Map();   // key -> { library_id, rel, idx: [input index, ...] }
+  for (let i = 0; i < filepaths.length; i++) {
+    let info;
+    try { info = vpath.getVPathInfo(filepaths[i], user); } catch (_e) { continue; }
+    const lib = db.getLibraryByName(info.vpath);
+    if (!lib) { continue; }
+    const key = keyOf(lib.id, info.relativePath);
+    const entry = pending.get(key) || { library_id: lib.id, rel: info.relativePath, idx: [] };
+    entry.idx.push(i);
+    pending.set(key, entry);
+  }
+
+  // 500 pairs per chunk = 1000 bound parameters, under SQLite's limit.
+  const entries = [...pending.values()];
+  const CHUNK = 500;
+  for (let i = 0; i < entries.length; i += CHUNK) {
+    const slice = entries.slice(i, i + CHUNK);
+    const values = slice.map(() => '(?,?)').join(',');
+    const rows = d.prepare(`
+      SELECT t.id, t.library_id, t.filepath, t.audio_hash, t.file_hash,
+             t.bpm, t.musical_key, t.artist_id, t.album_id
+        FROM tracks t
+       WHERE (t.library_id, t.filepath) IN (VALUES ${values})
+    `).all(...slice.flatMap(e => [e.library_id, e.rel]));
+    for (const row of rows) {
+      const entry = pending.get(keyOf(row.library_id, row.filepath));
+      if (!entry) { continue; }
+      const rec = {
+        id: row.id,
+        hash: row.audio_hash || row.file_hash || null,
+        bpm: row.bpm ?? null,
+        musicalKey: row.musical_key ?? null,
+        artistId: row.artist_id ?? null,
+        albumId: row.album_id ?? null,
+      };
+      for (const idx of entry.idx) { out[idx] = rec; }
+    }
+  }
+  return out;
+}
+
+// ── Album items ─────────────────────────────────────────────────────────────
+// What /db/albums and /db/artists-albums return per album: the legacy trio
+// (name, year, album_art_file) plus, since the album-API series, the credit
+// fields (album_artist, artists, compilation) and the V71 aggregates
+// (year_min, year_max, track_count, duration).
+//
+// The DISTINCT collapse over exactly (name, year, album_art_file) is a
+// client-visible contract and stays: an album with no ALBUMARTIST tag and
+// several track artists is N album rows and ONE card, and album-songs'
+// name + year match returns every fragment's tracks. So the new fields are
+// GROUP aggregates: `album_artist` is the group's single credit and null
+// when its rows disagree, `artists` is the union of the rows' 'main'
+// credits, `compilation` is true when any row is one.
+//
+// Aggregation is at ALBUM granularity: the library filter is an EXISTS
+// probe per album over idx_tracks_album, never a tracks join that GROUP BY
+// then has to fold — so the cost scales with the number of albums, not
+// tracks (the 2026-07 audit's lesson for every list route). The credit
+// names come from a second, id-chunked query like enrichRowsWithGenres,
+// not a GROUP_CONCAT whose element order SQLite does not guarantee.
+//
+// The aggregate columns are the album rows' own (the scan-end refresh over
+// ALL of an album's tracks), like `year` always was — a library filter
+// hides albums, it does not recount the ones it shows.
+//
+// The select list expects `albums al LEFT JOIN artists pa` in the FROM.
+//
+// Module-level and exported (not closures inside setup()) so other card
+// producers — the Discover page's album cards (src/discovery/taste-queries.js)
+// — build the exact /db/albums item and identity instead of a copy that
+// drifts from it.
+//
+// The credit rule is its own pair — the two aggregate columns and
+// albumCredit, which reads them — because /db/search's album hits name the
+// same card's credit without the rest of the item (src/api/search.js), and
+// a hit that opens a card must not name it differently. Each row's credit
+// is its ALBUMARTIST consensus, else its primary artist; COUNT(DISTINCT)
+// skips a row with neither, so a group of only those has no credit.
+export const ALBUM_CREDIT_COLUMNS = `
+           COUNT(DISTINCT COALESCE(al.album_artist, pa.name)) AS credit_variants,
+           MIN(COALESCE(al.album_artist, pa.name)) AS credit`;
+export function albumCredit(r) {
+  return r.credit_variants === 1 ? r.credit : null;
+}
+
+export const ALBUM_ITEM_COLUMNS = `
+           al.name, al.year, al.album_art_file,
+           GROUP_CONCAT(al.id) AS ids,${ALBUM_CREDIT_COLUMNS},
+           MAX(al.compilation) AS compilation,
+           MIN(COALESCE(al.year_min, al.year)) AS year_min,
+           MAX(COALESCE(al.year_max, al.year)) AS year_max,
+           SUM(al.track_count) AS track_count,
+           SUM(al.duration_total) AS duration_total`;
+export const ALBUM_ITEM_GROUP = 'GROUP BY al.name, al.year, al.album_art_file';
+
+// The 'main' album credits of a set of album ids, in tag order, plus each
+// row's primary artist as the fallback for rows without credits (legacy
+// and fixture rows — both scanners write a credit for every album they
+// touch). One query per id chunk; ORDER BY names the compound's columns.
+export function fetchAlbumCredits(d, ids) {
+  const out = new Map();
+  if (ids.length === 0) { return out; }
+  const ph = ids.map(() => '?').join(',');
+  const rows = d.prepare(`
+    SELECT aa.album_id AS album_id, a.name AS name, aa.position AS position, 0 AS fallback
+      FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
+     WHERE aa.role = 'main' AND aa.album_id IN (${ph})
+    UNION ALL
+    SELECT al.id, pa.name, 0, 1
+      FROM albums al JOIN artists pa ON pa.id = al.artist_id
+     WHERE al.id IN (${ph})
+     ORDER BY album_id, fallback, position, name COLLATE NOCASE
+  `).all(...ids, ...ids);
+  for (const r of rows) {
+    let e = out.get(r.album_id);
+    if (!e) { e = { credits: [], fallback: [] }; out.set(r.album_id, e); }
+    (r.fallback ? e.fallback : e.credits).push(r.name);
+  }
+  return out;
+}
+
+// ALBUM_ITEM_COLUMNS rows → wire items, in row order. A group's `artists`
+// walks its rows by id (deterministic across plans) and de-duplicates.
+export function albumItems(d, rows) {
+  const idsOf = (r) => String(r.ids).split(',').map(Number).sort((x, y) => x - y);
+  const all = [...new Set(rows.flatMap(idsOf))];
+  const credits = new Map();
+  const CHUNK = 500;
+  for (let i = 0; i < all.length; i += CHUNK) {
+    for (const [id, c] of fetchAlbumCredits(d, all.slice(i, i + CHUNK))) { credits.set(id, c); }
+  }
+  return rows.map((r) => {
+    const names = [];
+    for (const id of idsOf(r)) {
+      const c = credits.get(id);
+      if (!c) { continue; }
+      for (const n of (c.credits.length ? c.credits : c.fallback)) {
+        if (!names.includes(n)) { names.push(n); }
+      }
+    }
+    return {
+      name: r.name,
+      year: r.year,
+      album_art_file: r.album_art_file || null,
+      album_artist: albumCredit(r),
+      artists: names,
+      compilation: Number(r.compilation) > 0,
+      year_min: r.year_min ?? null,
+      year_max: r.year_max ?? null,
+      track_count: r.track_count ?? 0,
+      duration: r.duration_total ?? 0,
+    };
+  });
+}
+
 // ── Route setup ─────────────────────────────────────────────────────────────
 
 export function setup(mstream) {
@@ -597,15 +815,21 @@ export function setup(mstream) {
     const orderBy = sortMode === 'order'
       ? 'COALESCE(a.order_name, a.name) COLLATE NOCASE, a.name COLLATE NOCASE'
       : 'a.name COLLATE NOCASE';
+    // Optional mood filter (api/mood-filter.js): artists most of whose
+    // songs — as the track's primary artist — match, whichever roles
+    // `include` lists them by.
+    const { moods, echo } = browseMoods(req);
+    const mood = moods ? artistMoodClause(moods, filter) : null;
+    const answer = (rows) => ({ artists: rows.map(r => r.name), ...(echo && { moods: echo }) });
     if (include.length === 0) {
       const rows = d().prepare(`
         SELECT DISTINCT a.name
         FROM artists a
         JOIN tracks t ON t.artist_id = a.id
-        WHERE ${filter.clause}
+        WHERE ${filter.clause}${mood ? ` AND ${mood.sql}` : ''}
         ORDER BY ${orderBy}
-      `).all(...filter.params);
-      return { artists: rows.map(r => r.name) };
+      `).all(...filter.params, ...(mood ? mood.params : []));
+      return answer(rows);
     }
 
     // Widened: a UNION of index-driven artist-id sets, one per source, each
@@ -627,114 +851,17 @@ export function setup(mstream) {
                      WHERE aa.album_id IN (SELECT t.album_id FROM tracks t WHERE ${filter.clause})`);
       params.push(...filter.params);
     }
+    if (mood) { params.push(...mood.params); }
     const rows = d().prepare(`
       SELECT a.name FROM artists a
-      WHERE a.id IN (${sources.join('\n             UNION\n             ')})
+      WHERE a.id IN (${sources.join('\n             UNION\n             ')})${mood ? `\n        AND ${mood.sql}` : ''}
       ORDER BY ${orderBy}
     `).all(...params);
-    return { artists: rows.map(r => r.name) };
+    return answer(rows);
   }
 
   mstream.get('/api/v1/db/artists', (req, res) => res.json(getArtists(req)));
   mstream.post('/api/v1/db/artists', (req, res) => res.json(getArtists(req)));
-
-  // ── Album items ─────────────────────────────────────────────────────────
-  // What /db/albums and /db/artists-albums return per album: the legacy trio
-  // (name, year, album_art_file) plus, since the album-API series, the credit
-  // fields (album_artist, artists, compilation) and the V71 aggregates
-  // (year_min, year_max, track_count, duration).
-  //
-  // The DISTINCT collapse over exactly (name, year, album_art_file) is a
-  // client-visible contract and stays: an album with no ALBUMARTIST tag and
-  // several track artists is N album rows and ONE card, and album-songs'
-  // name + year match returns every fragment's tracks. So the new fields are
-  // GROUP aggregates: `album_artist` is the group's single credit and null
-  // when its rows disagree, `artists` is the union of the rows' 'main'
-  // credits, `compilation` is true when any row is one.
-  //
-  // Aggregation is at ALBUM granularity: the library filter is an EXISTS
-  // probe per album over idx_tracks_album, never a tracks join that GROUP BY
-  // then has to fold — so the cost scales with the number of albums, not
-  // tracks (the 2026-07 audit's lesson for every list route). The credit
-  // names come from a second, id-chunked query like enrichRowsWithGenres,
-  // not a GROUP_CONCAT whose element order SQLite does not guarantee.
-  //
-  // The aggregate columns are the album rows' own (the scan-end refresh over
-  // ALL of an album's tracks), like `year` always was — a library filter
-  // hides albums, it does not recount the ones it shows.
-  //
-  // The select list expects `albums al LEFT JOIN artists pa` in the FROM.
-  const ALBUM_ITEM_COLUMNS = `
-             al.name, al.year, al.album_art_file,
-             GROUP_CONCAT(al.id) AS ids,
-             COUNT(DISTINCT COALESCE(al.album_artist, pa.name)) AS credit_variants,
-             MIN(COALESCE(al.album_artist, pa.name)) AS credit,
-             MAX(al.compilation) AS compilation,
-             MIN(COALESCE(al.year_min, al.year)) AS year_min,
-             MAX(COALESCE(al.year_max, al.year)) AS year_max,
-             SUM(al.track_count) AS track_count,
-             SUM(al.duration_total) AS duration_total`;
-  const ALBUM_ITEM_GROUP = 'GROUP BY al.name, al.year, al.album_art_file';
-
-  // The 'main' album credits of a set of album ids, in tag order, plus each
-  // row's primary artist as the fallback for rows without credits (legacy
-  // and fixture rows — both scanners write a credit for every album they
-  // touch). One query per id chunk; ORDER BY names the compound's columns.
-  function fetchAlbumCredits(d, ids) {
-    const out = new Map();
-    if (ids.length === 0) { return out; }
-    const ph = ids.map(() => '?').join(',');
-    const rows = d.prepare(`
-      SELECT aa.album_id AS album_id, a.name AS name, aa.position AS position, 0 AS fallback
-        FROM album_artists aa JOIN artists a ON a.id = aa.artist_id
-       WHERE aa.role = 'main' AND aa.album_id IN (${ph})
-      UNION ALL
-      SELECT al.id, pa.name, 0, 1
-        FROM albums al JOIN artists pa ON pa.id = al.artist_id
-       WHERE al.id IN (${ph})
-       ORDER BY album_id, fallback, position, name COLLATE NOCASE
-    `).all(...ids, ...ids);
-    for (const r of rows) {
-      let e = out.get(r.album_id);
-      if (!e) { e = { credits: [], fallback: [] }; out.set(r.album_id, e); }
-      (r.fallback ? e.fallback : e.credits).push(r.name);
-    }
-    return out;
-  }
-
-  // ALBUM_ITEM_SELECT rows → wire items, in row order. A group's `artists`
-  // walks its rows by id (deterministic across plans) and de-duplicates.
-  function albumItems(d, rows) {
-    const idsOf = (r) => String(r.ids).split(',').map(Number).sort((x, y) => x - y);
-    const all = [...new Set(rows.flatMap(idsOf))];
-    const credits = new Map();
-    const CHUNK = 500;
-    for (let i = 0; i < all.length; i += CHUNK) {
-      for (const [id, c] of fetchAlbumCredits(d, all.slice(i, i + CHUNK))) { credits.set(id, c); }
-    }
-    return rows.map((r) => {
-      const names = [];
-      for (const id of idsOf(r)) {
-        const c = credits.get(id);
-        if (!c) { continue; }
-        for (const n of (c.credits.length ? c.credits : c.fallback)) {
-          if (!names.includes(n)) { names.push(n); }
-        }
-      }
-      return {
-        name: r.name,
-        year: r.year,
-        album_art_file: r.album_art_file || null,
-        album_artist: r.credit_variants === 1 ? r.credit : null,
-        artists: names,
-        compilation: Number(r.compilation) > 0,
-        year_min: r.year_min ?? null,
-        year_max: r.year_max ?? null,
-        track_count: r.track_count ?? 0,
-        duration: r.duration_total ?? 0,
-      };
-    });
-  }
 
   // ── Artist Albums ───────────────────────────────────────────────────────
 
@@ -858,6 +985,10 @@ export function setup(mstream) {
 
   function getAlbums(req) {
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
+    // Optional mood filter (api/mood-filter.js): albums most of whose
+    // songs match.
+    const { moods, echo } = browseMoods(req);
+    const mood = moods ? albumMoodClause(moods, filter) : null;
     // `, al.year DESC, al.album_art_file` pins the order among same-name
     // albums, which `ORDER BY al.name` alone left to the plan (the rewrite
     // changed the plan, and the UI renders response order — see the
@@ -867,12 +998,13 @@ export function setup(mstream) {
       SELECT ${ALBUM_ITEM_COLUMNS}
       FROM albums al
       LEFT JOIN artists pa ON pa.id = al.artist_id
-      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})
+      WHERE EXISTS (SELECT 1 FROM tracks t WHERE t.album_id = al.id AND ${filter.clause})${mood ? `
+        AND ${mood.sql}` : ''}
       ${ALBUM_ITEM_GROUP}
       ORDER BY al.name COLLATE NOCASE, al.year DESC, al.album_art_file
-    `).all(...filter.params);
+    `).all(...filter.params, ...(mood ? mood.params : []));
 
-    return { albums: albumItems(d(), rows) };
+    return { albums: albumItems(d(), rows), ...(echo && { moods: echo }) };
   }
 
   mstream.get('/api/v1/db/albums', (req, res) => res.json(getAlbums(req)));
@@ -880,7 +1012,18 @@ export function setup(mstream) {
 
   // ── Genres ──────────────────────────────────────────────────────────────
 
+  // Where a genre link came from (V79 track_genres.source): 'tag' — the
+  // file's own tags; 'model' — the discovery model's styles
+  // (src/db/genre-sync.js). Optional on both genre routes; omitted, every
+  // link counts, as before. Validated alone: neither route rejects fields
+  // it does not know (federated peers and the Flutter app send their own).
+  const genreSourceSchema = Joi.object({
+    source: Joi.string().valid('tag', 'model').optional(),
+  }).unknown(true);
+
   function getGenres(req) {
+    // GET carries it in the query string, POST in the body.
+    const { value: { source } } = joiValidate(genreSourceSchema, { source: req.body?.source ?? req.query?.source });
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
 
     // Same no-op shortcut as recent/added: with every library visible the
@@ -889,27 +1032,51 @@ export function setup(mstream) {
     // Equivalent because track_genres is PRIMARY KEY (track_id, genre_id) —
     // no duplicate pairs, so COUNT(*) per genre IS COUNT(DISTINCT track_id) —
     // and track_id is a CASCADE foreign key, so there are no orphan rows to
-    // over-count. DISTINCT is kept for the same reason the original had it:
-    // legacy data can hold two vocabulary rows with the same name.
+    // over-count.
+    //
+    // One pass per genre AND source: the requested source's list and the
+    // per-source totals both fall out of it. A track links a genre once
+    // (that primary key again), so a genre's sources add up to its count.
     const rows = filter.coversAllLibraries
       ? d().prepare(`
-          SELECT DISTINCT g.name, COUNT(*) AS track_count
+          SELECT g.id, g.name, tg.source, COUNT(*) AS track_count
           FROM track_genres tg
           JOIN genres g ON g.id = tg.genre_id
-          GROUP BY g.id
-          ORDER BY g.name COLLATE NOCASE
+          GROUP BY g.id, tg.source
+          ORDER BY g.name COLLATE NOCASE, g.id
         `).all()
       : d().prepare(`
-          SELECT DISTINCT g.name, COUNT(DISTINCT t.id) AS track_count
+          SELECT g.id, g.name, tg.source, COUNT(DISTINCT t.id) AS track_count
           FROM genres g
           JOIN track_genres tg ON tg.genre_id = g.id
           JOIN tracks t ON t.id = tg.track_id
           WHERE ${filter.clause}
-          GROUP BY g.id
-          ORDER BY g.name COLLATE NOCASE
+          GROUP BY g.id, tg.source
+          ORDER BY g.name COLLATE NOCASE, g.id
         `).all(...filter.params);
 
-    return { genres: rows.map(r => ({ name: r.name, track_count: r.track_count })) };
+    const byGenre = new Map();   // genre id → { name, track_count }, name order
+    const perSource = { tag: new Set(), model: new Set() };
+    for (const r of rows) {
+      perSource[r.source]?.add(r.id);
+      if (source && r.source !== source) { continue; }
+      const g = byGenre.get(r.id);
+      if (g) { g.track_count += r.track_count; } else { byGenre.set(r.id, { name: r.name, track_count: r.track_count }); }
+    }
+
+    // The original's DISTINCT, kept: legacy data can hold two vocabulary
+    // rows with the same name, and identical name + count pairs collapse.
+    const seen = new Set();
+    const genres = [...byGenre.values()].filter((g) => {
+      const key = `${g.name}\u0000${g.track_count}`;
+      if (seen.has(key)) { return false; }
+      seen.add(key);
+      return true;
+    });
+
+    // How many genres each source has here, whatever was asked for — what
+    // tells a client whether there is a choice to offer.
+    return { genres, sources: { tag: perSource.tag.size, model: perSource.model.size } };
   }
 
   mstream.get('/api/v1/db/genres', (req, res) => res.json(getGenres(req)));
@@ -930,11 +1097,14 @@ export function setup(mstream) {
     // federated peers — see federation-auth's allow-list). Rejecting fields
     // that used to be ignored would be a breaking change smuggled into a
     // perf PR. The new paging fields are still validated.
+    // `source` ('tag' | 'model') keeps only songs linked to the genre that
+    // way — the genre list's choice, carried into the genre.
     const schema = Joi.object({
       genre: Joi.string().required(),
       limit: Joi.number().integer().min(1).max(10000).optional(),
       offset: Joi.number().integer().min(0).optional(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      source: Joi.string().valid('tag', 'model').optional(),
     }).unknown(true);
     // Use the COERCED value, not req.body: Joi turns `limit: "50"` into a
     // number, and binding a string into LIMIT would be a different query.
@@ -957,9 +1127,11 @@ export function setup(mstream) {
       .all(String(req.body.genre)).map((r) => r.id);
     if (genreIds.length === 0) { return res.json([]); }
     const idPh = genreIds.map(() => '?').join(',');
+    const sourceSql = query.source ? 'AND tg.source = ?' : '';
+    const joinParams = query.source ? [...genreIds, query.source] : genreIds;
     const allParams = req.user?.id
-      ? [req.user.id, ...genreIds, ...filter.params]
-      : [...genreIds, ...filter.params];
+      ? [req.user.id, ...joinParams, ...filter.params]
+      : [...joinParams, ...filter.params];
 
     // SQLite treats LIMIT -1 as "no limit", and OFFSET is meaningless without
     // one — so the unpaged call keeps exactly its old plan and result.
@@ -970,7 +1142,7 @@ export function setup(mstream) {
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
-      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh})
+      JOIN track_genres tg ON tg.track_id = t.id AND tg.genre_id IN (${idPh}) ${sourceSql}
       WHERE ${filter.clause}
       ORDER BY a.name COLLATE NOCASE, al.name COLLATE NOCASE, ${ALBUM_TRACK_ORDER}
       ${pageSql}
@@ -1023,12 +1195,11 @@ export function setup(mstream) {
     // credit's key, or the display string verbatim (a joined "A & B" tag has
     // no artist row of its own). The singles bucket has no album to credit:
     // there the album artist IS the track artist, matched like `artist`.
+    // `pa`, the album's primary artist, is trackQuery's own join.
     const albumArtist = typeof req.body.album_artist === 'string' ? req.body.album_artist.trim() : '';
-    let albumArtistJoin = '';
     if (albumArtist) {
       const key = nameKey(albumArtist);
       if (req.body.album) {
-        albumArtistJoin = 'LEFT JOIN artists pa ON pa.id = al.artist_id';
         conditions.push(`(pa.name_key = ? OR COALESCE(al.album_artist, pa.name) = ? OR al.id IN (
           SELECT aa.album_id FROM album_artists aa
            WHERE aa.role = 'main'
@@ -1068,7 +1239,6 @@ export function setup(mstream) {
 
     const rows = d().prepare(`
       ${trackQuery(req.user?.id, { includeGenres: false })}
-      ${albumArtistJoin}
       WHERE ${conditions.join(' AND ')}
       ORDER BY ${ALBUM_TRACK_ORDER}, t.filepath
     `).all(...allParams);
@@ -1092,7 +1262,7 @@ export function setup(mstream) {
   // trackQuery path search uses (renderMetadataByIds), so the response shape
   // stays identical to the old queries — and picks up future metadata fields
   // automatically.
-  function userStatRows(user, statColumn, statFilter, filter, limit) {
+  function userStatRows(user, statColumn, statFilter, filter, limit, moods = null) {
     // The natural OR-form hash join (audio_hash = h OR file_hash = h) is a
     // trap here: without ANALYZE stats the planner serves it — and the
     // pushed-down library filter — from idx_tracks_library, i.e. a whole-
@@ -1101,7 +1271,8 @@ export function setup(mstream) {
     // which together reproduce COALESCE(audio_hash, file_hash) = track_hash
     // exactly), each pinned to its hash index with INDEXED BY, inside a
     // MATERIALIZED CTE so the library filter cannot be pushed back down.
-    // The filter then runs over the handful of resolved rows. INDEXED BY is
+    // The filter (and a mood filter's one track_moods probe per row) then
+    // runs over the handful of resolved rows. INDEXED BY is
     // deliberate: if a migration ever drops either hash index this query
     // errors loudly instead of silently regressing to a scan (the
     // db-stats integration test asserts the plan).
@@ -1121,22 +1292,26 @@ export function setup(mstream) {
       )
       SELECT t.id
       FROM resolved t
-      WHERE ${filter.clause}
+      WHERE ${filter.clause}${moods ? ` AND ${trackMoodClause(moods)}` : ''}
       ORDER BY t.stat DESC${limit != null ? '\n      LIMIT ?' : ''}
     `;
     const params = [user.id, ...filter.params];
     if (limit != null) { params.push(limit); }
     const ids = d().prepare(sql).all(...params).map(r => r.id);
     const rendered = renderMetadataByIds(ids, user);
-    return ids.map((id) => rendered.get(id)).filter(Boolean);
+    // A row that vanished since the query is dropped, its id with it.
+    const kept = ids.filter((id) => rendered.has(id));
+    return withMoodMatches(moods, kept, kept.map((id) => rendered.get(id)));
   }
 
   // ── Rated Songs ─────────────────────────────────────────────────────────
 
+  // POST takes the browse lists' optional `moods` filter (browseMoods).
   function getRatedSongs(req) {
+    const { moods } = browseMoods(req);
     if (!req.user?.id) { return []; }
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
-    return userStatRows(req.user, 'rating', 'rating > 0', filter, null);
+    return userStatRows(req.user, 'rating', 'rating > 0', filter, null, moods);
   }
 
   mstream.get('/api/v1/db/rated', (req, res) => res.json(getRatedSongs(req)));
@@ -1180,17 +1355,27 @@ export function setup(mstream) {
   mstream.post('/api/v1/db/recent/added', (req, res) => {
     const schema = Joi.object({
       limit: Joi.number().integer().min(1).required(),
-      ignoreVPaths: Joi.array().items(Joi.string()).optional()
+      ignoreVPaths: Joi.array().items(Joi.string()).optional(),
+      // The browse lists' optional mood filter, validated by browseMoods.
+      moods: Joi.any()
     });
     joiValidate(schema, req.body);
+    const { moods } = browseMoods(req);
 
     const filter = libraryFilter(req.user, req.body?.ignoreVPaths);
     // With every library visible the scope clause excludes nothing, and
     // dropping it is what lets SQLite walk idx_tracks_created_at and stop at
     // LIMIT — otherwise it probes idx_tracks_library for the entire visible
     // set and sorts that in a temp b-tree (45.6 ms → 0.2 ms at 25k tracks).
-    // See libraryFilter for why this is gated on the no-op case only.
-    const scopeSql = filter.coversAllLibraries ? '' : `WHERE ${filter.clause}`;
+    // See libraryFilter for why this is gated on the no-op case only. A mood
+    // filter keeps that walk: one track_moods probe per row until LIMIT
+    // songs match — the newest `limit` matching songs, not a filtered
+    // slice of the newest `limit`.
+    const where = [
+      ...(filter.coversAllLibraries ? [] : [filter.clause]),
+      ...(moods ? [trackMoodClause(moods)] : []),
+    ];
+    const scopeSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
     const scopeParams = filter.coversAllLibraries ? [] : filter.params;
     const allParams = req.user?.id ? [req.user.id, ...scopeParams] : scopeParams;
 
@@ -1201,7 +1386,7 @@ export function setup(mstream) {
       LIMIT ?
     `).all(...allParams, req.body.limit);
 
-    res.json(enrichRows(d(), rows).map(renderMetadataObj));
+    res.json(withMoodMatches(moods, rows.map((r) => r.id), enrichRows(d(), rows).map(renderMetadataObj)));
   });
 
   // ── Recently Played ─────────────────────────────────────────────────────

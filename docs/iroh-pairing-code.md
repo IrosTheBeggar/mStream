@@ -104,9 +104,24 @@ Same for every pairing-code version:
    - `"NO"` or the stream/connection closing → rejected (wrong/rotated secret).
    The server compares the secret in constant time.
 4. **Tunnel:** thereafter, **one bi-stream == one TCP connection** to the server's
-   local HTTP port. Plain HTTP rides the pipe (range/seek, keep-alive, parallel
-   requests all work). Clients typically run a local TCP listener and open a fresh
-   bi-stream per inbound connection.
+   loopback bridge listener (plain HTTP on `127.0.0.1`, whatever address and SSL
+   setting the server's own web port has). Plain HTTP rides the pipe (range/seek,
+   keep-alive, parallel requests all work). Clients typically run a local TCP
+   listener and open a fresh bi-stream per inbound connection.
+   The server drops a `__lt` query parameter from each request that comes
+   through its bridge listener before it reaches the web app (the mstream_music
+   app tags every URL with `__lt=<token>` for its loopback proxy,
+   mstream-iroh-tunnel, which checks the first request line of each connection
+   and forwards the bytes as sent); the rest of the URL passes through
+   untouched. A redirect the web app builds from the request URL therefore
+   carries no `__lt`, and streams that fall back to the public port keep it.
+   A machine where something resets loopback TCP connections (security
+   software, a VPN kill switch) refuses that connect; the server then bridges
+   over a local socket instead — a named pipe under Node on Windows, a socket
+   file elsewhere — and keeps doing so for the process. `MSTREAM_BRIDGE=socket`
+   forces the socket from the start, `MSTREAM_BRIDGE=loopback` disables the
+   fallback, `MSTREAM_IROH_TRACE=1` logs every bridge connect, and the admin
+   panel's Quick Connect card says when the local socket is in use.
 5. **(v2 only, proposed)** Over the tunnel, exchange `c` for a real session token —
    `POST /api/v1/auth/pair { code: c }` → returns the standard mStream JWT — then
    the server marks `c` used. From then on the client authenticates like any other

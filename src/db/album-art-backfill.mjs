@@ -118,7 +118,8 @@ if (validationError) {
 // ── Open SQLite database ─────────────────────────────────────────────────────
 
 const db = new DatabaseSync(cfg.dbPath);
-db.exec('PRAGMA journal_mode = WAL');
+// No journal_mode here: the server sets it on the database header and this
+// connection inherits it (src/db/journal-mode.js).
 db.exec('PRAGMA foreign_keys = ON');
 db.exec('PRAGMA busy_timeout = 5000');
 

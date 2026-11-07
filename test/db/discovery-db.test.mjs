@@ -447,14 +447,20 @@ describe('discovery db V3 catalogue fields', () => {
     closeDiscoveryDb();
     initDiscoveryDb(v2Path);
     const db = getDiscoveryDb();
-    assert.equal(db.prepare('PRAGMA user_version').get().user_version, 3);
+    assert.equal(db.prepare('PRAGMA user_version').get().user_version, DISCOVERY_SCHEMA_VERSION);
     const cols = db.prepare('PRAGMA table_info(discovery_tracks)').all().map(c => c.name);
     for (const c of ['album', 'year', 'isrc', 'release_group_mbid']) { assert.ok(cols.includes(c), c); }
+    // V4: the mood columns, and the coverage index widened to the mood pin.
+    for (const c of ['mood_scores', 'mood_version']) { assert.ok(cols.includes(c), c); }
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map(r => r.name);
+    assert.ok(indexes.includes('idx_discovery_tracks_embedded_model_mood'));
+    assert.ok(!indexes.includes('idx_discovery_tracks_embedded_model'), 'its prefix is gone');
     const rows = db.prepare('SELECT * FROM discovery_tracks ORDER BY audio_hash').all();
     assert.equal(rows.length, 2);
     assert.equal(rows[0].artist, 'Old Artist');
     assert.deepEqual(blobToFloats(rows[0].embedding), [1, 0, 0, 0]);
     assert.equal(rows[0].album, null, 'migration adds the column, it does not invent data');
+    assert.equal(rows[0].mood_version, null, 'old rows wait for the mood re-pass');
     assert.equal(getMeta('row_seq'), '7', 'meta untouched by the migration');
     assert.equal(getMeta('export_salt'), 'a'.repeat(64), 'the salt must never rotate');
   });
@@ -497,5 +503,42 @@ describe('discovery db V3 catalogue fields', () => {
     } finally {
       db.exec('DETACH DATABASE lib');
     }
+  });
+});
+
+describe('discovery db V4 mood columns', () => {
+  let dir;
+
+  before(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-discovery-v4-'));
+    closeDiscoveryDb();
+    initDiscoveryDb(path.join(dir, 'discovery.db'));
+  });
+
+  after(() => {
+    closeDiscoveryDb();
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('mood scores and pin round-trip; a write without them clears them', () => {
+    upsertDiscoveryTrack({
+      audioHash: 'mood-hash', artist: 'A', title: 'T',
+      moodScores: { danceable: 0.81, happy: 0.12 }, moodVersion: '1',
+      danceability: 0.81, moodTags: ['danceable'],
+    });
+    const db = getDiscoveryDb();
+    let row = db.prepare('SELECT * FROM discovery_tracks WHERE audio_hash = ?').get('mood-hash');
+    assert.deepEqual(JSON.parse(row.mood_scores), { danceable: 0.81, happy: 0.12 });
+    assert.equal(row.mood_version, '1');
+    assert.equal(row.danceability, 0.81);
+    assert.deepEqual(JSON.parse(row.mood_tags), ['danceable']);
+
+    // Moods off for a later write: the single write path stores NULL for
+    // what it isn't given, so the row stops claiming the pin.
+    upsertDiscoveryTrack({ audioHash: 'mood-hash', artist: 'A', title: 'T' });
+    row = db.prepare('SELECT * FROM discovery_tracks WHERE audio_hash = ?').get('mood-hash');
+    assert.equal(row.mood_scores, null);
+    assert.equal(row.mood_version, null);
+    assert.equal(row.danceability, null);
   });
 });

@@ -35,8 +35,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const M_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8');
-const VP_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'vp.js'), 'utf8');
+const M_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'm.js'), 'utf8').replace(/\r\n/g, '\n');
+const VP_SRC = fs.readFileSync(path.resolve(__dirname, '..', '..', 'webapp', 'alpha', 'vp.js'), 'utf8').replace(/\r\n/g, '\n');
 
 // ── source slicing ──────────────────────────────────────────────────
 // Same brace-match as webapp-local-search: from a top-level
@@ -88,9 +88,21 @@ const HELPERS = ['escapeHtml', 'peerAttr', 'peerOf', 'browseApi', 'localIgnoreVP
 const RENDERERS = ['renderFileWithMetadataHtml', 'createMusicFileHtml', 'renderDirHtml',
   'createFileplaylistHtml', 'renderSearchResults', 'renderSearchRow'];
 
-const PANELS = ['setBrowserRootPanel', 'getFileExplorerPath', 'printdir', 'onPlaylistClick',
+const PANELS = ['setBrowserRootPanel', 'discoveryHideHead', 'hideMoodFilters', 'moodLevel', 'moodFilterBody', 'showMoodFilters', 'songListMoods', 'moodSorted',
+  'getFileExplorerPath', 'printdir', 'onPlaylistClick',
   'getGenreSongs', 'getAlbumSongs', 'getRatedSongs', 'redoRecentlyPlayed', 'redoMostPlayed',
   'redoRecentlyAdded', 'runLocalSearch', 'setupSearchPanel', 'federatedSearchOffered'];
+
+// Keep a copy's half of the browse pages (m.js keepGate* / browseKeep* /
+// browseHead* …): the renderers and panels call it; with its gate never
+// read it draws nothing and asks nothing.
+const KEEP_FNS = [...M_SRC.matchAll(/^(?:async )?function ((?:keepGate|browseKeep|browseHead|browseAlbum|browseArtist|browseFolder)\w*|writeReadOnlyNote)\(/gm)].map((m) => m[1]);
+const keepState = () => `${['keepGate', 'browseKeep', 'BROWSE_KEEP_ICONS'].map(sliceConst).join('\n')}
+    let keepGatePending = null;
+    let keepGateAsk = 0;
+    let browseKeepQueued = null;
+    const discoveryView = { flags: { discoveryPlugins: false } };
+    ${KEEP_FNS.map(sliceFn).join('\n\n')}`;
 
 // addAll's own helper is sliced when m.js has one, so this suite runs the
 // same behavioural assertions against any m.js — one that inlines it, or
@@ -198,6 +210,8 @@ function makeSandbox(api, { server = {}, livePlaylist = null } = {}) {
     const searchToggles = { albums: true, artists: true, files: false, titles: true, lyrics: true, federated: false };
     ${sliceConst('entityMap')}
     ${sliceConst('searchMap')}
+    ${sliceConst('MOODS')}
+    ${keepState()}
     ${HELPERS.map(sliceFn).join('\n\n')}
     ${RENDERERS.map(sliceFn).join('\n\n')}
     ${PANELS.map(sliceFn).join('\n\n')}

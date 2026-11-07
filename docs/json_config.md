@@ -80,6 +80,25 @@ A heavily edited config would look like:
 
 Defaults to 3000 if not set
 
+## Address
+
+The address the web server listens on. Defaults to `::`, every interface
+(IPv4 too, on a dual-stack host). Set one IP to listen on that interface
+alone: `127.0.0.1` behind a reverse proxy on the same machine, or a LAN
+address.
+
+```json
+  "address": "192.168.1.20"
+```
+
+Quick Connect and federation do not depend on it: they reach the web server
+through a listener of their own on `127.0.0.1` (a random port, plain HTTP;
+the iroh connection around it is end-to-end encrypted), whatever `address`
+and `ssl` are set to. mStream opens that listener the first time either
+feature starts and keeps it until it exits. Programs on this machine can
+reach the web server there too, as they can at the default address, and an
+`adminAccess.mode` of `localhost` treats them as local.
+
 ## Folders
 
 Folders are set by key value pairs.  The key is used later to give access to folders on a per user basis.  (more info in the users section)
@@ -254,6 +273,8 @@ mStream comes with SSL support built in.  Just add your key and cert and the ser
   }
 ```
 
+Quick Connect and federation keep working with SSL on (see [Address](#address)).
+
 ## Disable Uploading
 
 ```
@@ -322,6 +343,18 @@ The `albumArtDirectory` will be publicly available
     "albumArtDirectory": "/media/album-art",
     "dbDirectory": "/media/db",
     "logsDirectory": "/media/logs"
+  }
+}
+```
+
+The database in `dbDirectory` is shared by several mStream processes (the server, the scanner and the background workers), so its filesystem has to keep their file locks apart. Local disks and Docker named volumes do. On Linux, including inside Docker containers, mStream checks any other filesystem at boot. Where a lock taken by one process can be invisible to another, as on Docker Desktop bind mounts from macOS, it switches SQLite from WAL to the slower DELETE journal and logs why. Native macOS and Windows installs aren't checked. For full speed, keep `dbDirectory` on a local disk or a Docker named volume.
+
+`db.journalMode` skips that check: `"WAL"` or `"DELETE"` (default `"auto"`).
+
+```json
+{
+  "db": {
+    "journalMode": "DELETE"
   }
 }
 ```

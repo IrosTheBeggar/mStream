@@ -34,10 +34,22 @@ export function setup(mstream) {
       // The batched owned lookup (POST /api/v1/discovery/owned) — same
       // flag on /api/; the peer browse gates its marks on it.
       discoveryOwned: features.discoveryOwned,
+      // The Discover page's generation (POST /api/v1/discovery/taste) — same
+      // fact /api/ carries under features; ping lists keys by hand, so a
+      // new capability must be added here too (the drift-lock test checks).
+      discoveryTaste: features.discoveryTaste,
+      // Mood scores to filter by, right now (api/mood-filter.js) — the
+      // Discover page's and the song lists' filters gate on it; same flag
+      // on /api/.
+      moodFilters: features.moodFilters,
       // Stats API v2 version — the same fact /api/ carries under features.
       stats: features.stats,
       // Library sync manifest route — same fact, same place on /api/.
       sync: features.sync,
+      // Flow ordering (POST /api/v1/db/flow) generation — same fact /api/
+      // carries under features; ping lists keys by hand, so it is added
+      // here too (the drift-lock test checks).
+      flowOrder: features.flowOrder,
       // The server's stable id — the same value /api/ carries at its top
       // level, beside the version.
       instanceId: serverInstanceId(),

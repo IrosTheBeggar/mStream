@@ -125,13 +125,13 @@ export function setup(mstream) {
 
     handle.done.then(async ({ filePath: staged, warning }) => {
       if (warning) { winston.warn(`yt-dlp exited unhappily but left a file (${warning}) — carrying on with ${staged}`); }
-      if (ytdlp.FFMPEG_THUMBNAIL_CODECS.includes(codec)) {
-        const info = await ytdlp.lookupMetadata(value.url, { bin }).catch(() => ({}));
-        await ytdlp.embedThumbnailIfMissing(staged, { codec, thumbnailUrl: info.thumbnail, ffmpegPath });
-      }
-      // User-submitted metadata + the MSTREAM_SOURCE provenance marker,
-      // then the row the way a scan would write it. V36: source = 'ytdl'.
-      await ytdlp.writeTags(staged, { codec, meta: userMeta, source: 'ytdl', ffmpegPath });
+      // User-submitted metadata + the MSTREAM_SOURCE provenance marker, then
+      // the cover yt-dlp could not embed (writeTagsAndCover says why in that
+      // order), then the row the way a scan would write it. V36: source = 'ytdl'.
+      const info = ytdlp.FFMPEG_THUMBNAIL_CODECS.includes(codec)
+        ? await ytdlp.lookupMetadata(value.url, { bin }).catch(() => ({}))
+        : {};
+      await ytdlp.writeTagsAndCover(staged, { codec, meta: userMeta, source: 'ytdl', thumbnailUrl: info.thumbnail, ffmpegPath });
       const filePath = path.join(pathInfo.fullPath, path.basename(staged));
       if (await fs.stat(filePath).then(() => true, () => false)) {
         throw new Error(`a file named ${path.basename(staged)} already exists in ${value.directory} — nothing was replaced`);

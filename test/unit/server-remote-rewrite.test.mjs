@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { rewriteIndexForServerAudio } from '../../src/api/server-playback.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const indexHtml = fs.readFileSync(path.join(here, '..', '..', 'webapp', 'index.html'), 'utf8');
+const indexHtml = fs.readFileSync(path.join(here, '..', '..', 'webapp', 'index.html'), 'utf8').replace(/\r\n/g, '\n');
 
 describe('rewriteIndexForServerAudio', () => {
   const out = rewriteIndexForServerAudio(indexHtml);

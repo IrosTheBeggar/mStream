@@ -532,3 +532,105 @@ describe('discovery-backfill worker', () => {
     assert.equal(r.code, 1, 'invalid payload → fatal exit');
   });
 });
+
+// Mood heads through the test-fake model's file-less heads: scores derived
+// from the vector, so the worker's mood path runs without real heads.
+describe('discovery-backfill worker — mood heads', () => {
+  const FAKE_MOODS = EMBEDDING_MODELS['test-fake'].moods;
+
+  function rows(fx) {
+    const ddb = openDiscovery(fx.discoveryDbPath);
+    try {
+      return ddb.prepare('SELECT * FROM discovery_tracks ORDER BY audio_hash').all();
+    } finally {
+      ddb.close();
+    }
+  }
+
+  test('moods on: rows carry every score, the pin, danceability and the tags', async () => {
+    const fx = makeDbs([{ file: 'a.flac', hash: 'hash-a' }]);
+    await makeAudio(path.join(fx.musicDir, 'a.flac'));
+
+    const r = await runWorker(basePayload(fx, { moods: true }));
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.complete.embedded, 1);
+    assert.equal(r.complete.moodOnly, 0, 'a first embedding is not a mood-only re-pass');
+
+    const [row] = rows(fx);
+    const scores = JSON.parse(row.mood_scores);
+    assert.deepEqual(Object.keys(scores), FAKE_MOODS.heads.map((h) => h.key));
+    for (const p of Object.values(scores)) { assert.ok(p >= 0 && p <= 1, `score ${p} in [0, 1]`); }
+    assert.equal(row.mood_version, FAKE_MOODS.version);
+    assert.equal(row.danceability, scores.danceable);
+    const expected = Object.entries(scores)
+      .filter(([, p]) => p >= FAKE_MOODS.tagThreshold).sort((a, b) => b[1] - a[1]).map(([k]) => k);
+    assert.deepEqual(row.mood_tags === null ? null : JSON.parse(row.mood_tags), expected.length ? expected : null);
+  });
+
+  test('moods off (the worker default): no mood data, and rows without the pin are not work', async () => {
+    const fx = makeDbs([{ file: 'a.flac', hash: 'hash-a' }]);
+    await makeAudio(path.join(fx.musicDir, 'a.flac'));
+
+    const r1 = await runWorker(basePayload(fx));
+    assert.equal(r1.complete.embedded, 1);
+    const [row] = rows(fx);
+    assert.equal(row.mood_scores, null);
+    assert.equal(row.mood_version, null);
+    assert.equal(row.danceability, null);
+
+    const r2 = await runWorker(basePayload(fx));
+    assert.equal(r2.complete.attempted, 0);
+  });
+
+  test('turning moods on re-analyses embedded rows once — unembedded tracks first', async () => {
+    const fx = makeDbs([{ file: 'a.flac', hash: 'hash-a' }, { file: 'b.flac', hash: 'hash-b' }]);
+    await makeAudio(path.join(fx.musicDir, 'a.flac'), 440);
+    await makeAudio(path.join(fx.musicDir, 'b.flac'), 660);
+
+    const r1 = await runWorker(basePayload(fx));   // moods off: both embedded, no pin
+    assert.equal(r1.complete.embedded, 2);
+    const embeddingBefore = rows(fx)[0].embedding;
+
+    // b loses its row — new music, as far as the worker can tell. With a
+    // one-track batch it must be picked before a's mood-only re-pass.
+    const ddb = openDiscovery(fx.discoveryDbPath);
+    try {
+      ddb.prepare("DELETE FROM discovery_tracks WHERE audio_hash = 'hash-b'").run();
+    } finally {
+      ddb.close();
+    }
+
+    const r2 = await runWorker(basePayload(fx, { moods: true, maxPerRun: 1 }));
+    assert.equal(r2.code, 0, r2.stderr);
+    assert.equal(r2.complete.embedded, 1);
+    assert.equal(r2.complete.moodOnly, 0, 'the unembedded track went first');
+    assert.equal(r2.complete.hitCap, true);
+    assert.equal(rows(fx).find((r) => r.audio_hash === 'hash-b').mood_version, FAKE_MOODS.version);
+
+    const r3 = await runWorker(basePayload(fx, { moods: true, maxPerRun: 1 }));
+    assert.equal(r3.complete.moodOnly, 1, 'then the embedded row, for its moods');
+    const a = rows(fx).find((r) => r.audio_hash === 'hash-a');
+    assert.equal(a.mood_version, FAKE_MOODS.version);
+    assert.ok(Buffer.compare(a.embedding, embeddingBefore) === 0, 'same audio, same vector');
+
+    const r4 = await runWorker(basePayload(fx, { moods: true }));
+    assert.equal(r4.complete.attempted, 0, 'caught up — nothing left');
+  });
+
+  test('a row with an older mood pin is re-analysed', async () => {
+    const fx = makeDbs([{ file: 'a.flac', hash: 'hash-a' }]);
+    await makeAudio(path.join(fx.musicDir, 'a.flac'));
+    await runWorker(basePayload(fx, { moods: true }));
+
+    const ddb = openDiscovery(fx.discoveryDbPath);
+    try {
+      ddb.prepare("UPDATE discovery_tracks SET mood_version = '0'").run();
+    } finally {
+      ddb.close();
+    }
+
+    const r = await runWorker(basePayload(fx, { moods: true }));
+    assert.equal(r.complete.moodOnly, 1);
+    assert.equal(rows(fx)[0].mood_version, FAKE_MOODS.version);
+  });
+});

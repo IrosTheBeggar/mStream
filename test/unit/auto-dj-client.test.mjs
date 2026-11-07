@@ -1530,6 +1530,64 @@ describe('genre filter — persistence', () => {
   });
 });
 
+describe('mood filter', () => {
+  test('cleanMoods keeps known values only, tags in the server order', () => {
+    assert.deepEqual(
+      AUTODJ.cleanMoods({ valence: 'angry', energy: 'relaxed', voice: 'vocals', tags: ['party', 'sad', 'acoustic'] }),
+      { energy: 'relaxed', voice: 'vocals', tags: ['acoustic', 'party'] },
+    );
+    for (const nothing of [null, undefined, 'relaxed', ['relaxed'], {}, { tags: [] }, { valence: 'angry' }]) {
+      assert.equal(AUTODJ.cleanMoods(nothing), null, JSON.stringify(nothing));
+    }
+  });
+
+  test("cleanMoods adds the level's threshold beside a group: Strict 0.7, Loose 0.3, Standard none", () => {
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, 'strict'), { energy: 'relaxed', threshold: 0.7 });
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, 'loose'), { energy: 'relaxed', threshold: 0.3 });
+    for (const level of ['standard', undefined, 'toString', 'sloppy']) {
+      assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed' }, level), { energy: 'relaxed' }, String(level));
+    }
+    assert.equal(AUTODJ.cleanMoods({}, 'strict'), null, 'a level alone filters nothing');
+    assert.deepEqual(AUTODJ.cleanMoods({ energy: 'relaxed', threshold: 0.7 }), { energy: 'relaxed' },
+      'a stored filter carries no threshold of its own');
+  });
+
+  test('off and empty by default, at Standard', () => {
+    assert.equal(AUTODJ.state.djMoodEnabled, false);
+    assert.deepEqual(AUTODJ.state.djMoods, {});
+    assert.equal(AUTODJ.state.djMoodLevel, 'standard');
+  });
+
+  test('the level hydrates from localStorage; anything unknown is Standard', () => {
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodLevel', JSON.stringify('loose'));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodLevel, 'loose');
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodLevel', JSON.stringify('toString'));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodLevel, 'standard');
+  });
+
+  test('hydrates from localStorage, cleaned — a junk value would 400 every pick', () => {
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoodEnabled', JSON.stringify(true));
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoods',
+      JSON.stringify({ energy: 'relaxed', tempo: 'fast', tags: ['danceable', 'loud'] }));
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djMoodEnabled, true);
+    assert.deepEqual(AUTODJ.state.djMoods, { energy: 'relaxed', tags: ['danceable'] });
+    localStorage.setItem(AUTODJ._internals.LS_PREFIX + 'djMoods', JSON.stringify('relaxed'));
+    AUTODJ._internals.rehydrate();
+    assert.deepEqual(AUTODJ.state.djMoods, {});
+  });
+
+  test('a preference: reset() keeps it', () => {
+    AUTODJ.setState({ djMoodEnabled: true, djMoods: { valence: 'sad' }, djMoodLevel: 'strict' });
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.djMoodEnabled, true);
+    assert.deepEqual(AUTODJ.state.djMoods, { valence: 'sad' });
+    assert.equal(AUTODJ.state.djMoodLevel, 'strict');
+  });
+});
+
 describe('genres-list cache', () => {
   test('getCachedGenresList returns null before any set', () => {
     AUTODJ.invalidateGenresCache();

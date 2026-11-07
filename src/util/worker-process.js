@@ -24,6 +24,17 @@ export function launchWorker(role, scriptPath, payload, extraOpts = {}) {
   return child.fork(scriptPath, [payload], { silent: true, ...extraOpts });
 }
 
+// launchWorker's blocking twin, for a short check whose answer the caller
+// needs before it can go on (journal-mode.js's lock probe, run inside the
+// synchronous initDB). Same dispatch; returns spawnSync's result, stdout and
+// stderr as strings. No execArgv either way, like fork({ execArgv: [] }), so
+// a test runner's or inspector's flags never reach the child.
+export function runWorkerSync(role, scriptPath, payload, extraOpts = {}) {
+  const args = isBunStandalone ? [`${WORKER_FLAG_PREFIX}${role}`, payload] : [scriptPath, payload];
+  return child.spawnSync(process.execPath, args,
+    { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...extraOpts });
+}
+
 // The command-line marker the boot reaper (scan-pidfile.js) matches to prove a
 // live pid is really our worker before killing it. Under Bun self-dispatch the
 // child's command line is `<exe> --mstream-worker=<role> <payload>`, so the role
@@ -51,6 +62,7 @@ export async function maybeRunWorker(argv = process.argv) {
     case 'backup':         await import('../backup/worker.mjs'); break;
     case 'image-compress': await import('../db/image-compress-script.js'); break;
     case 'discovery-export': await import('../db/discovery-export-script.mjs'); break;
+    case 'lock-probe':     await import('../db/lock-probe.mjs'); break;
     case 'ssl-test':       await import('./ssl-test.js'); break;
     case 'iroh-selftest':  await import('./iroh-selftest.js'); break;
     default:

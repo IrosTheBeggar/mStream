@@ -79,6 +79,15 @@ import { loadEmbeddingRuntime } from './embedding-runtime.js';
 const MODELS_RELEASE_BASE =
   'https://github.com/IrosTheBeggar/mStream/releases/download/discovery-models-1';
 
+// One of MTG's classification heads for Discogs-EffNet, mirrored next to
+// the weights. `positive` is the index of the class the score reports —
+// the files disagree on class order (mood_party is [non_party, party],
+// mood_happy is [happy, non_happy]).
+function effnetHead(key, essentiaName, positive, sha256) {
+  const filename = `${essentiaName}-discogs-effnet-1.onnx`;
+  return { key, positive, file: { filename, url: `${MODELS_RELEASE_BASE}/${filename}`, sha256 } };
+}
+
 export const EMBEDDING_MODELS = {
   // MTG-UPF's Discogs-EffNet (trained on 4M Discogs releases / 400 styles).
   // DEFAULT. Weights are the project-mirrored copy of the official ONNX
@@ -117,6 +126,31 @@ export const EMBEDDING_MODELS = {
     // Style activations >= this probability become genre_tags (top-K).
     tagThreshold: 0.1,
     tagTopK: 5,
+    // Mood / character heads (essentia.upf.edu/models, classification-
+    // heads): two-class softmax MLPs, ~0.5 MB each, trained on THIS model's
+    // per-patch embeddings — so they run on the same inference's patches
+    // and a track's moods cost no extra decode. Same license and
+    // attribution as the weights. A track's score is the patch average, as
+    // in essentia; the pooled track vector is L2-normalized and is NOT
+    // what the heads were trained on.
+    // `version` is OUR pin for the set (discovery_tracks.mood_version):
+    // bump it when heads are added, removed or replaced, and the worker
+    // re-analyses every embedded track once to catch up.
+    moods: {
+      version: '1',
+      // Score at or above which a label joins mood_tags.
+      tagThreshold: 0.5,
+      heads: [
+        effnetHead('danceable', 'danceability', 0, '9ce9b8c44f1dd5df5ffc124e5d41d67acf254232c1b90c7e057e079ab7cead73'),
+        effnetHead('happy', 'mood_happy', 0, '0ca322819ef137b4b87e9866bffe7370a630e6f1165184ec106326cef6f81e06'),
+        effnetHead('sad', 'mood_sad', 1, '1a50d11c23181bdfdeabc7d6032a2dad829dfc19c3776d2ee57ef1724cb08805'),
+        effnetHead('relaxed', 'mood_relaxed', 1, '8ba6515a1e5943a72b3b475e3a25fc7a2ff04142c3eaa6aa0716fca371efdfff'),
+        effnetHead('aggressive', 'mood_aggressive', 0, 'de36550b5d1660791ad732ed6de6ebfdc3e65dcf50b928b2578ddf103dbfb400'),
+        effnetHead('party', 'mood_party', 1, 'c50ac2106ec2f209dd04ad48756582df0e3f3512235310d1a4a3fcc453745f04'),
+        effnetHead('acoustic', 'mood_acoustic', 0, '56b02abf772b9c1cf528e4d6521d6e09515cedccce47895ee5de8de33fbdf848'),
+        effnetHead('instrumental', 'voice_instrumental', 0, '20155e4c439714b0c45c08644b73c8e12d9dccb173bd4ab9934bf1e5aee837ca'),
+      ],
+    },
   },
   // Deterministic, dependency-free pseudo-embedder. Exists for two reasons:
   // it lets the whole worker/task-queue/export pipeline be tested without a
@@ -131,6 +165,14 @@ export const EMBEDDING_MODELS = {
     segmentPositions: [0.5],
     license: 'GPL-3.0',   // it's just mStream code
     attribution: 'mStream test fixture',
+    // File-less mood heads: scores derived from the vector, so the worker's
+    // mood path (re-pass selection, the mood pin, the mood columns) runs in
+    // tests without the real heads.
+    moods: {
+      version: '1',
+      tagThreshold: 0.5,
+      heads: [{ key: 'danceable' }, { key: 'happy' }],
+    },
   },
 };
 
@@ -262,12 +304,53 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
   return dest;
 }
 
+/**
+ * The model's mood heads with their files on disk (downloaded once, like
+ * the weights): [{ key, positive, path }], path null for file-less heads.
+ * Throws when a file can't be had — the worker calls this BEFORE picking
+ * work, so a missing mirror only turns moods off for that run instead of
+ * re-selecting the whole library every pass.
+ */
+export async function ensureMoodHeadFiles(spec, modelCacheDir) {
+  const heads = [];
+  for (const head of spec.moods?.heads ?? []) {
+    heads.push({
+      key: head.key,
+      positive: head.positive,
+      path: head.file ? await ensureModelFile(head.file, modelCacheDir) : null,
+    });
+  }
+  return heads;
+}
+
+/**
+ * The mood pin discovery rows should carry under these scanOptions — null
+ * when analyzeMoods is off or the active model has no heads. What the
+ * enqueue pre-check and the status counts compare mood_version against.
+ */
+export function activeMoodVersion(scanOptions) {
+  if (scanOptions?.analyzeMoods === false) { return null; }
+  return EMBEDDING_MODELS[scanOptions?.discoveryModel]?.moods?.version ?? null;
+}
+
+/** Labels whose score reaches the set's threshold, strongest first. */
+export function moodTagsOf(scores, spec) {
+  if (!scores || !spec.moods) { return null; }
+  const tags = Object.entries(scores)
+    .filter(([, p]) => p >= spec.moods.tagThreshold)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k]) => k);
+  return tags.length ? tags : null;
+}
+
 // ── Embedder factories ───────────────────────────────────────────────────────
 
 // Every factory returns { analyzeSignal(Float32Array) → Promise<{
 //   embedding: Float32Array (spec.dim, L2-normalized),
-//   genreTags: string[] | null      // model-derived style tags, when the
-// }> }                              // model has a classification head
+//   genreTags: string[] | null,     // model-derived style tags, when the
+//                                   // model has a classification head
+//   moods: { [key]: number } | null // mood head scores (0–1), when asked
+// }> }                              // for with { moods: true }
 //
 // MTG's Discogs-EffNet through ONNX Runtime — the native onnxruntime-node
 // addon where it loads, the WebAssembly build (onnxruntime-web) otherwise;
@@ -277,8 +360,9 @@ export async function ensureModelFile({ filename, url, sha256 }, modelCacheDir) 
 // faster than the WASM-per-frame original and with no AGPL dependency in
 // this path. One inference yields both the 1280-d embedding and the
 // 400-style activations (→ genre tags). `runtime` ('auto' | 'native' |
-// 'wasm') and `threads` come from scanOptions via the worker.
-async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', threads } = {}) {
+// 'wasm') and `threads` come from scanOptions via the worker; `moods` adds
+// the mood heads, run on that inference's per-patch embeddings.
+async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', threads, moods = false } = {}) {
   const { createMelExtractor } = await import('./effnet-mel.js');
   const { melFrames } = createMelExtractor();
 
@@ -304,7 +388,26 @@ async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', thr
   });
   const { ort, session } = loaded;
 
+  // The heads ride the runtime and session options the weights ended on.
+  // A head that won't load costs the moods, never the embeddings:
+  // hasMoods tells the worker which it got.
+  const moodHeads = [];
+  let moodError = null;
+  if (moods) {
+    try {
+      for (const head of await ensureMoodHeadFiles(spec, modelCacheDir)) {
+        const bytes = new Uint8Array(fs.readFileSync(head.path));
+        moodHeads.push({ ...head, session: await ort.InferenceSession.create(bytes, loaded.sessionOptions) });
+      }
+    } catch (err) {
+      moodHeads.length = 0;
+      moodError = err?.message || String(err);
+    }
+  }
+
   return {
+    hasMoods: moodHeads.length > 0,
+    moodError,
     // Which runtime serves this embedder, how many threads, and which
     // candidates were passed over (and why) — the worker reports all three.
     runtime: loaded.runtime,
@@ -354,9 +457,26 @@ async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', thr
         .slice(0, spec.tagTopK)
         .map((s) => s.name);
 
+      // One batch per head over every patch's raw embedding; the score is
+      // the patch average of the head's positive class.
+      let moodScores = null;
+      if (moodHeads.length) {
+        const input = new ort.Tensor('float32', out.embeddings.data, out.embeddings.dims);
+        moodScores = {};
+        for (const head of moodHeads) {
+          const res = await head.session.run({ [head.session.inputNames[0]]: input });
+          const act = res[head.session.outputNames[0]];
+          const k = act.dims[1];
+          let sum = 0;
+          for (let i = 0; i < act.dims[0]; i++) { sum += act.data[i * k + head.positive]; }
+          moodScores[head.key] = Math.round((sum / act.dims[0]) * 1e4) / 1e4;
+        }
+      }
+
       return {
         embedding: l2normalize(meanPool(perPatchEmb)),
         genreTags: genreTags.length ? genreTags : null,
+        moods: moodScores,
       };
     },
     // Whole-signal path (callers without a known duration): cut the fixed
@@ -370,11 +490,15 @@ async function createEffnetEmbedder(spec, { modelCacheDir, runtime = 'auto', thr
 
 // Deterministic pseudo-embedder: dim buckets of per-band RMS over the
 // segment. Same audio → same vector, on every platform, no dependencies.
-function createFakeEmbedder(spec) {
+// Its mood "heads" read the vector's leading components (non-negative, and
+// ≤ 1 after normalization).
+function createFakeEmbedder(spec, { moods = false } = {}) {
   return {
     runtime: 'fake',
     threads: null,
     skippedRuntimes: [],
+    hasMoods: Boolean(moods && spec.moods),
+    moodError: null,
     // Not declared async (nothing to await) — callers `await` it anyway,
     // which is a no-op on a plain value, so the interface stays uniform
     // with the real embedders.
@@ -391,7 +515,12 @@ function createFakeEmbedder(spec) {
         }
         return v;
       });
-      return { embedding: l2normalize(meanPool(segEmbeds)), genreTags: null };
+      const embedding = l2normalize(meanPool(segEmbeds));
+      const moodScores = moods && spec.moods
+        ? Object.fromEntries(spec.moods.heads.map((h, i) =>
+          [h.key, Math.round(embedding[i % spec.dim] * 1e4) / 1e4]))
+        : null;
+      return { embedding, genreTags: null, moods: moodScores };
     },
   };
 }
@@ -406,7 +535,7 @@ export async function createEmbedder(key, opts = {}) {
   const spec = getModelSpec(key);
   switch (spec.kind) {
     case 'effnet-discogs': return { spec, ...(await createEffnetEmbedder(spec, opts)) };
-    case 'fake': return { spec, ...createFakeEmbedder(spec) };
+    case 'fake': return { spec, ...createFakeEmbedder(spec, opts) };
     default: throw new Error(`no embedder factory for model kind '${spec.kind}'`);
   }
 }
@@ -423,7 +552,8 @@ export async function createEmbedder(key, opts = {}) {
  * to the original full decode, which is also the path for tracks short
  * enough to fit inside one window.
  *
- * @returns {Promise<{embedding: Float32Array, genreTags: string[]|null}>}
+ * @returns {Promise<{embedding: Float32Array, genreTags: string[]|null,
+ *   moods: Object<string, number>|null}>}
  */
 export async function analyzeFile(embedder, audioPath, ffmpegBin, { maxSeconds = 600, timeoutMs, durationSec } = {}) {
   const spec = embedder.spec;

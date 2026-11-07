@@ -70,6 +70,22 @@ describe('discovery plug-ins API', () => {
     assert.equal(body.result.links.find((l) => l.id === 'musicbrainz-isrc').url, 'https://musicbrainz.org/isrc/GBCMP9800001');
   });
 
+  test('resolve takes an album asked for by itself (album + credit, no title): the release\'s links, no song\'s', async () => {
+    const album = { artist: 'Compat Artist', albumArtist: 'Various Artists', album: 'First Album', releaseGroupMbid: 'rg-first', isrc: 'GBCMP9800001', title: null };
+    const { status, body } = await json(await post('/api/v1/discovery/plugins/links/resolve', { recommendation: album }));
+    assert.equal(status, 200, JSON.stringify(body));
+    const byId = Object.fromEntries(body.result.links.map((l) => [l.id, l.url]));
+    assert.equal(byId['musicbrainz-release-group'], 'https://musicbrainz.org/release-group/rg-first');
+    assert.ok(!('musicbrainz-isrc' in byId), 'an ISRC is one song\'s, not the album\'s');
+    assert.equal(byId['musicbrainz-search'], 'https://musicbrainz.org/search?type=release&method=indexed&query=Various%20Artists%20First%20Album');
+    assert.equal(byId['bandcamp-search'], 'https://bandcamp.com/search?q=Various%20Artists%20First%20Album&item_type=a');
+    // The same row with its title is a song again: the recording search.
+    const song = await json(await post('/api/v1/discovery/plugins/links/resolve', { recommendation: { ...album, title: 'Opening' } }));
+    const songIds = Object.fromEntries(song.body.result.links.map((l) => [l.id, l.url]));
+    assert.equal(songIds['musicbrainz-isrc'], 'https://musicbrainz.org/isrc/GBCMP9800001');
+    assert.equal(songIds['bandcamp-search'], 'https://bandcamp.com/search?q=Compat%20Artist%20Opening&item_type=t');
+  });
+
   test('malformed bodies are 400s; unknown or malformed plug-in names are 404s', async () => {
     assert.equal((await post('/api/v1/discovery/plugins/links/resolve', {})).status, 400);
     assert.equal((await post('/api/v1/discovery/plugins/links/resolve', { recommendation: { isrc: 'nope' } })).status, 400);

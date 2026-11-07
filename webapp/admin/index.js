@@ -311,6 +311,17 @@ const ADMINDATA = (() => {
     module.federationParamsUpdated.ts = Date.now();
   }
 
+  // An endpoint probes its bridge a moment after it starts, and longer when
+  // the probe retries, so a status fetched right after a start says neither
+  // way yet: fetch it again until it does.
+  module.untilBridgeChecked = async (fetchStatus, params) => {
+    for (const ms of [1000, 2000, 4000, 8000, 16000]) {
+      if (!(params.running && params.bridgeOk === null)) { return; }
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      await fetchStatus();
+    }
+  }
+
   module.getFederationKeys = async () => {
     try {
       const res = await API.axios({
@@ -2276,6 +2287,7 @@ const dbView = Vue.component('db-view', {
                               <div class="enrich-bar-fill" v-bind:style="{ width: pctOf(p.coverage.done, p.coverage.done + p.coverage.remaining) + '%' }"></div>
                             </div>
                             {{ p.coverage.done.toLocaleString() }} / {{ (p.coverage.done + p.coverage.remaining).toLocaleString() }} {{ p.coverage.unit }}<span class="enrich-muted">{{ outcomesSummary(p.coverage.outcomes) }}</span>
+                            <div v-if="p.coverage.moods && p.coverage.moods.remaining > 0" class="enrich-muted">moods {{ p.coverage.moods.done.toLocaleString() }} / {{ (p.coverage.moods.done + p.coverage.moods.remaining).toLocaleString() }}</div>
                           </template>
                           <span v-else class="enrich-muted">—</span>
                         </td>
@@ -3937,7 +3949,7 @@ const federationView = Vue.component('federation-view', {
   },
   methods: {
     refresh() {
-      ADMINDATA.getFederation();
+      ADMINDATA.getFederation().then(() => ADMINDATA.untilBridgeChecked(ADMINDATA.getFederation, this.fed));
       ADMINDATA.getFederationKeys();
       ADMINDATA.getFederationPeers();
       ADMINDATA.getFederationRequests();
@@ -3948,6 +3960,7 @@ const federationView = Vue.component('federation-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/federation`, data: { enabled: !this.fed.enabled } });
         await ADMINDATA.getFederation();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getFederation, this.fed);
         await ADMINDATA.getFederationKeys(); // tickets appear/disappear with the endpoint
         if (this.fed.enabled && this.fed.available === false) {
           iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the federation endpoint could not start.' });
@@ -4236,6 +4249,12 @@ const federationView = Vue.component('federation-view', {
               <p>Pair with a friend's mStream server to share libraries <b>read-only</b>, peer-to-peer and end-to-end encrypted — no port-forwarding or DNS. You mint a ticket for the libraries you want to share; your friend pastes it into their Peers list (and mints one for you if the sharing is mutual). Distributed backups between paired servers build on this.</p>
               <div v-if="fed.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the federation endpoint can’t run here.</p>
+              </div>
+              <div v-if="fed.bridgeOk === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Endpoint is up but cannot reach the web server:</b> {{ fed.bridgeError }}. Paired servers will connect, then fail every request.</p>
+              </div>
+              <div v-if="fed.bridgeVia === 'local-socket'" class="card-panel blue lighten-5" style="margin-top:16px">
+                <p><b>Loopback connections are blocked on this machine</b> (security software or a VPN kill switch resets them), so the endpoint hands requests to the web server over a local socket instead. Paired servers work normally.</p>
               </div>
               <p><b>Tickets are credentials.</b> Anyone holding an unredeemed ticket can read the libraries it grants — send tickets over a private channel. The first server to use a ticket claims it; revoke a ticket at any time to cut access.</p>
               <p style="margin-top:8px" v-if="fed.enabled && fed.running"><b>Status:</b>
@@ -7480,6 +7499,10 @@ const discoveryView = Vue.component('discovery-view', {
                           <span style="width: 9px; height: 9px; border-radius: 50%; background: #2e7d32; flex-shrink: 0;"></span>
                           <span style="color: #2e7d32; font-weight: 600;">connected</span>
                           <span>— {{ discoveryP2p.status.neighbors }} mesh neighbor{{ discoveryP2p.status.neighbors === 1 ? '' : 's' }}</span>
+                          <span v-if="discoveryP2p.status.gossip && discoveryP2p.status.gossip.lastGossipAgeSecs !== null"
+                            :style="{ color: discoveryP2p.status.gossip.lastGossipAgeSecs > 300 ? '#c62828' : '#9e9e9e' }"
+                            title="seconds since the sidecar last received a gossip message — announcers re-broadcast every ~15s, so minutes of silence with live links means the mesh is dead">
+                            · last heard {{ gossipAge(discoveryP2p.status.gossip.lastGossipAgeSecs) }}</span>
                         </span>
                         <span v-else-if="meshRecovering" style="display: inline-flex; align-items: center; gap: 7px;">
                           <span style="width: 9px; height: 9px; border-radius: 50%; background: #c62828; flex-shrink: 0;"></span>
@@ -7496,7 +7519,9 @@ const discoveryView = Vue.component('discovery-view', {
                         </span>
                         <span v-if="discoveryP2p.status.watchdog && discoveryP2p.status.watchdog.lastRssMb !== null">
                           · sidecar {{ discoveryP2p.status.watchdog.lastRssMb.toFixed(0) }} MB<span
-                            v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #e65100;"> ({{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }})</span>
+                            v-if="discoveryP2p.status.watchdog.restarts > 0" style="color: #e65100;"> ({{ discoveryP2p.status.watchdog.restarts }} watchdog restart{{ discoveryP2p.status.watchdog.restarts === 1 ? '' : 's' }})</span><span
+                            v-if="discoveryP2p.status.watchdog.silenceRestarts > 0" style="color: #e65100;"
+                            title="the mesh-health watch restarted a sidecar that claimed live neighbors but had heard nothing for 15+ minutes"> ({{ discoveryP2p.status.watchdog.silenceRestarts }} silence restart{{ discoveryP2p.status.watchdog.silenceRestarts === 1 ? '' : 's' }})</span>
                         </span>
                         <span>· announcing as <span style="color: #212121; font-weight: 600;">{{ p2pIdentity.serverName }}</span>
                           [<a v-on:click="openModal('edit-p2p-identity-modal')">{{ t('admin.settings.edit') }}</a>]</span>
@@ -8182,6 +8207,17 @@ const discoveryView = Vue.component('discovery-view', {
       if (mins < 60) { return ' · ' + Math.max(mins, 1) + 'm'; }
       if (mins < 48 * 60) { return ' · ' + Math.floor(mins / 60) + 'h'; }
       return ' · ' + Math.floor(mins / (24 * 60)) + 'd';
+    },
+    // Seconds since the sidecar last received gossip (status.gossip
+    // .lastGossipAgeSecs), as the header's "last heard" phrase. Sub-minute
+    // reads "just now": announcers re-broadcast every ~15s, so a healthy
+    // mesh never shows anything else.
+    gossipAge: function(secs) {
+      if (!isFinite(secs) || secs < 0) { return '—'; }
+      if (secs < 60) { return 'just now'; }
+      if (secs < 3600) { return Math.floor(secs / 60) + 'm ago'; }
+      if (secs < 48 * 3600) { return Math.floor(secs / 3600) + 'h ago'; }
+      return Math.floor(secs / 86400) + 'd ago';
     }
   }
 });
@@ -8829,6 +8865,7 @@ const irohView = Vue.component('iroh-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh`, data: { enabled: !this.iroh.enabled } });
         await ADMINDATA.getIroh();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh);
         if (this.iroh.enabled && this.iroh.available === false) {
           iziToast.warning({ title: 'Unavailable', message: 'Iroh has no prebuilt binary for this server’s platform; the tunnel could not start.' });
         }
@@ -8842,6 +8879,7 @@ const irohView = Vue.component('iroh-view', {
       try {
         await API.axios({ method: 'POST', url: `${API.url()}/api/v1/admin/iroh/rotate-secret`, data: {} });
         await ADMINDATA.getIroh();
+        ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh);
         iziToast.success({ title: 'Rotated', message: 'New secret in effect — previously-shared QR codes no longer work.' });
       } catch (e) {
         iziToast.error({ title: 'Error', message: 'Failed to rotate secret.' });
@@ -8849,7 +8887,7 @@ const irohView = Vue.component('iroh-view', {
       this.rotatePending = false;
     },
   },
-  mounted() { ADMINDATA.getIroh(); },
+  mounted() { ADMINDATA.getIroh().then(() => ADMINDATA.untilBridgeChecked(ADMINDATA.getIroh, this.iroh)); },
   template: `
     <div v-if="irohTS.ts === 0" class="row">
       <svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
@@ -8870,6 +8908,12 @@ const irohView = Vue.component('iroh-view', {
               </div>
               <div v-if="iroh.available === false" class="card-panel orange lighten-4" style="margin-top:16px">
                 <p><b>Not available on this platform.</b> The Iroh native component has no prebuilt binary for this server’s OS/CPU, so the tunnel can’t run here. Everything else in mStream is unaffected.</p>
+              </div>
+              <div v-if="iroh.bridgeOk === false" class="card-panel orange lighten-4" style="margin-top:16px">
+                <p><b>Tunnel is up but cannot reach the web server:</b> {{ iroh.bridgeError }}. Paired devices will connect, then fail every request.</p>
+              </div>
+              <div v-if="iroh.bridgeVia === 'local-socket'" class="card-panel blue lighten-5" style="margin-top:16px">
+                <p><b>Loopback connections are blocked on this machine</b> (security software or a VPN kill switch resets them), so the tunnel hands requests to the web server over a local socket instead. Paired devices work normally.</p>
               </div>
               <p><b>Keep the code secret.</b> Anyone who scans it can open a tunnel to this server (your normal mStream login still applies on top). Share it only with your own devices, and rotate it if it leaks.</p>
             </div>

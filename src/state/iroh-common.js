@@ -1,13 +1,16 @@
 // Shared iroh plumbing (@number0/iroh v1), used by every in-process iroh
 // endpoint: the remote-access tunnel (src/state/iroh.js) and the federation
-// endpoint (src/state/federation.js). Three groups live here:
+// endpoint (src/state/federation.js). Four groups live here:
 //
 //  1. The lazy native-module loader (+ the Bun-standalone .node staging) and
 //     the selfTest() smoke check the build CI runs.
 //  2. The byte pumps coupling an iroh QUIC bi-stream to a Node TCP socket —
 //     subtle backpressure/teardown code (see the Reset(0) note on bridge())
 //     that must not be duplicated per consumer.
-//  3. The versioned ticket envelope `<prefix><version>:<base64url(JSON)>`
+//  3. Where those streams go: the bridge target server.js registers (its
+//     loopback bridge listener, util/bridge-listener.js) and the probe that
+//     tells the admin panel whether the web server answers there.
+//  4. The versioned ticket envelope `<prefix><version>:<base64url(JSON)>`
 //     shared by the tunnel pairing code (`mstr1:`, docs/iroh-pairing-code.md)
 //     and the federation ticket (`mstrfed1:`, docs/federation-ticket.md).
 //
@@ -16,6 +19,7 @@
 //  * recv.read(limit) RETURNS a byte array (EOF == empty array); writeAll()/
 //    connect() take Array<number>, NOT Buffers. reset()/stop() take bigint.
 
+import http from 'http';
 import net from 'net';
 import os from 'os';
 import crypto from 'crypto';
@@ -238,17 +242,195 @@ export function bridge(socket, bi) {
   pumpSocketToSend(socket, bi.send).catch((err) => { winston.debug(`[iroh] socket->send pump ended: ${err?.message}`); dispose(); });
 }
 
-// Wire one accepted Iroh bi-stream to a fresh TCP connection to the backend.
+// Wire one accepted Iroh bi-stream to a fresh connection to the backend:
+// the loopback target, or the local socket once loopback is refused (see
+// the bridge route below). Nothing is read from the stream before a connect
+// lands, so a refused loopback can still try the socket for the same stream.
 export function bridgeStreamToBackend(bi, targetHost, targetPort) {
-  const socket = net.connect({ host: targetHost, port: targetPort });
-  let started = false;
-  socket.once('connect', () => { started = true; bridge(socket, bi); });
-  socket.once('error', (err) => {
-    if (started) { return; } // bridge() now owns teardown
-    winston.warn(`[iroh] backend connect failed (${targetHost}:${targetPort}): ${err.message}`);
+  connectBackend({ targetHost, targetPort }).then((socket) => bridge(socket, bi), (err) => {
+    warnConnectFailed(err.where, err);
     bi.send.reset(0n).catch(() => {});
     bi.recv.stop(0n).catch(() => {});
   });
+}
+
+const describeTarget = (t) => (t.targetPath ? t.targetPath : `${t.targetHost}:${t.targetPort}`);
+
+// One connect as a promise: the socket, or the error tagged with where.
+function connectOnce(target) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => { err.where = describeTarget(target); reject(err); };
+    const socket = net.connect(target.targetPath ? { path: target.targetPath } : { host: target.targetHost, port: target.targetPort });
+    socket.once('error', onError);
+    socket.once('connect', () => { socket.off('error', onError); resolve(socket); });
+  });
+}
+
+// A broken bridge fails every stream a client opens, and a phone opens a few
+// per tap: warn once a minute per backend, counting the failures in between.
+const CONNECT_WARN_MS = 60 * 1000;
+const connectWarnings = new Map(); // "host:port" -> { at, quiet }
+
+function warnConnectFailed(where, err) {
+  const last = connectWarnings.get(where);
+  if (last && Date.now() - last.at < CONNECT_WARN_MS) { last.quiet += 1; return; }
+  const more = last && last.quiet > 0 ? ` (${last.quiet} more since the last warning)` : '';
+  connectWarnings.set(where, { at: Date.now(), quiet: 0 });
+  winston.warn(`[iroh] backend connect failed (${where}): ${err.message}${more} — tunnel and federation requests need the web server answering plain HTTP there (check its bind address and port)`);
+}
+
+// ---------------------------------------------------------------------------
+// The bridge target (mStream#1101)
+// ---------------------------------------------------------------------------
+
+// Where accepted streams go when start() is not given a target: server.js
+// registers a function resolving to { targetHost, targetPort } of the
+// loopback bridge listener, which it opens on first use. Not the public
+// listener, which may be bound to another interface or speak TLS.
+let bridgeTarget = null;
+export function setBridgeTarget(resolve) { bridgeTarget = resolve; }
+export function getBridgeTarget() { return bridgeTarget ? bridgeTarget() : Promise.resolve(null); }
+
+// The bridge route. Streams go to the loopback target. Where that connect
+// is refused — a machine whose security software or VPN kill switch resets
+// loopback TCP — they go to the local-socket listener server.js registers
+// as the fallback (a named pipe or a socket file, which such filters never
+// see), and once that has answered every later stream takes it: the filter
+// does not stop between requests. For diagnosis, MSTREAM_BRIDGE=socket takes
+// the socket from the first stream and MSTREAM_BRIDGE=loopback never leaves
+// loopback; MSTREAM_IROH_TRACE=1 logs every connect.
+let bridgeFallback = null;
+export function setBridgeFallback(resolve) { bridgeFallback = resolve; }
+let route = null; // the fallback target, once streams take it
+export function bridgeRoute() { return route; }
+export function resetBridgeRoute() { route = null; }
+
+const bridgeMode = () => process.env.MSTREAM_BRIDGE || 'auto';
+const fallbackTarget = () => (bridgeMode() !== 'loopback' && bridgeFallback ? bridgeFallback() : Promise.resolve(null));
+const traceBridge = (msg) => { if (TRACE) { winston.info(`[iroh] bridge ${msg}`); } };
+
+function takeLocalSocket(fallback, why) {
+  if (route) { return; }
+  route = fallback;
+  winston.warn(`[iroh] ${why} — bridging over the local socket ${fallback.targetPath} instead; something on this machine resets loopback TCP connections (security software, a VPN kill switch)`);
+}
+
+// Where the next stream goes: the socket once taken (or forced), else loopback.
+async function chooseRoute(loopback) {
+  if (!route && bridgeMode() === 'socket') {
+    route = await fallbackTarget();
+    if (route) { winston.info(`[iroh] MSTREAM_BRIDGE=socket: bridging over the local socket ${route.targetPath}`); }
+  }
+  return route || loopback;
+}
+
+// The backend socket for one stream.
+async function connectBackend(loopback) {
+  const target = await chooseRoute(loopback);
+  const t0 = Date.now();
+  try {
+    const socket = await connectOnce(target);
+    traceBridge(`${describeTarget(target)}: connected in ${Date.now() - t0}ms`);
+    return socket;
+  } catch (err) {
+    traceBridge(`${describeTarget(target)}: ${err.code || err.message} after ${Date.now() - t0}ms`);
+    const fallback = target === loopback ? await fallbackTarget() : null;
+    if (!fallback) { throw err; }
+    try {
+      const socket = await connectOnce(fallback);
+      takeLocalSocket(fallback, `loopback bridge refused (${err.where}: ${err.message})`);
+      return socket;
+    } catch (err2) {
+      err.message = `${err.message}; local socket ${fallback.targetPath}: ${err2.message}`;
+      throw err;
+    }
+  }
+}
+
+// One HEAD / to a bridge target, bounded: any HTTP answer means bridged
+// streams reach the web server there; a refusal, a reset or silence is what
+// a tunnel client gets instead. `/` sits in front of the auth wall, so the
+// probe needs no token and logs no rejection. Never rejects.
+export function probeBackend(target, timeoutMs = 5000) {
+  const where = describeTarget(target);
+  const at = target.targetPath ? { socketPath: target.targetPath } : { host: target.targetHost, port: target.targetPort };
+  return new Promise((resolve) => {
+    const failed = (why) => resolve({ ok: false, error: `${why} (${where})` });
+    let req;
+    try {
+      req = http.request({ ...at, method: 'HEAD', path: '/', agent: false, timeout: timeoutMs }, (res) => {
+        res.resume();
+        resolve({ ok: true, error: null });
+      });
+    } catch (err) {
+      failed(err.message); // a bad port throws before any socket exists
+      return;
+    }
+    req.on('timeout', () => req.destroy(new Error(`no answer within ${timeoutMs / 1000}s`)));
+    req.on('error', (err) => {
+      // TLS answering plain HTTP: an alert the parser chokes on (HPE_*) or
+      // a bare hang-up (ECONNRESET), depending on the OpenSSL build. A
+      // failed connect's message names the address already.
+      if (err.code === 'ECONNRESET' || String(err.code).startsWith('HPE_')) {
+        failed('no plain-HTTP answer (TLS on that port?)');
+      } else if (err.syscall === 'connect') {
+        resolve({ ok: false, error: err.message });
+      } else {
+        failed(err.message);
+      }
+    });
+    req.end();
+  });
+}
+
+// A failed probe is tried again after each of these waits: an event loop
+// stalled past the probe's timeout right after start() (a slow box at boot)
+// must not report a working bridge as broken.
+const PROBE_RETRY_MS = [1000, 2000];
+
+// An endpoint's view of its bridge, for its admin status route: run() probes
+// after a start, clear() forgets on stop, get() reads { bridgeOk, bridgeError,
+// bridgeVia } (all null until the probe answers, retries included; bridgeVia
+// is 'loopback' or 'local-socket'). The probe follows the streams' route, and
+// a loopback that fails its retries is probed over the local socket, which
+// the streams then take. A probe that lands after a newer run() or a clear()
+// is dropped.
+export function createBridgeCheck(tag) {
+  let result = null;
+  let runs = 0;
+  // The final { ok, error } of a target after the retries, or null once a
+  // newer run() or a clear() made this one stale.
+  const probe = (mine, target, retries) => probeBackend(target).then((r) => {
+    if (mine !== runs) { return null; }
+    if (r.ok || retries.length === 0) { return r; }
+    return new Promise((resolve) => {
+      setTimeout(() => resolve(mine === runs ? probe(mine, target, retries.slice(1)) : null), retries[0]).unref();
+    });
+  });
+  const report = (mine, r, target) => {
+    if (mine !== runs) { return; }
+    result = { ...r, via: target.targetPath ? 'local-socket' : 'loopback' };
+    if (!r.ok) { winston.warn(`${tag} is up but cannot reach the web server: ${r.error}`); }
+  };
+  return {
+    run(loopback) {
+      const mine = ++runs;
+      result = null;
+      (async () => {
+        const first = await chooseRoute(loopback);
+        const r = await probe(mine, first, PROBE_RETRY_MS);
+        if (r === null) { return; }
+        const fallback = !r.ok && first === loopback ? await fallbackTarget() : null;
+        if (!fallback) { report(mine, r, first); return; }
+        const r2 = await probe(mine, fallback, PROBE_RETRY_MS);
+        if (r2 === null) { return; }
+        if (r2.ok) { takeLocalSocket(fallback, `loopback bridge not answering (${r.error})`); report(mine, r2, fallback); return; }
+        report(mine, { ok: false, error: `${r.error}; local socket ${fallback.targetPath}: ${r2.error}` }, loopback);
+      })().catch((err) => winston.warn(`${tag} bridge check failed: ${err.message}`));
+    },
+    clear() { runs += 1; result = null; },
+    get() { return { bridgeOk: result ? result.ok : null, bridgeError: result ? result.error : null, bridgeVia: result ? result.via : null }; },
+  };
 }
 
 // ---------------------------------------------------------------------------

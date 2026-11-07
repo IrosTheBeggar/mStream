@@ -26,6 +26,7 @@ import * as db from '../db/manager.js';
 import * as discoveryDb from '../db/discovery-db.js';
 import { requireIndex, resolveVisible, decodeSeedVector } from './discovery.js';
 import { renderMetadataObj, libraryFilter } from './db.js';
+import { parseMoodsQuery, applicableMoods, hashMatcher } from './mood-filter.js';
 import { joiValidate } from '../util/validation.js';
 
 const DEFAULT_LIMIT = 25;
@@ -41,6 +42,12 @@ export function setup(mstream) {
       limit: Joi.number().integer().min(1).max(MAX_LIMIT).default(DEFAULT_LIMIT),
     });
     const { value: body } = joiValidate(schema, req.body);
+    // An optional mood filter (api/mood-filter.js) in the `moods` query
+    // parameter — the body schema above stays strict, and a caller sends
+    // the filter where a server older than it ignores it. Applied, it is
+    // echoed back (`moods`): the caller keeps rows only from answers that
+    // carry the echo (discovery-federation.js mergePeerAnswers).
+    const { moods, echo } = applicableMoods(parseMoodsQuery(req.query?.moods));
 
     const index = requireIndex();   // 403 while discovery is off/unavailable
     const model = { id: index.modelId, version: index.modelVersion };
@@ -52,7 +59,7 @@ export function setup(mstream) {
     // Index exists but holds zero vectors (nothing embedded yet): a valid
     // empty answer — and there is no dim to validate the query against.
     if (index.dim === null) {
-      return res.json({ model, results: [] });
+      return res.json({ model, results: [], ...(echo && { moods: echo }) });
     }
 
     const q = decodeSeedVector(index, body.embedding);
@@ -65,10 +72,12 @@ export function setup(mstream) {
     const ddb = discoveryDb.openDiscoveryDbIfExists() ? discoveryDb.getDiscoveryDb() : null;
     const mbidStmt = ddb ? ddb.prepare('SELECT recording_mbid FROM discovery_tracks WHERE audio_hash = ?') : null;
     // Same cheap-PK-lookup reasoning for the album's release-group MBID:
-    // trackQuery joins albums for the name but not this column, and only
-    // the rows that make the cut pay for it.
-    const rgStmt = db.getDB().prepare(
-      'SELECT al.mbz_release_group_id AS rg FROM tracks t JOIN albums al ON al.id = t.album_id WHERE t.id = ?');
+    // trackQuery joins albums for the name and the credit but not this, and
+    // only the rows that make the cut pay for it.
+    const albumStmt = db.getDB().prepare(`
+      SELECT al.mbz_release_group_id AS rg
+        FROM tracks t JOIN albums al ON al.id = t.album_id
+       WHERE t.id = ?`);
 
     const results = [];
     // Bounded like the local similarity routes (2026-07 review): a starved
@@ -76,32 +85,52 @@ export function setup(mstream) {
     // otherwise walk the ENTIRE ranking — a full-index visibility sweep of
     // synchronous main-thread SQL per request, on a machine-facing route.
     // withGenres:false — this response never renders track genres.
-    const maxConsidered = Math.max(body.limit * 50, 2000);
+    // A mood filter walks 4× deeper (it drops most near neighbours) and
+    // tests each candidate with one indexed lookup before the visibility
+    // probe, so the cost per considered row stays a single small query.
+    const matches = moods ? hashMatcher(db.getDB(), moods) : null;
+    const maxConsidered = Math.max(body.limit * 50, 2000) * (moods ? 4 : 1);
     let considered = 0;
     let capped = false;
     // topK = the walk's cap (see the local similar/tracks route — audit M9).
     for (const { entry, similarity } of sim.rankTracks(index, q, null, maxConsidered)) {
       if (results.length >= body.limit) { break; }
       if (++considered > maxConsidered) { capped = true; break; }
+      if (matches && !matches(entry.hash)) { continue; }
       const row = resolveVisible(uid, filter, entry.hash, { withGenres: false });
       if (!row) { continue; }   // no copy inside the caller's granted libraries
+      const rendered = renderMetadataObj(row);
+      const al = albumStmt.get(row.id);
       results.push({
-        filepath: renderMetadataObj(row).filepath,
+        filepath: rendered.filepath,
         artist: row.artist_name || null,
         title: row.title || null,
         // Catalogue fields (discovery.db V3): the library row already carries
         // album name (trackQuery joins albums), year and isrc (tracks.*).
         album: row.album_name || null,
+        // The album's own credit, apart from the track's artist (a
+        // compilation's "Various Artists"); null without an album or a
+        // credit. Absent from servers before 2026-10-19. It is the one
+        // /db/albums lists (ALBUM_ITEM_COLUMNS) — trackQuery's album_credit,
+        // the ALBUMARTIST consensus, else the album's primary artist — a
+        // value this server's album-songs `album_artist` matches verbatim,
+        // so a caller's album copy asks for the album whole.
+        albumArtist: row.album_credit || null,
         year: row.year || null,
         isrc: row.isrc || null,
-        releaseGroupMbid: rgStmt.get(row.id)?.rg || null,
+        releaseGroupMbid: al?.rg || null,
         duration: row.duration ?? null,
         similarity: Math.round(similarity * 10000) / 10000,
         genreTags: entry.genreTags,
         recordingMbid: mbidStmt ? (mbidStmt.get(entry.hash)?.recording_mbid || null) : null,
+        // The track's cover, named exactly as this server's browse rows
+        // carry it (metadata 'album-art') — the file /album-art/<name>
+        // serves, so a caller's art proxy (GET /api/v1/federation/peers/
+        // :id/art/<name>) fetches it as is. Null when the track has none.
+        albumArt: rendered.metadata['album-art'] || null,
       });
     }
 
-    res.json({ model, capped, results });
+    res.json({ model, capped, results, ...(echo && { moods: echo }) });
   });
 }

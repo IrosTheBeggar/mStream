@@ -134,12 +134,16 @@ if (validationError) {
 // ── Open SQLite database ────────────────────────────────────────────────────
 
 const db = new DatabaseSync(loadJson.dbPath);
-db.exec('PRAGMA journal_mode = WAL');
-db.exec('PRAGMA foreign_keys = ON');
 // Wait up to 5s when another connection holds the write lock (e.g. the
 // main server's shared-playlist cleanup or any API-triggered write).
 // Without this, the scanner fails immediately with "database is locked".
+// First, so it covers the journal_mode read below too.
 db.exec('PRAGMA busy_timeout = 5000');
+// No journal_mode here: the server sets it on the database header and this
+// connection inherits it — WAL, or DELETE where file locks can't keep the
+// processes apart (src/db/journal-mode.js). Forcing WAL would undo that.
+const walMode = db.prepare('PRAGMA journal_mode').get().journal_mode === 'wal';
+db.exec('PRAGMA foreign_keys = ON');
 // V31 AFTER triggers on tracks/artists/albums maintain the FTS5
 // index. Not strictly required for V31's design (the triggers don't
 // recursively fire other user triggers), but set on as defence-in-
@@ -151,8 +155,9 @@ db.exec('PRAGMA recursive_triggers = ON');
 // fast-path — and skips the per-COMMIT fsync — a big win for bulk inserts,
 // especially on the HDD/NAS storage this often runs on. Safe here because
 // scanner data is re-derivable; the main server connection (manager.js)
-// stays on the FULL default for user-data durability.
-db.exec('PRAGMA synchronous = NORMAL');
+// stays on the FULL default for user-data durability. Under the DELETE
+// fallback NORMAL is not corruption-proof on a power cut, so FULL there.
+db.exec(`PRAGMA synchronous = ${walMode ? 'NORMAL' : 'FULL'}`);
 // Keep the FTS5 index + end-of-scan cleanup working set in RAM.
 db.exec('PRAGMA cache_size = -65536');   // 64 MB page cache
 db.exec('PRAGMA temp_store = MEMORY');

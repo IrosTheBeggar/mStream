@@ -22,7 +22,8 @@
 //     terminal step then materialised the whole library per pick).
 //
 // Orthogonal to both modes are the ALWAYS-ON base conditions — the
-// genre filter, the sonic-similarity pool, and the duration window.
+// genre filter, the mood filter, the sonic-similarity pool, and the
+// duration window.
 // The waterfall relaxes BPM/key/artist constraints WITHIN them and
 // never relaxes them, so an over-narrow one 400s rather than serving
 // a pick outside the user's stated promise.
@@ -40,12 +41,12 @@
 // `limit` (default 1, capped at PICK_LIMIT_MAX) asks for a batch instead
 // of a single pick. A batch is served from the same bounded pool a pick
 // is: distinct rows, best tier first, fresh (not in the cooldown) before
-// repeats, and every song served advances the ignoreList. It can fall
-// short of `limit` — when fewer candidates are in scope, or when the
-// waterfall step that wins holds fewer matches. The chain deliberately
-// does NOT cascade into a more relaxed step to fill the remainder: the
-// tail of the batch would then break the constraint its head satisfied,
-// and the caller couldn't tell which songs are which.
+// repeats, repeats oldest first, and every song served advances the
+// ignoreList. It can fall short of `limit` — when fewer candidates are in
+// scope, or when the waterfall step that wins holds fewer matches. The
+// chain deliberately does NOT cascade into a more relaxed step to fill the
+// remainder: the tail of the batch would then break the constraint its
+// head satisfied, and the caller couldn't tell which songs are which.
 //
 // This is step B of the Auto-DJ velvet port. Similar-artists support
 // (the `artists` / `ignoreArtists` filters) is step D and lands in a
@@ -61,50 +62,16 @@ import { renderMetadataObj, libraryFilter, trackQuery, fetchGenresForTrack, fetc
 import { PERFORMER_ROLES_SQL } from '../db/artist-roles.js';
 import { requireIndex, resolveSeedTrack, decodeSeedVector } from './discovery.js';
 import { joiValidate } from '../util/validation.js';
+import { parseMoods, applicableMoods, trackMoodClause } from './mood-filter.js';
 import { nameKey } from '../db/name-key.js';
 import WebError from '../util/web-error.js';
+import { CAMELOT_TO_KEYS } from '../db/camelot.js';
 
 // ── Camelot → raw-key name expansion ────────────────────────────────────────
 //
-// Clients send Camelot codes (1A, 8B, etc.) because that's what the
-// Auto-DJ panel sends (a habit inherited from the velvet fork's UI) and
-// what most DJ-tagged libraries use as the user-
-// facing key notation. The DB stores whatever the scanner found
-// verbatim — TKEY frames in the wild are a mix of Camelot codes and
-// raw key names ("A minor", "C major"), with enharmonic spellings
-// ("Ab" vs "G#") thrown in. This map covers all three forms so a
-// `musicalKeys: ['8A']` filter matches "A minor" / "Am" / "Amin" /
-// raw "8A" alike.
-//
-// Ported from _CAMELOT_TO_KEYS in the velvet fork (aroundmyroom/mStream,
-// its src/db/sqlite-backend.js — a file this tree never had). The fork is
-// no longer tracked, so this table is the only copy to maintain.
-export const CAMELOT_TO_KEYS = Object.freeze({
-  '1A':  ['1A', 'Ab minor', 'Abmin', 'G# minor', 'G#min', 'Abm', 'G#m'],
-  '1B':  ['1B', 'B major',  'Bmaj',  'B'],
-  '2A':  ['2A', 'Eb minor', 'Ebmin', 'D# minor', 'D#min', 'Ebm', 'D#m'],
-  '2B':  ['2B', 'F# major', 'F#maj', 'Gb major', 'Gbmaj', 'F#', 'Gb'],
-  '3A':  ['3A', 'Bb minor', 'Bbmin', 'A# minor', 'A#min', 'Bbm', 'A#m'],
-  '3B':  ['3B', 'Db major', 'Dbmaj', 'C# major', 'C#maj', 'Db', 'C#'],
-  '4A':  ['4A', 'F minor',  'Fmin',  'Fm'],
-  '4B':  ['4B', 'Ab major', 'Abmaj', 'G# major', 'G#maj', 'Ab', 'G#'],
-  '5A':  ['5A', 'C minor',  'Cmin',  'Cm'],
-  '5B':  ['5B', 'Eb major', 'Ebmaj', 'D# major', 'D#maj', 'Eb', 'D#'],
-  '6A':  ['6A', 'G minor',  'Gmin',  'Gm'],
-  '6B':  ['6B', 'Bb major', 'Bbmaj', 'A# major', 'A#maj', 'Bb', 'A#'],
-  '7A':  ['7A', 'D minor',  'Dmin',  'Dm'],
-  '7B':  ['7B', 'F major',  'Fmaj',  'F'],
-  '8A':  ['8A', 'A minor',  'Amin',  'Am'],
-  '8B':  ['8B', 'C major',  'Cmaj',  'C'],
-  '9A':  ['9A', 'E minor',  'Emin',  'Em'],
-  '9B':  ['9B', 'G major',  'Gmaj',  'G'],
-  '10A': ['10A', 'B minor', 'Bmin',  'Bm'],
-  '10B': ['10B', 'D major', 'Dmaj',  'D'],
-  '11A': ['11A', 'F# minor','F#min', 'Gb minor', 'Gbmin', 'F#m', 'Gbm'],
-  '11B': ['11B', 'A major', 'Amaj',  'A'],
-  '12A': ['12A', 'C# minor','C#min', 'Db minor', 'Dbmin', 'C#m', 'Dbm'],
-  '12B': ['12B', 'E major', 'Emaj',  'E'],
-});
+// The table itself lives in src/db/camelot.js (shared with the flow
+// orderer, src/db/flow-order.js); re-exported here for existing importers.
+export { CAMELOT_TO_KEYS };
 
 // Convert Camelot codes to the flat list of raw-key names the DB
 // might contain. Codes are case-folded ('8a' == '8A') — hand-typed
@@ -188,6 +155,12 @@ export function buildBpmKeyFilter(opts) {
 // every waterfall step without per-step plumbing. The filter is
 // "always on" — the waterfall never relaxes it.
 //
+// `source` ('tag' | 'model', V79 track_genres.source) narrows which links
+// count: only the files' own tags, or only the discovery model's genres
+// (src/db/genre-sync.js) — the same choice /db/genres and /db/genre-songs
+// take. Omitted, every link counts, as before. Under blacklist it narrows
+// what is skipped: skipping the model's "Rock" keeps a song tagged Rock.
+//
 // Empty / missing `genres` → no-op regardless of mode.
 export function buildGenreFilter(opts) {
   const clauses = [];
@@ -206,9 +179,10 @@ export function buildGenreFilter(opts) {
     clauses.push(`${operator} (
       SELECT 1 FROM track_genres tg
        JOIN genres g ON g.id = tg.genre_id
-       WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${ph})
+       WHERE tg.track_id = t.id AND g.name COLLATE NOCASE IN (${ph})${opts.source ? ' AND tg.source = ?' : ''}
     )`);
     params.push(...opts.genres);
+    if (opts.source) params.push(opts.source);
   }
 
   return { clauses, params };
@@ -455,8 +429,9 @@ export function classifyRow(row, opts) {
 // so a batch is handed out from the front of this ranking — in-range
 // rows before unknown-tag rows before known-wrong rows — and a single
 // pick takes the best row present, exactly as the old best-tier-only
-// filter did. Input order carries the fresh-before-cooled priority (see
-// finalisePick), which the stable sort preserves within a tier.
+// filter did. Input order carries the fresh-before-cooled, oldest-repeat-
+// first priority (see finalisePick), which the stable sort preserves
+// within a tier.
 export function rankByTier(rows, opts) {
   const haveBpm = Array.isArray(opts.bpmRanges) && opts.bpmRanges.length > 0;
   const haveKey = Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0;
@@ -825,7 +800,7 @@ export function runRandomSongs(req, body) {
   // waterfall). Whitelist mode BLOCKS tracks with zero track_genres
   // rows; blacklist mode ALLOWS them (no overlap with the blocklist).
   // Empty `genres` array → no-op regardless of mode.
-  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode });
+  const genre = buildGenreFilter({ genres: body.genres, mode: body.genreMode, source: body.genreSource });
   if (genre.clauses.length > 0) {
     baseConditions.push(...genre.clauses);
     baseParams.push(...genre.params);
@@ -842,6 +817,16 @@ export function runRandomSongs(req, body) {
   if (duration.clauses.length > 0) {
     baseConditions.push(...duration.clauses);
     baseParams.push(...duration.params);
+  }
+
+  // Mood filter (api/mood-filter.js) — ALWAYS-ON like the genre filter:
+  // the waterfall relaxes BPM / key / artists within it and never the
+  // mood, so a filter nothing in scope meets is the 400 below rather
+  // than a pick off the user's mood. `body.moods` is the route's parsed,
+  // applicable filter (null while the server has no scores to filter
+  // by); one track_moods probe per candidate row.
+  if (body.moods) {
+    baseConditions.push(trackMoodClause(body.moods));
   }
 
   // Playlist files indexed as tracks (supportedAudioFiles m3u) are never
@@ -1131,18 +1116,25 @@ export function runRandomSongs(req, body) {
 // served unknown-tag row. Within a tier, rows not served recently come
 // first; when the cooldown covers the whole candidate set (tiny library /
 // narrow filters / long session) the repeats fill in — they beat stalling
-// the session. Simple mode already excluded the cooled ids in SQL, so its
-// fresh partition only matters after a repeat top-up; the waterfall passes
-// `tierOpts` so its relaxed steps still serve in-range rows first. Every
-// query behind `rows` ends in RANDOM(), so the front of the ordering is a
-// uniform sample and a single pick is as random as it ever was.
+// the session — oldest first, by their place in the ignoreList. The song
+// served longest ago comes back first and the one just served comes last,
+// so a fully cooled pool cycles through itself instead of drawing at
+// random, which could serve the same song twice running. Simple mode
+// already excluded the cooled ids in SQL, so its fresh partition only
+// matters after a repeat top-up; the waterfall passes `tierOpts` so its
+// relaxed steps still serve in-range rows first. Every query behind `rows`
+// ends in RANDOM(), so while fresh rows remain the front of the ordering
+// is a uniform sample and a single pick is as random as it ever was.
 function finalisePick(req, rows, body, sonic, tierOpts = null) {
   const limit = pickLimitFrom(body);
   const sent = ignoreIdsFrom(body);
-  const ignoreSet = new Set(sent);
+  // Each cooled id's place in the list, newest last (a duplicate keeps
+  // its newest place).
+  const servedAt = new Map(sent.map((id, i) => [id, i]));
   let ordered = [
-    ...rows.filter((r) => !ignoreSet.has(r.id)),
-    ...rows.filter((r) => ignoreSet.has(r.id)),
+    ...rows.filter((r) => !servedAt.has(r.id)),
+    ...rows.filter((r) => servedAt.has(r.id))
+      .sort((a, b) => servedAt.get(a.id) - servedAt.get(b.id)),
   ];
   if (tierOpts) { ordered = rankByTier(ordered, tierOpts); }
   const picked = ordered.slice(0, limit);
@@ -1315,6 +1307,9 @@ export function setup(mstream) {
       // selects a small subset.
       genres: Joi.array().items(Joi.string().min(1).max(200)).max(200).optional(),
       genreMode: Joi.string().valid('whitelist', 'blacklist').default('whitelist'),
+      // Which genre links the list matches (V79 track_genres.source): 'tag'
+      // (the files' own) or 'model' (the discovery model's). Omitted, both.
+      genreSource: Joi.string().valid('tag', 'model').optional(),
       // Track-length window, in SECONDS (the units of tracks.duration and
       // of the `duration` field on the wire). Both bounds are independent
       // and optional; 0 means "no bound on this side" so a client can send
@@ -1329,6 +1324,9 @@ export function setup(mstream) {
       minDuration: Joi.number().min(0).max(86400).optional(),
       maxDuration: Joi.number().min(0).max(86400).optional(),
       allowUnknownDuration: Joi.boolean().optional(),
+      // The browse lists' mood filter (api/mood-filter.js), validated —
+      // strictly, a 400 on anything else — by parseMoods below.
+      moods: Joi.any(),
       // Sonic similarity (discovery embeddings) — both-or-neither, enforced
       // by the .and() below.
       //   • similarTo:     1-8 file paths. One = plain seed; several average
@@ -1384,6 +1382,11 @@ export function setup(mstream) {
       }, 'duration window ordering');
     const { value } = joiValidate(schema, req.body || {});
 
-    res.json(runRandomSongs(req, value));
+    // The answer echoes the filter it applied ({} when none) while this
+    // server has mood scores, and leaves `moods` out otherwise — what a
+    // server older than the filter answers — so a caller that asked a
+    // connected server can tell an unfiltered pick from a filtered one.
+    const { moods, echo } = applicableMoods(parseMoods(value.moods));
+    res.json({ ...runRandomSongs(req, { ...value, moods }), ...(echo && { moods: echo }) });
   });
 }

@@ -143,6 +143,9 @@ export function setup(mstream) {
   // composite QR ticket, which carries the connect secret — hence admin-only.
   // The tunnel is independent of the HTTP server, so enable/disable and secret
   // rotation take effect LIVE (start/stop the endpoint) without a reboot.
+  // bridgeOk/bridgeError: whether the web server answered the tunnel's own
+  // probe of its bridge target (null until it has).
+  // bridgeVia: which way the bridge goes, loopback or local-socket (iroh-common).
 
   mstream.get('/api/v1/admin/iroh', async (req, res) => {
     const enabled = config.program.iroh.enabled === true;
@@ -150,6 +153,7 @@ export function setup(mstream) {
     let endpointId = null;
     let relayUrl = null;
     let qr = null;
+    let bridge = { bridgeOk: null, bridgeError: null, bridgeVia: null };
     try {
       const iroh = await import('../state/iroh.js');
       endpointId = iroh.getEndpointId();
@@ -157,11 +161,12 @@ export function setup(mstream) {
         qr = iroh.getTicket();
         const addr = iroh.getEndpointAddr();
         relayUrl = addr ? addr.relayUrl() : null;
+        bridge = iroh.getBridgeCheck();
       }
     } catch (_err) {
       available = false; // native binary not present on this platform
     }
-    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr });
+    res.json({ enabled, available, running: endpointId !== null, endpointId, online: relayUrl !== null, relayUrl, qr, ...bridge });
   });
 
   mstream.post('/api/v1/admin/iroh', async (req, res) => {
@@ -179,7 +184,6 @@ export function setup(mstream) {
       const iroh = await import('../state/iroh.js');
       if (enabled) {
         await iroh.start({
-          targetPort: config.program.port,
           secretKey: config.program.iroh.secretKey,
           connectSecret: config.program.iroh.connectSecret,
         });
@@ -208,7 +212,6 @@ export function setup(mstream) {
       if (config.program.iroh.enabled) {
         await iroh.stop();
         await iroh.start({
-          targetPort: config.program.port,
           secretKey: config.program.iroh.secretKey,
           connectSecret: config.program.iroh.connectSecret,
         });
@@ -644,11 +647,23 @@ export function setup(mstream) {
     // network?" as opposed to "the process is running".
     let joined = false;
     let neighbors = 0;
+    // Gossip liveness as the sidecar (≥ v1.4.0) reports it — null on older
+    // sidecars: seconds since the last received gossip message / any gossip
+    // event, whether its actor probe last passed, and how often it had to
+    // re-create its subscriber. "Connected, 4 neighbors, last heard 22h
+    // ago" is the honest reading of the 2026-10-22 wedge.
+    let gossip = { lastGossipAgeSecs: null, lastEventAgeSecs: null, actorAlive: null, subscriberRestarts: null };
     if (discoveryP2p.isRunning()) {
       try {
         const s = await discoveryP2p.status();
         joined = s.joined === true;
         neighbors = Number(s.neighbors) || 0;
+        gossip = {
+          lastGossipAgeSecs: Number.isFinite(s.lastGossipAgeSecs) ? s.lastGossipAgeSecs : null,
+          lastEventAgeSecs: Number.isFinite(s.lastEventAgeSecs) ? s.lastEventAgeSecs : null,
+          actorAlive: typeof s.actorAlive === 'boolean' ? s.actorAlive : null,
+          subscriberRestarts: Number.isFinite(s.subscriberRestarts) ? s.subscriberRestarts : null,
+        };
       } catch (err) {
         winston.warn(`discovery p2p sidecar status query failed: ${err.message}`);
       }
@@ -664,6 +679,7 @@ export function setup(mstream) {
       ticket: discoveryP2p.getEndpointTicket(),
       joined,
       neighbors,
+      gossip,
       // Who those neighbors are (endpoint ids), tracked from the sidecar's
       // neighbor events. Bounded by the gossip fan-out (hyparview active
       // view), so never more than a handful. The panel's mesh map joins
@@ -945,7 +961,6 @@ export function setup(mstream) {
 
         const federation = await import('../state/federation.js');
         await federation.start({
-          targetPort: config.program.port,
           secretKey: config.program.federation.secretKey,
         });
         const engine = await import('../state/federation-requests.js');

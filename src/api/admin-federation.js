@@ -25,6 +25,7 @@ import * as db from '../db/manager.js';
 import * as fedDb from '../db/federation.js';
 import * as fedLimits from './federation-limits.js';
 import { forgetPeerAccess } from './federation-browse.js';
+import { peerFailures } from './discovery-federation.js';
 
 // Per-key bandwidth caps (0 = unlimited). Optional at mint time — absent
 // fields fall back to config.federation.limits, which is also what the UI
@@ -88,12 +89,14 @@ export function register(mstream) {
     let available = true;
     let endpointId = null;
     let relayUrl = null;
+    let bridge = { bridgeOk: null, bridgeError: null, bridgeVia: null };
     try {
       const federation = await import('../state/federation.js');
       endpointId = federation.getEndpointId();
       if (endpointId) {
         const addr = federation.getEndpointAddr();
         relayUrl = addr ? addr.relayUrl() : null;
+        bridge = federation.getBridgeCheck();
       }
     } catch (_err) {
       available = false; // native binary not present on this platform
@@ -101,6 +104,9 @@ export function register(mstream) {
     res.json({
       enabled, available, running: endpointId !== null, endpointId,
       online: relayUrl !== null, relayUrl,
+      // Whether the web server answered the endpoint's probe of its bridge
+      // target (null until it has) — peers' requests take that hop.
+      ...bridge,
       // What the mint dialog pre-fills; per-key values live on the key rows.
       limitDefaults: config.program.federation.limits,
       // The federation-requests inbox (V67): whether discovery peers may
@@ -124,7 +130,6 @@ export function register(mstream) {
       const federation = await import('../state/federation.js');
       if (enabled) {
         await federation.start({
-          targetPort: config.program.port,
           secretKey: config.program.federation.secretKey,
         });
       } else {
@@ -452,6 +457,8 @@ export function register(mstream) {
 
     const client = await import('../state/federation-client.js');
     const result = await client.testPeer(peer);
+    // It answered: the next Discover open dials it, cool-down or not.
+    if (result.ok) { peerFailures.forget(peer.id); }
     res.json({ ...result, peer: fedDb.getFederationPeerById(peer.id) });
   });
 
@@ -483,6 +490,7 @@ export function register(mstream) {
       client.closePeerBridge(id);
     } catch (_err) { /* nothing live to close */ }
     forgetPeerAccess(id);
+    peerFailures.forget(id);
     winston.info(`[federation] ${req.user.username} removed peer id=${id}`);
     res.json({});
   });

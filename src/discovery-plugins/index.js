@@ -31,6 +31,10 @@ export {
   refreshProbes, probeStatus, isPluginUnavailable, probePlugin, forgetProbe,
 } from './registry.js';
 export {
-  RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase,
-  JOB_SCOPES, scopeMissing, jobKey, jobKeysFor,
+  RECOMMENDATION_SOURCES, recommendationSchema, normalizeRecommendation, recommendationKey, searchPhrase, albumPhrase,
+  NULLABLE_FACTS, repairRecommendation,
+  JOB_SCOPES, scopeMissing, jobKey, jobKeysFor, albumCredit,
 } from './recommendation.js';
+// The admin's cap on one folder copy, as the copy reads it — the plug-in
+// listing hands it to clients.
+export { folderSongCap } from './plugins/federation-copy.js';

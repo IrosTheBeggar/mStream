@@ -53,6 +53,7 @@ import { ingestPlays, resolveLocalTrack, MAX_BATCH } from '../stats/ingest.js';
 import { forwarder, planScrobbles } from '../stats/forward.js';
 import { enricher } from '../stats/enrich.js';
 import { runRetentionSweep, lastSweepInfo } from '../stats/retention.js';
+import { onStatsReset } from '../discovery/taste-queries.js';
 import { nowPlayingAt } from './scrobbler.js';
 import * as admin from '../util/admin.js';
 import {
@@ -412,7 +413,8 @@ export function setup(mstream) {
     }), req.query);
     let r;
     try { r = customRange(v.from, v.to); } catch (err) { throw new WebError(err.message, 400); }
-    res.json(deletePlayEvents(d(), req.user.id, { from: toSqlite(r.from), to: toSqlite(r.to) }));
+    const out = deletePlayEvents(d(), req.user.id, { from: toSqlite(r.from), to: toSqlite(r.to) });
+    res.json(out);
   });
 
   mstream.post('/api/v1/stats/reset', (req, res) => {
@@ -420,7 +422,12 @@ export function setup(mstream) {
     const { value } = joiValidate(Joi.object({
       scope: Joi.string().valid(...RESET_SCOPES).required(),
     }), req.body || {});
-    res.json({ scope: value.scope, ...resetStats(d(), req.user.id, value.scope) });
+    const out = resetStats(d(), req.user.id, value.scope);
+    // The Discover page stamps a reset marker, so it never seeds from
+    // counters the user just asked to forget
+    // (src/discovery/taste-queries.js onStatsReset).
+    onStatsReset(d(), req.user.id, value.scope);
+    res.json({ scope: value.scope, ...out });
   });
 
   // The whole log, one JSON object per line, oldest first — a backup, a

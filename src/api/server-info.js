@@ -59,6 +59,7 @@ import * as discoveryPlugins from '../discovery-plugins/index.js';
 import * as transcode from './transcode.js';
 import { describeAllowance } from './federation-limits.js';
 import { describeProxy } from './federation-stream.js';
+import { moodFiltersReady } from './mood-filter.js';
 
 // The server's stable id: the random UUID config.js generates on first boot
 // and persists (discovery.mdns.instanceId — the key's name predates this
@@ -123,6 +124,27 @@ export function buildFeatures() {
     // the marks the peer browse draws. A version fact, like `sync`: a
     // client gates on the key, never on the version string.
     discoveryOwned: true,
+    // The history-seeded Discover page: POST /api/v1/discovery/taste (one
+    // stateless call — a random batch of the user's finished songs in a
+    // window seeds library / network / peers results; the call stores
+    // nothing) and POST /api/v1/discovery/plugin-jobs/lookup/batch. An integer
+    // GENERATION like `stats`, not a boolean: a later body key ships as 2
+    // and clients gate on `>= n` with no version floors. A version fact —
+    // clients show the page on `discovery === true && discoveryTaste >= 1`;
+    // whether there is anything to seed from is the route's answer.
+    // 2: the body takes `moods`, a mood filter (api/mood-filter.js) — the
+    // route's Joi is strict, so a client sends it only from 2 on.
+    discoveryTaste: 2,
+    // A mood filter would find something RIGHT NOW: the mood heads are on
+    // and some songs have scores (api/mood-filter.js). The local Discover
+    // page shows its filters on this, and so do the song lists (/db/rated,
+    // /db/recent/added: bare arrays, with no room for an echo) and Auto DJ
+    // (/db/random-songs, whose schema is strict); the browse lists read the
+    // `moods` key their own answers carry (a connected server's included).
+    // Every server that sends the key takes `moods` on all of them, its
+    // its `threshold` included, and its song lists carry each song's
+    // `moodMatch`.
+    moodFilters: moodFiltersReady(),
     // false, or the server's transcode defaults.
     transcode: transcodeInfo,
     // Per-format booleans from config.
@@ -137,6 +159,12 @@ export function buildFeatures() {
     // contract as the discovery flags: the key's presence says this VERSION
     // has the route; clients never probe for it.
     sync: true,
+    // Flow ordering (POST /api/v1/db/flow): a list of songs back in an order
+    // where each flows into the next. An integer GENERATION like
+    // `discoveryTaste` — a later body key ships as 2 and clients gate on
+    // `>= n`. A version fact, unconditional: the route orders by BPM, key and
+    // moods with discovery off, so there is nothing to probe.
+    flowOrder: 1,
     // The peer stream proxy (/api/v1/federation/peers/:id/stream/*,
     // api/federation-stream.js) forwards X-mStream-Purpose: `{ purpose:
     // true }`, so a client copying a peer's files through this server knows

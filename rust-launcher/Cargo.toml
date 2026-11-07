@@ -22,7 +22,7 @@ path = "src/main.rs"
 # Since tray-icon 0.24 the GTK/appindicator Linux backend is ALSO behind a
 # (default) feature, so it has to come back by name: without `gtk` the crate
 # still compiles on Linux but builds no tray at all.
-tray-icon = { version = "0.24", default-features = false, features = ["gtk"] }
+tray-icon = { version = "0.26", default-features = false, features = ["libappindicator"] }
 # tao's defaults grew a `dbus` feature (0.35+, XDG-portal colour-scheme
 # lookup) that hard-links libdbus-1.so.3 — outside the allowed NEEDED set,
 # and not a -dev package the debian:11 build container installs. We only use
