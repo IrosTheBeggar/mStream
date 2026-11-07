@@ -310,6 +310,29 @@ function spawnTranscode(inputPath, codec, bitrate, offsetSec = 0, sampleRate = n
   return proc;
 }
 
+// ── Stop ffmpeg ─────────────────────────────────────────────────────────────
+// For a client that is gone: SIGTERM, then SIGKILL if ffmpeg is still
+// running KILL_GRACE_MS later. One blocked on a read that never returns (a
+// stuck network mount) can sit out SIGTERM, and a bulk slot is freed only on
+// its 'close': two such and every bulk request queued for a slot until a
+// restart. Same test-override pattern as the bulk constants.
+const KILL_GRACE_MS = Number(process.env.MSTREAM_TEST_TRANSCODE_KILL_GRACE_MS) || 5 * 1000;
+
+function stopTranscode(proc) {
+  const running = () => proc.exitCode === null && proc.signalCode === null;
+  if (!running()) { return; } // exited already, as a finished stream's has
+  if (!proc.killed) { proc.kill('SIGTERM'); }
+  const timer = setTimeout(() => {
+    if (!running()) { return; }
+    winston.warn(`[transcode] ffmpeg (pid ${proc.pid}) still running ${KILL_GRACE_MS}ms after SIGTERM; sending SIGKILL`);
+    proc.kill('SIGKILL');
+  }, KILL_GRACE_MS);
+  if (timer.unref) { timer.unref(); }
+  const clear = () => clearTimeout(timer);
+  proc.once('close', clear);
+  proc.once('error', clear);
+}
+
 // ── Start a live transcode ──────────────────────────────────────────────────
 // Everything between a cache miss and a running ffmpeg: a bulk request's
 // slot, the in-flight mark that lets one from-start stream buffer for the
@@ -374,11 +397,12 @@ async function startTranscode(req, res, { fullPath, filepath, codec, bitrate, sa
   }
 }
 
-// For the unit tests (test/unit/transcode-bulk.test.mjs): the bulk gate and
-// the start of a live transcode, without a library or an ffmpeg.
+// For the unit tests (test/unit/transcode-bulk.test.mjs): the bulk gate,
+// the start of a live transcode and its stop, without a library or an ffmpeg.
 export const _internal = {
   acquireBulkSlot,
   startTranscode,
+  stopTranscode,
   bulkState: () => ({ active: bulkActive, queued: bulkQueue.length }),
 };
 
@@ -564,9 +588,7 @@ export function setup(mstream) {
       // writableFinished is true only when the full response flushed normally;
       // if not, the client bailed early and the transcode is incomplete.
       if (!res.writableFinished) { aborted = true; }
-      if (!proc.killed) {
-        proc.kill('SIGTERM');
-      }
+      stopTranscode(proc);
     });
   });
 }
