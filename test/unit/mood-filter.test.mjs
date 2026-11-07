@@ -7,11 +7,16 @@
  * mergePeerAnswers).
  */
 
-import { describe, test } from 'node:test';
+import { describe, test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import * as config from '../../src/state/config.js';
+import * as db from '../../src/db/manager.js';
 import {
-  MOOD_THRESHOLD, moodMatches, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
+  MOOD_THRESHOLD, moodFiltersReady, moodMatches, moodPredicate, normalizeMoods, parseMoods, parseMoodsQuery, trackMoodClause,
 } from '../../src/api/mood-filter.js';
 import { EMBEDDING_MODELS } from '../../src/db/discovery-features-lib.js';
 import { mergePeerAnswers } from '../../src/api/discovery-federation.js';
@@ -206,6 +211,23 @@ describe('mood filter: request forms', () => {
       assert.throws(() => parseMoodsQuery(bad), (err) => err.status === 400, String(bad).slice(0, 20));
     }
     assert.throws(() => parseMoodsQuery('{"energy":"sleepy"}'), { name: 'ValidationError' });
+  });
+});
+
+describe('mood filter: ready with no database open', () => {
+  let tmpDir;
+  before(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mstream-mood-filter-'));
+    await config.setup(path.join(tmpDir, 'config.json')); // defaults: analyzeMoods on
+  });
+  after(() => { try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* noop */ } });
+
+  // /api/ and ping build their features through moodFiltersReady(); an
+  // in-process caller (a test, a server before its DB opens) gets a plain
+  // false, not a TypeError on the null connection.
+  test('answers false, never throws', () => {
+    assert.equal(db.getDB(), null);
+    assert.equal(moodFiltersReady(), false);
   });
 });
 
