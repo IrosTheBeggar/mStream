@@ -10,7 +10,10 @@ const MSTREAMAPI = (() => {
     // The ping's `discoveryTaste` generation (0 = the server has no Discover
     // page). m.js init() sets it with the other ping flags:
     // `Number(response.discoveryTaste) || 0`.
-    discoveryTaste: 0
+    discoveryTaste: 0,
+    // The ping's `flowOrder` generation (0 = no POST /api/v1/db/flow): the
+    // Flow button and Add All In Flow Order gate on `>= 1`. Set in init().
+    flowOrder: 0
   };
   
   async function req(type, url, dataObject, opts) {
@@ -337,6 +340,14 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + 'api/v1/db/genre-songs', postObject);
   }
 
+  // Flow ordering: the songs back as a permutation of their indices, each
+  // flowing into the next (src/api/flow.js). Rejects with err.status on any
+  // non-2xx — a 429 while the server is busy with another solve. `opts`
+  // carries the AbortSignal webapp/alpha/queue-flow.js times calls out with.
+  mstreamModule.flow = (body, opts) => {
+    return req('POST', mstreamModule.currentServer.host + 'api/v1/db/flow', body, opts);
+  }
+
   ///////////////////// Federation: browsing a PEER's library
   //
   // Every call below is the LOCAL call above it, re-pointed at one peer via
@@ -348,9 +359,9 @@ const MSTREAMAPI = (() => {
   // library, and the peer's namespace is its own; the peer already scopes
   // every answer to the libraries our key was granted.
 
-  function peerReq(peerId, method, apiPath, postObject) {
+  function peerReq(peerId, method, apiPath, postObject, opts) {
     const url = `${mstreamModule.currentServer.host}api/v1/federation/peers/${encodeURIComponent(peerId)}/api/${apiPath}`;
-    return req(method, url, postObject);
+    return req(method, url, postObject, opts);
   }
 
   // The peers this user may browse. Never carries api_key or the endpoint
@@ -398,6 +409,9 @@ const MSTREAMAPI = (() => {
     // peer has no row for — the folder copy's "By your layout" reads its
     // songs' tags with it.
     metadataBatch: (peerId, filepaths) => peerReq(peerId, 'POST', 'api/v1/db/metadata/batch', Array.isArray(filepaths) ? filepaths : []),
+    // The peer orders its own songs (see MSTREAMAPI.flow); a peer without
+    // the route answers 403 or 404 through the proxy.
+    flow: (peerId, body, opts) => peerReq(peerId, 'POST', 'api/v1/db/flow', body, opts),
   };
 
   ///////////////////// Federation requests (admin) — the Discover modal's

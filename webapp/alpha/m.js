@@ -718,22 +718,227 @@ function browsingListMetadata() {
   return byPath;
 }
 
-function addAll() {
+// The rows Add All queues, read from the panel now: each row's peer, path
+// and the metadata it was drawn with. Add All In Flow Order reads the same.
+function addAllRows() {
   const known = browsingListMetadata();
-  ([...document.getElementsByClassName('filez')]).forEach(el => {
+  return ([...document.getElementsByClassName('filez')]).map(el => {
     const fp = el.getAttribute("data-file_location");
     const meta = known.get(fp);
     // A copy per row, like the fresh object each lookup used to bring back:
     // the queue edits its entries' metadata in place (ratings), and that
     // must not reach back into the panel's list.
-    queueRow(peerOf(el), fp, meta && { ...meta });
+    return { peer: peerOf(el), fp, meta: meta && { ...meta } };
   });
+}
+
+function addAll() {
+  addAllRows().forEach(r => queueRow(r.peer, r.fp, r.meta));
 }
 
 function addAllSongs(res) {
   for (var i = 0; i < res.length; i++) {
     VUEPLAYERCORE.addSongWizard(res[i], {}, true);
   }
+}
+
+// ── Flow ─────────────────────────────────────────────────────────────
+// Two actions on POST /api/v1/db/flow, which hands a list of songs back in
+// an order where each flows into the next:
+//   - Add All In Flow Order (the browse bar): Add All's rows, queued in the
+//     flowed order, continuing from the queue's last song;
+//   - Flow (the Now Playing bar): the remaining songs or the whole queue,
+//     reordered in place without interrupting playback, with an Undo.
+// The pure half — items, per-server runs joined end to after, chunking, the
+// tail, matching an answer onto a queue that moved — is
+// webapp/alpha/queue-flow.js (QUEUEFLOW). Both fall back quietly: Add All
+// still adds (in list order), Flow changes nothing.
+const flowSession = {
+  refusedPeers: new Set(),   // peer ids that answered 403/404 this visit
+  addBusy: false,
+  queueBusy: false,
+  undo: 0,                   // the newest flow's Undo token
+};
+
+function flowServerAudio() {
+  return typeof serverAudioMode !== 'undefined' && serverAudioMode === true;
+}
+
+// Can this server, or peer `server` through its proxy, flow? A peer has no
+// feature read of its own: it is probed by calling it, and remembered for
+// the visit once it refuses.
+function flowServerCan(server) {
+  return MSTREAMAPI.currentServer.flowOrder >= 1
+    && (server === null || server === undefined || !flowSession.refusedPeers.has(Number(server)));
+}
+
+// The browse bar's button follows the server being browsed.
+function flowAddAllGate() {
+  const btn = document.getElementById('flow_add_all_btn');
+  if (!btn) { return; }
+  btn.classList.toggle('super-hide', !flowServerCan(peerContext ? peerContext.id : null));
+}
+
+function flowQueueAllowed() {
+  return MSTREAMAPI.currentServer.flowOrder >= 1
+    && !flowServerAudio()
+    && MSTREAMPLAYER.playerStats.autoDJ !== true
+    && typeof MSTREAMPLAYER.applyQueueOrder === 'function';
+}
+
+function flowServerOf(song) {
+  return song.federation ? Number(song.federation.peerId) : null;
+}
+
+// A queue row as a flow item: its RAW path, never the escaped `filepath`.
+function flowSongItem(song) {
+  return QUEUEFLOW.item(flowServerOf(song), song.rawFilePath, song.metadata);
+}
+
+function flowCall(server, body, signal) {
+  return server === null
+    ? MSTREAMAPI.flow(body, { signal })
+    : MSTREAMAPI.peer.flow(server, body, { signal });
+}
+
+async function flowRun(items, lead) {
+  let res;
+  try {
+    res = await QUEUEFLOW.flowRuns(items, { lead, call: flowCall, canFlow: flowServerCan });
+  } catch (err) {
+    res = { failed: true, error: err, order: null, calls: 0, signals: false, refused: [] };
+  }
+  if (res.refused && res.refused.length) {
+    res.refused.forEach(id => flowSession.refusedPeers.add(Number(id)));
+    flowAddAllGate();
+  }
+  if (res.failed) { console.warn('flow failed', res.error); }
+  return res;
+}
+
+function flowSetAddBusy(on) {
+  flowSession.addBusy = on;
+  const btn = document.getElementById('flow_add_all_btn');
+  if (!btn) { return; }
+  // aria-disabled, not disabled: the button keeps keyboard focus.
+  btn.setAttribute('aria-busy', on ? 'true' : 'false');
+  btn.setAttribute('aria-disabled', on ? 'true' : 'false');
+}
+
+async function addAllFlow(e) {
+  // A mouse press leaves no focus on the button (Chrome and Firefox focus a
+  // clicked button): Space after it must pause, not add the panel again.
+  if (e && e.detail > 0 && e.currentTarget) { e.currentTarget.blur(); }
+  if (flowSession.addBusy) { return; }
+  // Read now: what is added is what the panel showed at the click.
+  const rows = addAllRows();
+  if (rows.length < 2) {
+    rows.forEach(r => queueRow(r.peer, r.fp, r.meta));
+    return;
+  }
+  const queue = MSTREAMPLAYER.playlist;
+  const last = queue[queue.length - 1];
+  let res;
+  flowSetAddBusy(true);
+  try {
+    res = await flowRun(
+      rows.map(r => QUEUEFLOW.item(r.peer ? r.peer.id : null, r.fp, r.meta)),
+      last ? flowSongItem(last) : null);
+  } finally {
+    flowSetAddBusy(false);
+  }
+  // Never lose the add: a failure queues the rows in list order.
+  (res.failed ? rows : res.order.map(i => rows[i])).forEach(r => queueRow(r.peer, r.fp, r.meta));
+  if (res.failed || (res.calls === 0 && res.refused.length)) {
+    flowToast('warning', { title: t('flow.addFailed'), timeout: 3500 });
+  }
+}
+
+async function flowQueue(mode) {
+  if (flowSession.queueBusy || !flowQueueAllowed()) { return; }
+  const plan = QUEUEFLOW.queueSubject(MSTREAMPLAYER.playlist, MSTREAMPLAYER.positionCache.val, mode);
+  if (plan.subject.length < 2) { return; }
+
+  let res;
+  flowSession.queueBusy = true;
+  VUEPLAYERCORE.setFlowBusy(true);
+  try {
+    res = await flowRun(plan.subject.map(flowSongItem), plan.current && flowSongItem(plan.current));
+  } finally {
+    flowSession.queueBusy = false;
+    VUEPLAYERCORE.setFlowBusy(false);
+  }
+
+  if (res.failed || res.calls === 0) {
+    flowToast('warning', { title: t('flow.failed'), timeout: 3500 });
+    return;
+  }
+  if (!res.signals) {
+    flowToast('info', { title: t('flow.nothing'), timeout: 3500 });
+    return;
+  }
+
+  // The queue may have moved while the answer was out (Auto DJ, the user).
+  const live = MSTREAMPLAYER.playlist;
+  const merged = QUEUEFLOW.mergeAnswer(live, QUEUEFLOW.currentOf(live, MSTREAMPLAYER.positionCache.val),
+    plan, res.order.map(i => plan.subject[i]));
+  if (!merged) {
+    flowToast('warning', { title: t('flow.failed'), timeout: 3500 });
+    return;
+  }
+
+  if (MSTREAMPLAYER.playerStats.shuffle === true) { MSTREAMPLAYER.setShuffle(false); }
+  if (QUEUEFLOW.sameOrder(merged, live)) {
+    flowToast('success', { title: t('flow.flowed'), timeout: 2500 });
+    return;
+  }
+  const before = live.slice();
+  if (!flowApply(merged)) {
+    flowToast('warning', { title: t('flow.failed'), timeout: 3500 });
+    return;
+  }
+  flowUndoToast(before, merged);
+}
+
+function flowApply(order) {
+  if (!MSTREAMPLAYER.applyQueueOrder(order)) { return false; }
+  // The row menu holds a row index, as after a drag (checkMove).
+  const pop = document.getElementById('pop');
+  if (pop) { pop.style.visibility = 'hidden'; }
+  VUEPLAYERCORE.saveLiveQueue();
+  return true;
+}
+
+// One flow toast at a time: a newer one replaces the one showing, so an
+// older Undo never stays on screen once it can no longer undo.
+function flowToast(kind, opts) {
+  iziToast[kind](Object.assign({ id: 'flow-toast', displayMode: 'replace', position: 'topCenter' }, opts));
+}
+
+// Its Undo never takes focus: the toast lands after an async answer, while
+// the user may be anywhere else.
+function flowUndoToast(before, after) {
+  const token = ++flowSession.undo;
+  const playing = QUEUEFLOW.currentOf(MSTREAMPLAYER.playlist, MSTREAMPLAYER.positionCache.val);
+  flowToast('show', {
+    title: escapeHtml(t('flow.flowed')),
+    timeout: 6000,
+    buttons: [[`<button>${escapeHtml(t('flow.undo'))}</button>`, (instance, toast) => {
+      instance.hide({ transitionOut: 'fadeOut' }, toast, 'button');
+      flowUndo(token, before, after, playing);
+    }]],
+  });
+}
+
+// The previous order back, through the same path — only while this is the
+// newest flow, the queue is still exactly as it left it and the same song
+// is playing (a song played since would replay, one skipped past be lost). Once.
+function flowUndo(token, before, after, playing) {
+  if (token !== flowSession.undo) { return; }
+  if (!QUEUEFLOW.sameOrder(MSTREAMPLAYER.playlist, after)) { return; }
+  if (QUEUEFLOW.currentOf(MSTREAMPLAYER.playlist, MSTREAMPLAYER.positionCache.val) !== playing) { return; }
+  flowSession.undo++;
+  flowApply(before);
 }
 
 async function queueAlbum(cardEl) {
@@ -828,6 +1033,11 @@ async function init() {
     // only when the server has the route (never probed).
     MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
     document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
+    // Flow ordering (POST /api/v1/db/flow): Add All In Flow Order in the
+    // browse bar, Flow in the Now Playing bar. An integer generation.
+    MSTREAMAPI.currentServer.flowOrder = Number(response.flowOrder) || 0;
+    flowAddAllGate();
+    VUEPLAYERCORE.setFlowAvailable(MSTREAMAPI.currentServer.flowOrder >= 1 && !flowServerAudio());
     // Downloads: what the discovery plug-ins brought in — the same flag as
     // the "Get it" rows, so the panel exists only where a download can.
     document.getElementById('nav-discover-downloads').classList.toggle('super-hide', response.discoveryPlugins !== true);
@@ -7782,6 +7992,7 @@ function applyServerContext() {
   // Each move onto a connected server reads Keep a copy's gate again (a
   // right may have gone since); its panels wait for the answer.
   if (peerContext) { keepGateRefresh(); }
+  flowAddAllGate();
 }
 
 // The side-nav's read-only note: whose library the app shows, and — while

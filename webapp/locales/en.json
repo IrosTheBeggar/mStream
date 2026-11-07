@@ -1563,5 +1563,14 @@
   "dpage.state.unavailableBody": "The page is seeded by an account’s own play history on this server, and this one has none here (a federation key, a guest or a jukebox).",
   "dpage.state.failed": "Couldn’t load suggestions — the server didn’t answer.",
   "dpage.source.failed": "Couldn’t reach this source — try again.",
-  "dpage.source.waitingForScan": "waiting for the discovery scan"
+  "dpage.source.waitingForScan": "waiting for the discovery scan",
+  "flow.addAll": "Add All In Flow Order",
+  "flow.queue": "Flow",
+  "flow.remaining": "Remaining songs",
+  "flow.whole": "Whole queue",
+  "flow.flowed": "Queue flowed",
+  "flow.undo": "Undo",
+  "flow.failed": "Couldn’t flow the queue",
+  "flow.addFailed": "Couldn’t flow, added in list order",
+  "flow.nothing": "Nothing to flow by yet"
 }

@@ -55,7 +55,7 @@ const gate = createConcurrencyGate({
 
 const weight = () => Joi.number().min(0).max(1).required();
 
-const flowSchema = Joi.object({
+export const flowSchema = Joi.object({
   songs: Joi.array().items(Joi.string().min(1).max(4096)).min(2).max(FLOW_MAX_SONGS).required(),
   start: Joi.number().integer().min(0).allow(null),
   end: Joi.number().integer().min(0).allow(null),
@@ -80,7 +80,7 @@ const flowSchema = Joi.object({
 });
 
 // The cross-field rules, in plain words rather than Joi's.
-function checkFlowBody(body) {
+export function checkFlowBody(body) {
   const n = body.songs.length;
   for (const k of ['start', 'end']) {
     if (body[k] != null && body[k] >= n) {

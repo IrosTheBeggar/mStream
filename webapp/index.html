@@ -45,6 +45,9 @@
        from window.AUTODJ. No DOM access of its own — safe to load
        early with `defer`. -->
   <script defer src="alpha/auto-dj.js"></script>
+  <!-- Flow ordering helpers (window.QUEUEFLOW): pure, no DOM; m.js's
+       Add All In Flow Order and the Now Playing bar's Flow use them. -->
+  <script defer src="alpha/queue-flow.js"></script>
   <script defer src="alpha/m.js"></script>
 
   <script src="assets/js/lib/vue2.js"></script>
@@ -855,6 +858,12 @@
           <svg id="mkdir_btn" onclick="openMkdirModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.createFolder">Create Folder</title><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
           <svg id="upload_btn" onclick="openUploadModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.upload">Upload</title><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
           <svg onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.addAllToQueue">Add All To Queue</title><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
+          <!-- Add All In Flow Order (m.js addAllFlow): Add All's rows, queued
+               in flow order; shown while the browsed server can flow. -->
+          <button type="button" id="flow_add_all_btn" class="flow-add-btn super-hide" aria-busy="false" aria-label="Add All In Flow Order" data-i18n="flow.addAll" data-i18n-attr="aria-label" onclick="addAllFlow(event);">
+            <svg class="flow-add-icon" xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24"><title data-i18n="flow.addAll">Add All In Flow Order</title><path d="M0 0h24v24H0z" fill="none"/><path d="M17 16.99c-1.35 0-2.2.42-2.95.8-.65.33-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.38-1.57-.8-2.95-.8s-2.2.42-2.95.8c-.65.33-1.17.6-2.05.6v1.95c1.35 0 2.2-.42 2.95-.8.65-.33 1.17-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.42 2.95-.8c.65-.33 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8v-1.95c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8zm0-4.45c-1.35 0-2.2.43-2.95.8-.65.32-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.38-1.57-.8-2.95-.8s-2.2.43-2.95.8c-.65.32-1.17.6-2.05.6v1.95c1.35 0 2.2-.43 2.95-.8.65-.35 1.15-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.35 1.15-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.58.8 2.95.8v-1.95c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8zm2.95-8.08c-.75-.38-1.58-.8-2.95-.8s-2.2.42-2.95.8c-.65.32-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.37-1.57-.8-2.95-.8s-2.2.42-2.95.8c-.65.33-1.17.6-2.05.6v1.93c1.35 0 2.2-.43 2.95-.8.65-.33 1.17-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.32 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8V5.04c-.9 0-1.4-.25-2.05-.58zM17 8.09c-1.35 0-2.2.43-2.95.8-.65.35-1.15.6-2.05.6s-1.4-.25-2.05-.6c-.75-.38-1.57-.8-2.95-.8s-2.2.43-2.95.8c-.65.35-1.15.6-2.05.6v1.95c1.35 0 2.2-.43 2.95-.8.65-.32 1.18-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.32 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8V9.49c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8z"/></svg>
+            <svg class="spinner" aria-hidden="true" width="20" height="20" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+          </button>
         </div>
         <!-- The mood filters (m.js moodPanelHtml), hidden until the bar's
              Filters button opens them; every other panel hides them. -->
@@ -889,6 +898,18 @@
             <h5 data-i18n="nav.nowPlaying">Now Playing</h5>
           </div>
           <div class="flex grow flex-end" id="playlist-buttons">
+            <!-- Flow (m.js flowQueue): reorder the remaining songs or the
+                 whole queue without stopping the playing song. -->
+            <div v-if="flow.available && !playerStats.autoDJ" class="flow-wrap" v-on:keydown.esc="flowClose(true)" v-on:focusout="flowFocusOut">
+              <button type="button" id="flow_queue_btn" class="flow-btn" :title="tt('flow.queue')" :aria-label="tt('flow.queue')" aria-controls="flow_menu" :aria-expanded="flow.open ? 'true' : 'false'" :aria-busy="flow.busy ? 'true' : 'false'" :aria-disabled="flow.busy ? 'true' : null" v-on:click="flowToggle">
+                <svg v-if="!flow.busy" aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 24 24"><path d="M17 16.99c-1.35 0-2.2.42-2.95.8-.65.33-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.38-1.57-.8-2.95-.8s-2.2.42-2.95.8c-.65.33-1.17.6-2.05.6v1.95c1.35 0 2.2-.42 2.95-.8.65-.33 1.17-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.42 2.95-.8c.65-.33 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8v-1.95c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8zm0-4.45c-1.35 0-2.2.43-2.95.8-.65.32-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.38-1.57-.8-2.95-.8s-2.2.43-2.95.8c-.65.32-1.17.6-2.05.6v1.95c1.35 0 2.2-.43 2.95-.8.65-.35 1.15-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.35 1.15-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.58.8 2.95.8v-1.95c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8zm2.95-8.08c-.75-.38-1.58-.8-2.95-.8s-2.2.42-2.95.8c-.65.32-1.18.6-2.05.6-.9 0-1.4-.25-2.05-.6-.75-.37-1.57-.8-2.95-.8s-2.2.42-2.95.8c-.65.33-1.17.6-2.05.6v1.93c1.35 0 2.2-.43 2.95-.8.65-.33 1.17-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.32 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8V5.04c-.9 0-1.4-.25-2.05-.58zM17 8.09c-1.35 0-2.2.43-2.95.8-.65.35-1.15.6-2.05.6s-1.4-.25-2.05-.6c-.75-.38-1.57-.8-2.95-.8s-2.2.43-2.95.8c-.65.35-1.15.6-2.05.6v1.95c1.35 0 2.2-.43 2.95-.8.65-.32 1.18-.6 2.05-.6s1.4.25 2.05.6c.75.38 1.57.8 2.95.8s2.2-.43 2.95-.8c.65-.32 1.18-.6 2.05-.6.9 0 1.4.25 2.05.6.75.38 1.58.8 2.95.8V9.49c-.9 0-1.4-.25-2.05-.6-.75-.38-1.6-.8-2.95-.8z"/></svg>
+                <svg v-else class="spinner" aria-hidden="true" width="22" height="22" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
+              </button>
+              <div v-if="flow.open" id="flow_menu" class="flow-menu" role="group" :aria-label="tt('flow.queue')">
+                <button type="button" class="flow-menu-item" :disabled="!flowCan('remaining')" v-on:click="flowChoose('remaining', $event)">{{ tt('flow.remaining') }}</button>
+                <button type="button" class="flow-menu-item" :disabled="!flowCan('whole')" v-on:click="flowChoose('whole', $event)">{{ tt('flow.whole') }}</button>
+              </div>
+            </div>
             <a title="Live Playlist" data-i18n="tooltip.livePlaylist" data-i18n-attr="title" onclick="openLivePlaylistModal();">
               <svg xmlns="http://www.w3.org/2000/svg" v-bind:class="{ 'aux-button-active': livePlaylist.name }"  xml:space="preserve" width="25" height="25" viewBox="0 0 512 512"><path d="M48 64h160c17.672 0 32-14.328 32-32 0-17.674-14.328-32-32-32H48C30.328 0 16 14.326 16 32c0 17.672 14.328 32 32 32zM48 160h160c17.672 0 32-14.328 32-32 0-17.674-14.328-32-32-32H48c-17.672 0-32 14.326-32 32 0 17.672 14.328 32 32 32zM240 224c0-17.674-14.328-32-32-32H48c-17.672 0-32 14.326-32 32 0 17.672 14.328 32 32 32h160c17.672 0 32-14.328 32-32z"/><path d="M411.328 75.914C393.043 61.805 368 42.477 368 32c0-17.672-14.328-32-32-32s-32 14.328-32 32v293.58c-10.023-3.549-20.762-5.58-32-5.58-53.02 0-96 42.98-96 96s42.98 96 96 96 96-42.98 96-96V123.293c1.414 1.094 2.82 2.203 4.23 3.293 36.105 27.852 59.77 48.078 59.77 74.305 0 40.766-21.684 63.516-22.305 64.164-12.672 12.32-12.961 32.578-.641 45.25 6.273 6.453 14.605 9.695 22.949 9.695 8.035 0 16.082-3.008 22.301-9.055 4.27-4.148 41.695-42.484 41.695-110.055.001-59.64-46.948-95.867-84.671-124.976z"/></svg>
             </a>
