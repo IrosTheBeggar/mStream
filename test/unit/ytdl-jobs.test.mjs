@@ -119,6 +119,11 @@ describe('ytdl jobs', () => {
     assert.equal(jobs.publicMessage(new Error('unable to write data: [Errno 28] No space left on device: \'C:\\\\data\\\\stage\\\\job-ytdl-1\\\\Song.webm.part\''), win),
       'unable to write data: [Errno 28] No space left on device: \'Song.webm.part\'');
     assert.equal(jobs.publicMessage(new Error('[Errno 13] Permission denied: \'D:\\\\Music\\\\Inbox\\\\Song.mp3\''), win), '[Errno 13] Permission denied: \'inbox/Song.mp3\'');
+    // a Windows library's subfolders read with "/" too, plain or in a Python repr
+    assert.equal(jobs.publicMessage(new Error('cannot open D:\\Music\\Inbox\\Daft Punk\\Song.mp3: denied'), win), 'cannot open inbox/Daft Punk/Song.mp3: denied');
+    assert.equal(jobs.publicMessage(new Error('[Errno 13] Permission denied: \'D:\\\\Music\\\\Inbox\\\\Daft Punk\\\\Song.mp3\''), win), '[Errno 13] Permission denied: \'inbox/Daft Punk/Song.mp3\'');
+    // a POSIX server's names keep a backslash they really have
+    assert.equal(jobs.publicMessage(new Error('cannot open /srv/music/AC\\DC.mp3'), [['/srv/music', 'music']]), 'cannot open music/AC\\DC.mp3');
     assert.equal(jobs.publicMessage(new Error('Video unavailable. This video is private'), pairs), 'Video unavailable. This video is private', 'words without paths are left alone');
     assert.equal(jobs.publicMessage('a string', pairs), 'a string');
     assert.equal(jobs.publicMessage(null, pairs), 'the download failed');

@@ -115,6 +115,9 @@ describe('ytdl jobs · per account, with ids, reasons and the name check', { ski
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true } },
         discoveryJobs: { stagingDir: path.join(workDir, 'staging') },
+        // No boot scan: with waitForScan off it could land mid-suite on a
+        // slow runner and create a download's artist under its insert.
+        scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
       },
       users: [
         { ...ADMIN, admin: true, vpaths: ['testlib', 'inbox'] },

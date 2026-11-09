@@ -105,6 +105,15 @@ export function toPublic(job) {
   return pub;
 }
 
+// The rest of a swapped Windows path ("<to>/Other\y.mp3") reads with "/",
+// as every API spells a song: its backslashes (doubled in a Python repr)
+// up to the quote or the line's end that closes the path.
+function slashTail(part) {
+  const end = part.search(/['"’”\r\n]/);
+  const head = end < 0 ? part : part.slice(0, end);
+  return head.split('\\\\').join('/').split('\\').join('/') + (end < 0 ? '' : part.slice(end));
+}
+
 // What a failure says to the person who asked. The server's own places on
 // disk never leave it: each `[path, replacement]` pair swaps an absolute
 // path for what the caller may see (the staging folder for nothing, so a
@@ -122,10 +131,14 @@ export function publicMessage(err, replacements = []) {
     const trimmed = from.replace(/[\\/]+$/, '');
     // yt-dlp is Python: an OS error quotes a Windows path as its repr, every
     // backslash doubled ("… device: 'C:\\\\data\\\\job-ytdl-x\\\\Song.webm'").
-    const forms = trimmed.includes('\\') ? [trimmed.replace(/\\/g, '\\\\'), trimmed] : [trimmed];
+    const windows = trimmed.includes('\\');
+    const forms = windows ? [trimmed.replace(/\\/g, '\\\\'), trimmed] : [trimmed];
     for (const form of forms) {
       // "<from>/name" → "<to>/name" (or just "name" when `to` is empty).
-      for (const sep of ['/', '\\\\', '\\']) { text = text.split(form + sep).join(to ? to + '/' : ''); }
+      for (const sep of ['/', '\\\\', '\\']) {
+        const parts = text.split(form + sep);
+        text = parts.map((part, i) => (i > 0 && windows ? slashTail(part) : part)).join(to ? to + '/' : '');
+      }
       text = text.split(form).join(to || '');
     }
   }
