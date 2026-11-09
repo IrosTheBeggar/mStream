@@ -28,10 +28,17 @@ import Joi from 'joi';
 import winston from 'winston';
 import * as config from '../state/config.js';
 import * as discoveryDb from '../db/discovery-db.js';
+import * as discoveryP2p from '../state/discovery-p2p.js';
+import * as discoveryCatalog from '../state/discovery-catalog.js';
 import * as peerDbs from '../state/discovery-peer-dbs.js';
+import { buildPeerView } from '../state/discovery-peer-view.js';
+import { peerAdder } from '../state/discovery-peer-add.js';
 import { localIdentitySets, isNovel } from '../db/discovery-novelty.js';
 import { resolveSeedTrack } from './discovery.js';
+import { refuseJukebox } from './discovery-plugin-jobs.js';
 import { joiValidate } from '../util/validation.js';
+import { requireAccount } from '../util/require-account.js';
+import { isAdminAllowed } from '../util/admin-network.js';
 import WebError from '../util/web-error.js';
 
 const DEFAULT_LIMIT = 25;
@@ -187,9 +194,16 @@ export async function searchSpaces(spaces, queryVec, {
 }
 
 // The held shelf in one model space, read lazily — one peer matrix per pull,
-// so searchSpaces' yields also separate the cold-cache SQLite reads.
-function* shelfSpaces(modelId) {
+// so searchSpaces' yields also separate the cold-cache SQLite reads. A
+// blocked peer is never walked (the block route drops its snapshot; this
+// covers a block that lands mid-walk), `only` (a Set of endpoint ids, or
+// null for the whole shelf) narrows the walk to some peers, and
+// `stats.held` counts the peers walked, whatever their model space.
+function* shelfSpaces(modelId, only, stats) {
   for (const peer of peerDbs.list()) {
+    if (peerDbs.isBlocked(peer.endpointId)) { continue; }
+    if (only && !only.has(peer.endpointId)) { continue; }
+    stats.held += 1;
     try {
       yield peerDbs.readEmbeddings(peer.endpointId, modelId);
     } catch (err) {
@@ -215,14 +229,21 @@ function* shelfSpaces(modelId) {
  *                   carries `seedIndex` (the closest one, null if none share
  *                   the dim) — never set by the per-song route, whose rows
  *                   keep their exact shape
+ *   peers           optional endpoint ids: walk only these shelf peers (the
+ *                   Peer Recommendations page's peer tab); ids not on the
+ *                   shelf match nothing
  *
- * Resolves to { results, searched: { peers, tracks } } — results in the p2p
- * similar route's row shape, best first. (A plain function returning
- * searchSpaces' promise: it never throws synchronously, a bad query vector
- * rejects.)
+ * Resolves to { results, searched: { peers, tracks }, held } — results in
+ * the p2p similar route's row shape, best first; `held` = the shelf peers
+ * the walk could take (unblocked, inside `peers`), before the model filter
+ * that `searched.peers` applies, so a caller can tell an empty shelf from
+ * an incompatible one. (A plain function returning a promise: it never
+ * throws synchronously, a bad query vector rejects.)
  */
-export function searchPeers(queryVec, modelId, opts = {}) {
-  return searchSpaces(shelfSpaces(modelId), queryVec, opts);
+export async function searchPeers(queryVec, modelId, { peers = null, ...opts } = {}) {
+  const stats = { held: 0 };
+  const found = await searchSpaces(shelfSpaces(modelId, peers ? new Set(peers) : null, stats), queryVec, opts);
+  return { ...found, held: stats.held };
 }
 
 export function setup(mstream) {
@@ -283,5 +304,34 @@ export function setup(mstream) {
         pinned: e.pinned === true,
       })),
     });
+  });
+
+  // The Peer Recommendations page's peer strip: the shelf peers its leads
+  // come from, for every account, and — for a caller who may use the admin
+  // API — the catalog peers an Add could bring in, each with its Add state
+  // (src/state/discovery-peer-view.js buildPeerView has the row rules).
+  // Blocked and incompatible-model peers are nobody's to see. In memory
+  // only, so no requireIndex: it answers during a scan. no-store, because
+  // clients poll it (every 15 s, every 3 s while an Add runs).
+  mstream.use('/api/v1/discovery/p2p/peers', refuseJukebox);
+  mstream.get('/api/v1/discovery/p2p/peers', (req, res) => {
+    requireP2p();
+    requireAccount(req);
+    // The admin guard's three gates (api/admin.js), so a "+" is offered only
+    // to a caller whose Add would not be refused.
+    const canAdd = req.user.admin === true && config.program.lockAdmin !== true && isAdminAllowed(req);
+    const view = buildPeerView({
+      shelf: peerDbs.list(),
+      catalog: discoveryCatalog.list(),
+      localModel: discoveryDb.openDiscoveryDbIfExists() ? discoveryDb.getMeta('embedding_model_id') : null,
+      now: Date.now(),
+      onlineWindowMs: peerDbs.onlineWindowMs(),
+      isBlocked: peerDbs.isBlocked,
+      seederCountOf: (hash) => discoveryCatalog.seederCount(hash),
+      addStateOf: (endpointId) => peerAdder.stateOf(endpointId),
+      canAdd,
+      running: discoveryP2p.isRunning(),
+    });
+    res.set('Cache-Control', 'no-store').json(view);
   });
 }
