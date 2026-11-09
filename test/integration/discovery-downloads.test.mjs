@@ -2,7 +2,7 @@
  * The record of what the plug-ins brought into the library, and removing
  * one (src/api/discovery-downloads.js, src/db/plugin-downloads.js, V75):
  *
- *   GET    /api/v1/discovery/downloads        own / ?all=1 / ?removed=1
+ *   GET    /api/v1/discovery/downloads        own / ?all=1 / ?removed=1 / ?plugin=
  *   DELETE /api/v1/discovery/downloads/:id    the requester or an admin
  *
  * Three accounts: an admin, dana who downloads, and eli who may see the
@@ -122,6 +122,12 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
       extraConfig: {
         discoveryPlugins: { youtube: { enabled: true } },
         discoveryJobs: { stagingDir: path.join(workDir, 'staging') },
+        // No boot scan: the one scan this suite wants is its own rescan().
+        // With waitForScan off, the boot scan could land mid-suite on a
+        // slow runner — sweeping orphans under a download (CI run
+        // 37146091164), or writing rows under the tests' row assertions (a
+        // removed file's row coming back, a planted file getting one).
+        scanOptions: { bootScanDelay: 9999, scanInterval: 0 },
       },
       // dana's only library is the per-run collection, so it is her default
       // destination; eli sees it too but never downloaded anything.
@@ -189,20 +195,18 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
       directory: 'inbox', url: yt('topic'), outputCodec: 'mp3', metadata: { artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry' },
     });
     assert.equal(started.status, 200, JSON.stringify(started.body));
+    assert.equal(typeof started.body.id, 'string', 'the POST names its job');
+    assert.equal(started.body.fileName, 'Remote_Hit.mp3', 'and the name it will land as');
     const deadline = Date.now() + 20_000;
-    let status;
+    let entry;
     for (;;) {
-      status = ((await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads[0] || {}).status;
-      if (status === 'complete' || status === 'error' || Date.now() > deadline) { break; }
+      entry = (await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads.find((j) => j.id === started.body.id) || {};
+      if (entry.status === 'complete' || entry.status === 'error' || Date.now() > deadline) { break; }
       await new Promise((r) => setTimeout(r, 150));
     }
-    assert.equal(status, 'complete');
-    // The record lands right after the row; give it a beat.
-    let admins = [];
-    for (let i = 0; i < 20 && admins.length === 0; i++) {
-      admins = await listOf(adminToken);
-      if (admins.length === 0) { await new Promise((r) => setTimeout(r, 100)); }
-    }
+    assert.equal(entry.status, 'complete', JSON.stringify(entry));
+    // The record lands before the job settles, and the job names it.
+    const admins = await listOf(adminToken);
     assert.equal(admins.length, 1, JSON.stringify(admins));
     adminId = admins[0].id;
     assert.equal(admins[0].plugin, 'ytdl');
@@ -210,8 +214,24 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     assert.equal(admins[0].filepath, 'inbox/Remote_Hit.mp3');
     assert.equal(admins[0].origin, yt('topic'));
     assert.equal(admins[0].present, true);
+    assert.equal(entry.downloadId, adminId, 'the job links to its record exactly');
+    assert.equal(entry.filePath, admins[0].filepath, 'spelled as the record spells it');
+    assert.equal(entry.fileName, 'Remote_Hit.mp3');
+    assert.ok(entry.endTime >= entry.startTime && entry.endTime > 0);
+    assert.deepEqual([entry.error, entry.reason], [null, null]);
     const all = await listOf(adminToken, '?all=1');
     assert.deepEqual(all.map((d) => [d.id, d.username]), [[adminId, 'admin'], [danaId, 'dana']], 'newest first, across accounts');
+  });
+
+  test('?plugin= lists one plug-in\'s records only, own or (admins) everyone\'s', async () => {
+    assert.deepEqual((await listOf(adminToken, '?plugin=ytdl')).map((d) => d.id), [adminId]);
+    assert.deepEqual(await listOf(adminToken, '?plugin=youtube'), [], 'the admin\'s own youtube list is empty');
+    assert.deepEqual((await listOf(adminToken, '?all=1&plugin=youtube')).map((d) => d.id), [danaId]);
+    assert.deepEqual((await listOf(adminToken, '?all=1&plugin=ytdl')).map((d) => [d.id, d.username]), [[adminId, 'admin']]);
+    assert.deepEqual(await listOf(danaToken, '?plugin=ytdl'), []);
+    assert.deepEqual(await listOf(adminToken, '?all=1&plugin=federation-copy'), []);
+    assert.equal((await api(adminToken, 'GET', `${LIST}?plugin=${encodeURIComponent('ytdl; DROP')}`)).status, 400, 'a name, nothing else');
+    assert.equal((await api(adminToken, 'GET', `${LIST}?plugin=`)).status, 400);
   });
 
   test('a rescan rewrites the track rows and leaves the records untouched', async () => {
@@ -253,33 +273,62 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     assert.deepEqual(await listOf(adminToken, '?all=1'), []);
   });
 
-  test('the Youtube DL route never adopts a file that is already in the folder', async () => {
+  test('the Youtube DL route never adopts a file that is already in the folder: the name is refused before downloading', async () => {
     // yt-dlp under --no-overwrites skips the fetch when "<title>.mp3" exists
     // and prints that path; the route used to re-tag it, re-insert it and
     // record it as the caller's — then Remove would delete somebody else's
-    // file. Now the download runs in staging and lands only where nothing is.
+    // file. Now the route reads the name the download would get first, and
+    // a name the folder has is a 409 with nothing started.
     const existing = path.join(inboxDir, 'Remote_Hit.mp3');
     fs.writeFileSync(existing, 'somebody else\'s file, not a download');
     const before = fs.readFileSync(existing);
+    const jobsBefore = (await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads.length;
     const started = await api(adminToken, 'POST', '/api/v1/ytdl/', {
       directory: 'inbox', url: yt('topic'), outputCodec: 'mp3', metadata: { artist: 'Nova', title: 'Remote Hit' },
     });
-    assert.equal(started.status, 200, JSON.stringify(started.body));
-    const deadline = Date.now() + 20_000;
-    let status;
-    for (;;) {
-      // The newest entry is this download's (an earlier one lingers a while).
-      const entries = (await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads;
-      const mine = entries.reduce((a, b) => (!a || b.startTime > a.startTime ? b : a), null) || {};
-      status = mine.status;
-      if (status === 'complete' || status === 'error' || Date.now() > deadline) { break; }
-      await new Promise((r) => setTimeout(r, 150));
-    }
-    assert.equal(status, 'error', 'the download fails rather than adopt the file');
+    assert.equal(started.status, 409, JSON.stringify(started.body));
+    assert.equal(started.body.reason, 'exists');
+    assert.equal(started.body.fileName, 'Remote_Hit.mp3');
+    assert.match(started.body.error, /Remote_Hit\.mp3/);
+    assert.equal((await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads.length, jobsBefore, 'no job was made');
     assert.deepEqual(fs.readFileSync(existing), before, 'the file was not touched');
     assert.deepEqual(await listOf(adminToken, '?all=1'), [], 'and nothing was recorded');
     assert.equal(row('SELECT id FROM tracks WHERE filepath = ?', 'Remote_Hit.mp3'), undefined, 'no row was written for it');
     fs.rmSync(existing);
+  });
+
+  test('a file that turns up while the download runs is never replaced: the move refuses, the job says why', async () => {
+    // The name check passed (nothing there yet); the same name lands in the
+    // folder during the download. The never-replace check at the move is
+    // what keeps it.
+    const scriptPath = path.join(workDir, 'fake-yt-dlp.json');
+    fs.writeFileSync(scriptPath, JSON.stringify({ search: SEARCH, details: {}, download: { slowMs: 400 } }));
+    const existing = path.join(inboxDir, 'Remote_Hit.mp3');
+    try {
+      const started = await api(adminToken, 'POST', '/api/v1/ytdl/', {
+        directory: 'inbox', url: yt('topic'), outputCodec: 'mp3', metadata: { artist: 'Nova', title: 'Remote Hit' },
+      });
+      assert.equal(started.status, 200, JSON.stringify(started.body));
+      fs.writeFileSync(existing, 'a file that arrived meanwhile');
+      const before = fs.readFileSync(existing);
+      const deadline = Date.now() + 20_000;
+      let entry;
+      for (;;) {
+        entry = (await api(adminToken, 'GET', '/api/v1/ytdl/downloads')).body.downloads.find((j) => j.id === started.body.id) || {};
+        if (entry.status === 'complete' || entry.status === 'error' || Date.now() > deadline) { break; }
+        await new Promise((r) => setTimeout(r, 150));
+      }
+      assert.equal(entry.status, 'error', JSON.stringify(entry));
+      assert.equal(entry.reason, 'exists');
+      assert.match(entry.error, /already exists in inbox/);
+      assert.ok(!entry.error.includes(workDir), `no server path in the words: ${entry.error}`);
+      assert.deepEqual([entry.filePath, entry.downloadId], [null, null]);
+      assert.deepEqual(fs.readFileSync(existing), before, 'the file was not touched');
+      assert.deepEqual(await listOf(adminToken, '?all=1'), [], 'and nothing was recorded');
+    } finally {
+      fs.writeFileSync(scriptPath, JSON.stringify({ search: SEARCH, details: {}, download: {} }));
+      fs.rmSync(existing, { force: true });
+    }
   });
 
   test('downloading the song again after removing it makes a fresh record; the old one stays history', async () => {
@@ -344,5 +393,34 @@ describe('discovery downloads · the record and its removal', { skip: hasFfmpeg 
     assert.equal(r.status, 403, JSON.stringify(r.body));
     assert.match(r.body.error, /Uploading Disabled/);
     assert.ok(fs.existsSync(path.join(collectionDir, 'Nova', 'Night Ferry', 'Remote_Hit.mp3')), 'the file stays');
+  });
+
+  test('?plugin= filters before the limit, so ?before= pages through that plug-in\'s records alone', async () => {
+    // eli's records, interleaved: ytdl, youtube, ytdl, youtube, … — a page
+    // of two ytdl rows must skip the youtube ones between them, and the
+    // next page carry on from the last id it saw.
+    const mdb = new DatabaseSync(path.join(server.tmpDir, 'db', 'mstream.db'));
+    const ids = { ytdl: [], youtube: [] };
+    try {
+      const eli = mdb.prepare('SELECT id FROM users WHERE username = ?').get('eli').id;
+      const insert = mdb.prepare(`INSERT INTO plugin_downloads (plugin, user_id, vpath, filepath, downloaded_at)
+        VALUES (?, ?, 'collection', ?, ?)`);
+      const t = Date.now();
+      for (let i = 0; i < 10; i++) {
+        const plugin = i % 2 === 0 ? 'ytdl' : 'youtube';
+        ids[plugin].push(Number(insert.run(plugin, eli, `eli/${i}.mp3`, t + i).lastInsertRowid));
+      }
+    } finally { mdb.close(); }
+    const newestFirst = (list) => [...list].reverse();
+    const page1 = await listOf(eliToken, '?plugin=ytdl&limit=2');
+    assert.deepEqual(page1.map((d) => d.id), newestFirst(ids.ytdl).slice(0, 2));
+    assert.ok(page1.every((d) => d.plugin === 'ytdl'));
+    const page2 = await listOf(eliToken, `?plugin=ytdl&limit=2&before=${page1[1].id}`);
+    assert.deepEqual(page2.map((d) => d.id), newestFirst(ids.ytdl).slice(2, 4));
+    const page3 = await listOf(eliToken, `?plugin=ytdl&limit=2&before=${page2[1].id}`);
+    assert.deepEqual(page3.map((d) => d.id), newestFirst(ids.ytdl).slice(4, 6), 'the last one, alone');
+    assert.deepEqual(await listOf(eliToken, `?plugin=ytdl&before=${ids.ytdl[0]}`), [], 'and then nothing');
+    assert.deepEqual((await listOf(eliToken, '?plugin=youtube')).map((d) => d.id), newestFirst(ids.youtube));
+    assert.equal((await listOf(eliToken)).length, 10, 'without the filter, everything, as before');
   });
 });

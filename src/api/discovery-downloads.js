@@ -3,7 +3,9 @@
 //
 //   GET    /api/v1/discovery/downloads        the caller's downloads, newest first
 //                                             (admins: ?all=1 for every account's);
-//                                             ?removed=1 includes history, ?limit, ?before=<id>
+//                                             ?removed=1 includes history, ?limit, ?before=<id>,
+//                                             ?plugin=<name> only that plug-in's (ytdl: the
+//                                             Youtube DL route's), paged the same way
 //   DELETE /api/v1/discovery/downloads/:id    remove a download: the file, its library row,
 //                                             the playlist entries that pointed at it
 //
@@ -60,6 +62,9 @@ export function setup(mstream) {
       removed: Joi.boolean().truthy('1').falsy('0').default(false),
       limit: Joi.number().integer().min(1).max(500).default(100),
       before: Joi.number().integer().positive().optional(),
+      // A plug-in's name (youtube, federation-copy, ytdl): the filter runs
+      // before the limit, so a page holds `limit` of that plug-in's.
+      plugin: Joi.string().pattern(/^[a-z0-9][a-z0-9_-]*$/i).max(64).optional(),
     });
     const { value } = joiValidate(schema, req.query || {});
     const everyone = value.all === true && isAdmin(req.user);
@@ -68,6 +73,7 @@ export function setup(mstream) {
       includeRemoved: value.removed === true,
       limit: value.limit,
       before: value.before || null,
+      plugin: value.plugin || null,
     });
     res.json({ downloads: withNames(rows, everyone) });
   });

@@ -90,11 +90,13 @@ export function recordQuietly(fields) {
 
 // Newest first. `userId` undefined = every account (the admin's view), null
 // = the anonymous account's. Removed records are history and hidden unless
-// asked for. `before` = an id, for paging.
-export function list({ userId, includeRemoved = false, limit = 100, before = null } = {}) {
+// asked for. `before` = an id, for paging. `plugin` = one plug-in's only
+// (applied before the limit, so a page is full of them).
+export function list({ userId, includeRemoved = false, limit = 100, before = null, plugin = null } = {}) {
   const where = [];
   const params = [];
   if (userId !== undefined) { where.push('p.user_id IS ?'); params.push(userId); }
+  if (plugin) { where.push('p.plugin = ?'); params.push(String(plugin)); }
   if (!includeRemoved) { where.push('p.removed_at IS NULL'); }
   if (Number.isInteger(before) && before > 0) { where.push('p.id < ?'); params.push(before); }
   params.push(Math.max(1, Math.min(500, Number(limit) || 100)));

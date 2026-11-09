@@ -469,12 +469,9 @@ const MSTREAMAPI = (() => {
     return req('POST', mstreamModule.currentServer.host + "api/v1/ytdl/", { url: url, outputCodec: outputCodec, directory: directory, metadata: metadata });
   }
 
-  mstreamModule.ytdlMetadata = (url) => {
-    return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/metadata?url=" + encodeURIComponent(url));
-  }
-
-  mstreamModule.ytdlDownloads = () => {
-    return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/downloads");
+  // opts: { signal } — Add from YouTube bounds its lookup at 30 s.
+  mstreamModule.ytdlMetadata = (url, opts) => {
+    return req('GET', mstreamModule.currentServer.host + "api/v1/ytdl/metadata?url=" + encodeURIComponent(url), undefined, opts);
   }
 
   // ── Torrent ─────────────────────────────────────────────────────────

@@ -182,6 +182,15 @@ export function buildFeatures() {
     // the key is left out, as older servers leave it out. /api/-only, like
     // discoveryReady: ping never carried it.
     ...(proxy ? { federationProxy: proxy } : {}),
+    // Youtube DL generation (/api/v1/ytdl): GET /ytdl/downloads lists the
+    // CALLER's jobs, newest first, each with an `id`, its error text and a
+    // reason code, the landed path and its /discovery/downloads record,
+    // settled ones kept 24 h; POST answers `{ id }` and refuses a name the
+    // folder already has with 409 before downloading; /ytdl/metadata adds
+    // fileStem, isLive, liveStatus, durationSec and channel. An integer
+    // GENERATION like `flowOrder` — clients gate on `>= 1`. A version fact:
+    // whether yt-dlp is there is the routes' answer.
+    ytdl: 1,
   };
 }
 

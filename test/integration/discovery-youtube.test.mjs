@@ -471,23 +471,36 @@ describe('discovery youtube plug-in (fake yt-dlp)', { skip: hasFfmpeg ? false : 
       directory: 'inbox', url: yt('topic'), outputCodec: 'mp3', metadata: { artist: 'Nova', title: 'Remote Hit', album: 'Night Ferry' },
     });
     assert.equal(started.status, 200, JSON.stringify(started.body));
+    assert.equal(typeof started.body.id, 'string');
     const deadline = Date.now() + 20_000;
-    let status;
+    let entry;
     for (;;) {
+      // Public mode: every caller is the one anonymous account, which owns
+      // the job.
       const r = await api(server, 'GET', '/api/v1/ytdl/downloads');
-      status = (r.body.downloads[0] || {}).status;
-      if (status === 'complete' || status === 'error' || Date.now() > deadline) { break; }
+      entry = r.body.downloads[0] || {};
+      if (entry.status === 'complete' || entry.status === 'error' || Date.now() > deadline) { break; }
       await new Promise((res) => setTimeout(res, 150));
     }
-    assert.equal(status, 'complete');
+    assert.equal(entry.status, 'complete', JSON.stringify(entry));
+    assert.equal(entry.id, started.body.id);
     const files = fs.readdirSync(inboxDir).filter((f) => f.endsWith('.mp3'));
     assert.equal(files.length, 1, `one file in the inbox: ${files}`);
+    assert.equal(entry.filePath, `inbox/${files[0]}`);
+    assert.ok(entry.downloadId > 0, 'the job names its record');
     const track = row('SELECT source, title FROM tracks WHERE filepath = ?', files[0]);
     assert.equal(track.source, 'ytdl');
     assert.equal(track.title, 'Remote Hit');
     const lookup = await api(server, 'GET', `/api/v1/ytdl/metadata?url=${encodeURIComponent(yt('topic'))}`);
     assert.equal(lookup.status, 200);
     assert.equal(lookup.body.title, 'Remote Hit');
+    assert.equal(lookup.body.fileStem, 'Remote_Hit');
+  });
+
+  test('the /downloads page is gone: the job list lives in the webapp now', async () => {
+    const r = await fetch(`${server.baseUrl}/downloads/`);
+    assert.equal(r.status, 404);
+    await r.body?.cancel();
   });
 });
 

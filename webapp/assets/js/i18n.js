@@ -3,9 +3,17 @@ const I18N = (() => {
   let strings = {};
   let fallback = {};
   const DEFAULT_LANG = 'en';
+  // The language `strings` is written in: the requested one once its file
+  // loaded, else English (strings is then the English dictionary itself).
+  // Plural forms are read by this language's rules, not the UI's.
+  let stringsLang = DEFAULT_LANG;
 
   // Listeners notified whenever a new language finishes loading.
   const changeListeners = new Set();
+
+  // Intl.PluralRules per language, built on first use; null when the
+  // runtime has no Intl.PluralRules or refuses the tag.
+  const pluralRules = new Map();
 
   // Look up a key. Locale files use flat dot-delimited keys (e.g. "login.username"),
   // so try a direct lookup first. Fall back to nested-object walking so future
@@ -16,14 +24,40 @@ const I18N = (() => {
     return key.split('.').reduce((o, k) => (o && o[k] !== undefined) ? o[k] : undefined, obj);
   }
 
-  // Pick the correct plural form for a given count.
-  // Supports objects with "one"/"other" keys (covers English, Spanish, etc.)
-  // or "zero"/"one"/"two"/"few"/"many"/"other" for languages that need them.
-  function pluralize(val, count) {
-    if (typeof val !== 'object') { return val; }
+  // The CLDR plural category of `count` in `lang`: 'one', 'few', 'many',
+  // 'other'… (Russian 21 → one, 22 → few, 25 → many; French 0 → one).
+  // Without Intl.PluralRules, or for a tag the runtime refuses, the
+  // English rule: 1 → one, anything else → other.
+  function pluralCategory(lang, count) {
+    let rules = pluralRules.get(lang);
+    if (rules === undefined) {
+      rules = null;
+      try {
+        if (typeof Intl !== 'undefined' && Intl && typeof Intl.PluralRules === 'function') {
+          rules = new Intl.PluralRules(lang);
+        }
+      } catch (_) {
+        rules = null;
+      }
+      pluralRules.set(lang, rules);
+    }
+    if (rules) {
+      try { return rules.select(count); } catch (_) { /* the English rule below */ }
+    }
+    return count === 1 ? 'one' : 'other';
+  }
+
+  // Pick the plural form of `val` for `count` by the plural rules of `lang`,
+  // the language of the dictionary `val` came from. Forms are named by CLDR
+  // category: one/other (English, German, Spanish…), one/few/many/other
+  // (Russian, Polish), other alone (Japanese, Korean, Chinese). A form the
+  // object lacks reads `other` (Spanish or French `many`, 1 000 000), else
+  // `one`. An explicit `zero` still wins for 0.
+  function pluralize(val, count, lang) {
+    if (typeof val !== 'object' || val === null) { return val; }
     if (count === 0 && val.zero !== undefined) { return val.zero; }
-    if (count === 1 && val.one !== undefined) { return val.one; }
-    if (count === 2 && val.two !== undefined) { return val.two; }
+    const form = pluralCategory(lang, count);
+    if (val[form] !== undefined) { return val[form]; }
     return val.other !== undefined ? val.other : val.one || '';
   }
 
@@ -32,22 +66,36 @@ const I18N = (() => {
   //   t('key', { name: 'Alice' })    → interpolation: "Hello {{name}}"
   //   t('key', { count: 3 })         → pluralization + interpolation
   mod.t = (key, params) => {
-    let val = resolve(strings, key) || resolve(fallback, key) || key;
+    // A key this language lacks (or has as '') falls back to English, and an
+    // English value is pluralized by English rules: an English plural inside
+    // a Russian page reads "21 songs", not the Russian `one` for 21.
+    let val = resolve(strings, key);
+    let lang = stringsLang;
+    if (!val) {
+      val = resolve(fallback, key);
+      lang = DEFAULT_LANG;
+    }
+    if (!val) { val = key; }
 
-    // Pluralization: if the resolved value is an object with plural forms, pick one
+    // Pluralization: a plural object needs a count that is a number (NaN and
+    // Infinity read `other`). A string count, even '3', picks no form — a
+    // grouped "1.001" would read as 1.001 — so the object stays unread and
+    // t() returns the key, as it does with no count. Pass the number, and
+    // re-group its digits in the result if needed (vp.js dmCount).
     if (params && typeof params.count === 'number' && typeof val === 'object') {
-      val = pluralize(val, params.count);
+      val = pluralize(val, params.count, lang);
     }
 
     let str = typeof val === 'string' ? val : key;
 
-    // Parameter interpolation: replace {{param}} placeholders
+    // Parameter interpolation, one pass over the string: a param's value is
+    // never scanned again, so a title holding "{{album}}" or a layout like
+    // "{{ARTIST}}/{{ALBUM}}" is text, and so are its `$&` / `$'` / `$$`
+    // (a replacer function). A placeholder with no param stays as written.
     if (params) {
-      Object.keys(params).forEach(p => {
-        // A replacer function: a param's own `$&` / `$'` / `$$` (a song
-        // title, a peer's name) is text, never a substitution pattern.
-        str = str.replace(new RegExp('\\{\\{' + p + '\\}\\}', 'g'), () => String(params[p]));
-      });
+      str = str.replace(/\{\{(\w+)\}\}/g, (whole, name) => (
+        Object.prototype.hasOwnProperty.call(params, name) ? String(params[name]) : whole
+      ));
     }
 
     return str;
@@ -78,12 +126,15 @@ const I18N = (() => {
 
     if (lang === DEFAULT_LANG) {
       strings = fallback;
+      stringsLang = DEFAULT_LANG;
     } else {
       try {
         const res = await fetch(`${base}locales/${lang}.json`);
         strings = await res.json();
+        stringsLang = lang;
       } catch (_) {
         strings = fallback;
+        stringsLang = DEFAULT_LANG;
       }
     }
 

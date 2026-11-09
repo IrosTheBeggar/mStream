@@ -125,7 +125,16 @@ tags:
   - name: Jukebox
     description: Remote-control mode via WebSocket-backed REST.
   - name: YouTube DL
-    description: Download YouTube audio into the library.
+    description: |
+      Add a YouTube video's audio to a library folder. A POST checks the
+      name the file would get before anything is downloaded (409 when the
+      folder already has it), then starts a job; `GET /api/v1/ytdl/downloads`
+      follows the caller's jobs. Jobs live in memory, per account: settled
+      ones are kept 24 h and a restart forgets them all — the durable record
+      of what came in is `GET /api/v1/discovery/downloads?plugin=ytdl`.
+      Feature flag: `features.ytdl` (`GET /api`) / `ytdl` (`/api/v1/ping`),
+      an integer generation; this shape is `>= 1`. Not available to a
+      jukebox session or a federation key.
   - name: Admin - Config
     description: Server-level settings (address, port, UI, secret).
   - name: Admin - Scanner
@@ -318,6 +327,48 @@ components:
         removedBy: { type: integer, nullable: true, description: The account that removed it. }
         present: { type: boolean, description: "Whether a track row still sits at that path; false once a scan or a hand removed the file." }
         trackId: { type: integer, nullable: true }
+
+    YtdlJob:
+      type: object
+      description: |
+        One link the caller added through the Youtube DL route. Lifecycle:
+        `downloading` from the POST that made it, then `complete` (the song
+        is in the library: `filePath`, `downloadId`) or `error` (`error`,
+        `reason`); `endTime` is set at either. Settled entries are listed
+        for 24 h after `endTime` (the newest 50 per account at most), a
+        running one until it settles; a server restart forgets them all.
+        Timestamps are ms epochs.
+      required: [id, pid, url, directory, outputCodec, status, startTime, endTime, fileName, filePath, downloadId, error, reason]
+      properties:
+        id: { type: string, example: "3b0f6c1e-6d2a-4f0e-9a51-0c8f3f0d2a77", description: "The job's id (a random UUID, never reused), as the POST answered it." }
+        pid: { type: integer, nullable: true, description: "yt-dlp's process id (kept for older clients that follow pid + url + directory); null if the process never started." }
+        url: { type: string, example: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", description: "The link as the server cleaned it (`?v=` only, no `#…`)." }
+        directory: { type: string, example: "Music/Inbox", description: "The folder, as the POST named it." }
+        outputCodec: { type: string, example: mp3 }
+        status: { type: string, enum: [downloading, complete, error] }
+        startTime: { type: number }
+        endTime: { type: number, nullable: true, description: "When it settled; null while downloading." }
+        fileName: { type: string, nullable: true, example: "Rick_Astley_-_Never_Gonna_Give_You_Up_Official_Video.mp3", description: "The name it lands as: predicted by the POST's probe (null when the probe failed), then the name it really landed with once `complete`." }
+        filePath: { type: string, nullable: true, example: "Music/Inbox/Rick_Astley_-_Never_Gonna_Give_You_Up_Official_Video.mp3", description: "Once `complete`: the song's library path (library name, then the path inside it; forward slashes, no leading slash, the disk's own case) — the same value as its record's `filepath`." }
+        downloadId: { type: integer, nullable: true, description: "Once `complete`: the id of its `GET /api/v1/discovery/downloads` record (null in the rare case the record could not be written)." }
+        error: { type: string, nullable: true, maxLength: 500, description: "Once `error`: what went wrong, in words fit to show (the server's own paths taken out; at most 500 characters, cut with `…`)." }
+        reason:
+          type: string
+          nullable: true
+          enum: [exists, too-big, too-long, live, unavailable, null]
+          description: |
+            Once `error`, when a code fits (null otherwise, and while
+            downloading or complete):
+            `exists` — a file with that name turned up in the folder while
+            it downloaded (nothing was replaced); `too-big` — past the
+            500 MB cap; `too-long` — the run took longer than 60 minutes
+            (how long it took, not how long the video is); `live` — a live
+            stream; `unavailable` — YouTube will not serve the video
+            (removed, private, age-gated, region-locked, members-only),
+            read from yt-dlp's own `[youtube] <id>: …` refusal only.
+            null covers everything else — notably YouTube's bot check,
+            YouTube rate-limiting the server ("try again later") and a
+            yt-dlp too old for YouTube — where `error` is the answer.
 
     DiscoveryPluginJob:
       type: object
@@ -1839,6 +1890,19 @@ paths:
                           version fact, present whether or not any song has
                           scores (that is `moodFilters`). Absent on older
                           servers.
+                      ytdl:
+                        type: integer
+                        description: >
+                          Youtube DL generation. 1: `GET /api/v1/ytdl/downloads`
+                          lists the caller's jobs (`YtdlJob`: an id, the
+                          landed path and record, error text and a reason
+                          code; settled ones kept 24 h); the POST answers
+                          `{ id }` and refuses a name the folder already has
+                          with 409 before downloading; `/ytdl/metadata` adds
+                          `fileStem`, `isLive`, `liveStatus`, `durationSec`
+                          and `channel`. Gate on `ytdl >= 1`. A version
+                          fact; whether yt-dlp is installed is the routes'
+                          answer. Absent on older servers.
                       sync:
                         type: boolean
                         description: >
@@ -1987,6 +2051,7 @@ paths:
                   flowOrder: 1
                   moodScores: 1
                   federationProxy: { purpose: true }
+                  ytdl: 1
                   transcode: false
                   supportedAudioFiles: { mp3: true, flac: true }
         "401":
@@ -2078,6 +2143,12 @@ paths:
                     description: >
                       Mood scores read-out generation — the same fact as
                       `features.moodScores` on `GET /api`. Absent on older
+                      servers.
+                  ytdl:
+                    type: integer
+                    description: >
+                      Youtube DL generation — the same fact as
+                      `features.ytdl` on `GET /api`. Absent on older
                       servers.
                   supportedAudioFiles:
                     type: object
@@ -4660,12 +4731,16 @@ paths:
         account's, each with its `username` (`null` for an account that is
         gone, and for the anonymous account of a server with no users).
         Removed downloads are history and hidden unless `?removed=1`.
-        `?before=<id>` pages backwards.
+        `?before=<id>` pages backwards. `?plugin=<name>` lists one
+        plug-in's records only (`ytdl` = what the Youtube DL route added);
+        it filters before `limit`, so each page holds up to `limit` of
+        that plug-in's and `before` pages through them alone.
       parameters:
         - { name: all, in: query, schema: { type: boolean }, description: "Admins: every account's." }
         - { name: removed, in: query, schema: { type: boolean }, description: "Include removed records." }
         - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
         - { name: before, in: query, schema: { type: integer }, description: "Only records with a smaller id." }
+        - { name: plugin, in: query, schema: { type: string, pattern: "^[A-Za-z0-9][A-Za-z0-9_-]*$", maxLength: 64, example: ytdl }, description: "Only this plug-in's records: `youtube`, `federation-copy`, or `ytdl` for the Youtube DL route." }
       responses:
         "200":
           description: The records.
@@ -7224,11 +7299,22 @@ paths:
   /api/v1/ytdl:
     post:
       tags: [YouTube DL]
-      summary: Start a YouTube download
+      summary: Add a YouTube video's audio to a folder
       description: |
-        Downloads the video's audio track, converts it to the requested format, and
-        drops it into the target directory. Requires upload permission. Returns
-        immediately — track progress via `GET /api/v1/ytdl/downloads`.
+        Checks, in this order: the server's upload switch and the caller's
+        upload right (403), that ffmpeg is ready (500), the body (400), the
+        library (404 for one the caller lacks or that does not exist) and
+        the folder (404 when it is not there, 400 when it is a file), the
+        link (400 without a video id), and that yt-dlp is installed (500).
+        Then it reads the name the file would land as (one yt-dlp metadata
+        call, skipped when `GET /api/v1/ytdl/metadata` looked the same link
+        up in the last 10 minutes) and answers 409 when the folder already
+        has it — nothing is started. A name that cannot be read (the probe
+        failed) is no refusal: the download starts and its own failure
+        lands on the job. Otherwise yt-dlp starts and the answer comes at
+        once with the job's `id`; follow it with `GET /api/v1/ytdl/downloads`.
+        A file that turns up under the same name while it downloads is
+        never replaced (the job then fails with `reason: exists`).
       requestBody:
         required: true
         content:
@@ -7237,33 +7323,60 @@ paths:
               type: object
               required: [directory, url]
               properties:
-                directory: { type: string }
-                url: { type: string, format: uri }
+                directory: { type: string, example: "Music/Inbox", description: "Library name, then the folder inside it." }
+                url: { type: string, format: uri, description: "A youtube.com / *.youtube.com / youtu.be link with a `?v=` id; everything else in its query is dropped." }
                 outputCodec:
                   type: string
-                  enum: [mp3, opus, aac]
                   default: mp3
+                  description: "Any format `supportedAudioFiles` marks true (by default mp3, flac, wav, ogg, aac, m4a, m4b, opus). aac and m4b land as `.m4a`."
                 metadata:
                   type: object
+                  description: Tags to write; an empty string writes nothing for that tag.
                   properties:
                     title: { type: string }
                     artist: { type: string }
                     album: { type: string }
-                    year: { type: integer }
+                    year: { type: string }
       responses:
         "200":
-          description: Download enqueued.
+          description: Started.
           content:
             application/json:
               schema:
                 type: object
+                required: [message, id, fileName]
                 properties:
-                  message: { type: string }
+                  message: { type: string, enum: [Download started] }
+                  id: { type: string, description: "The job's id (`YtdlJob.id`)." }
+                  fileName: { type: string, nullable: true, description: "The name it should land as; null when the probe could not read it." }
+              example: { message: Download started, id: "3b0f6c1e-6d2a-4f0e-9a51-0c8f3f0d2a77", fileName: "Remote_Hit.mp3" }
+        "400": { description: "A bad body (Joi's message), `Not A Directory`, or `Invalid YouTube URL - missing video ID`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "`Uploading Disabled` (the server's switch or the caller's right), or a jukebox session.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "404": { description: "A library the caller lacks or that does not exist, or `Folder not found`.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "409":
+          description: The folder already has a file with that name; nothing was started and no job was made.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, reason, fileName]
+                properties:
+                  error: { type: string, description: A sentence fit to show. }
+                  reason: { type: string, enum: [exists] }
+                  fileName: { type: string, description: The name the file would have landed as. }
+              example: { error: "“Remote_Hit.mp3” is already in this folder, so nothing was added.", reason: exists, fileName: Remote_Hit.mp3 }
+        "500": { description: "`FFmpeg is not available yet` or `yt-dlp is not installed`; `Server Error` for anything unexpected before the start.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/ytdl/metadata:
     get:
       tags: [YouTube DL]
-      summary: Fetch YouTube video metadata
+      summary: What a YouTube link is
+      description: |
+        One yt-dlp metadata call (bounded at 60 s), cached by the cleaned
+        link for 10 minutes and shared with the POST's name check. The first
+        five fields are the original answer; the rest were added with
+        `features.ytdl` 1 (older servers send only the five).
       parameters:
         - name: url
           in: query
@@ -7278,18 +7391,35 @@ paths:
                 type: object
                 properties:
                   title: { type: string, nullable: true }
-                  artist: { type: string, nullable: true }
+                  artist: { type: string, nullable: true, description: "The artist tag, else the creator, else the uploader." }
                   album: { type: string, nullable: true }
-                  year: { type: integer, nullable: true }
+                  year:
+                    description: "release_year (a number), else the first four characters of release_date (a string); null when neither is known."
+                    anyOf: [{ type: integer, nullable: true }, { type: string, nullable: true }]
                   thumbnail: { type: string, nullable: true }
+                  fileStem: { type: string, nullable: true, description: "The name the file would land as, without its extension (add the codec's: aac and m4b → m4a). yt-dlp's restricted rule: ASCII only, spaces as `_`, most punctuation dropped; a title with no Latin letters is `_`." }
+                  isLive: { type: boolean, description: "On air right now." }
+                  liveStatus: { type: string, nullable: true, example: not_live, description: "yt-dlp's live_status: is_live, is_upcoming, was_live, post_live, not_live." }
+                  durationSec: { type: number, nullable: true }
+                  channel: { type: string, nullable: true }
+              example: { title: "Remote Hit", artist: Nova, album: "Night Ferry", year: 2019, thumbnail: "https://i.ytimg.com/vi/abc/maxresdefault.jpg", fileStem: Remote_Hit, isLive: false, liveStatus: not_live, durationSec: 253, channel: "Nova - Topic" }
+        "400": { description: "Not a YouTube link, or no video id.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A jukebox session.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "500": { description: "`yt-dlp is not installed`, or the lookup failed (`Server Error`).", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   /api/v1/ytdl/downloads:
     get:
       tags: [YouTube DL]
-      summary: List in-progress and recent downloads
+      summary: The caller's jobs
+      description: |
+        The caller's own jobs only (an admin's too), newest first: running
+        ones, and settled ones for 24 h after they settled (at most the
+        newest 50 per account). Kept in memory: a restart forgets them all.
+        In public mode every caller shares the one anonymous account.
       responses:
         "200":
-          description: Downloads.
+          description: Jobs.
           content:
             application/json:
               schema:
@@ -7297,15 +7427,9 @@ paths:
                 properties:
                   downloads:
                     type: array
-                    items:
-                      type: object
-                      properties:
-                        pid: { type: integer }
-                        url: { type: string }
-                        directory: { type: string }
-                        outputCodec: { type: string }
-                        status: { type: string }
-                        startTime: { type: integer }
+                    items: { $ref: "#/components/schemas/YtdlJob" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { description: "A jukebox session.", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
 
   # ── Admin - Scanner ──────────────────────────────────────────────────────
 

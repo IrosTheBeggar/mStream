@@ -56,6 +56,10 @@ export function setup(mstream) {
       // The server's stable id — the same value /api/ carries at its top
       // level, beside the version.
       instanceId: serverInstanceId(),
+      // Youtube DL generation (per-account jobs with ids, the 409 name
+      // check) — same fact /api/ carries under features; listed by hand
+      // here too (the drift-lock test checks).
+      ytdl: features.ytdl,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —

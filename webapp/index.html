@@ -268,7 +268,6 @@
         <div class="hystmodal__styled">
           <div style="display:flex; gap:0; margin-bottom:16px; border-bottom:1px solid rgba(255,255,255,0.2);">
             <button id="tab_upload" onclick="switchUploadTab('upload')" style="flex:1; padding:10px; background:none; border:none; color:#fff; cursor:pointer; font-size:14px; font-weight:bold; border-bottom:2px solid transparent;" data-i18n="upload.tabFiles">Upload Files</button>
-            <button id="tab_ytdl" onclick="switchUploadTab('ytdl')" style="flex:1; padding:10px; background:none; border:none; color:#fff; cursor:pointer; font-size:14px; font-weight:bold; border-bottom:2px solid transparent;" data-i18n="upload.tabYoutube">Youtube DL</button>
             <button id="tab_torrent" onclick="switchUploadTab('torrent')" style="flex:1; padding:10px; background:none; border:none; color:#fff; cursor:pointer; font-size:14px; font-weight:bold; border-bottom:2px solid transparent;">Torrent</button>
           </div>
           <p style="color:#fff; margin: 0 0 12px; opacity: 0.7;"><b data-i18n="upload.location">Location:</b> <span id="upload_filepath"></span></p>
@@ -283,27 +282,6 @@
               <span data-i18n="upload.chooseFiles">Choose Files</span>
               <input id="upload_file_input" type="file" multiple style="display:none;" onchange="handleFileUpload(this.files)">
             </label>
-          </div>
-
-          <!-- Youtube DL Tab -->
-          <div id="tab_content_ytdl" class="super-hide">
-            <p><span data-i18n="upload.ytdlDescription">Download youtube videos to your server.</span> <b data-i18n="upload.ytdlRequirement">You must have yt-dlp installed for this to work!</b></p>
-            <p id="ytdl_transcode_warning" class="super-hide" style="color:#e57373;" data-i18n="upload.ytdlTranscodeWarning">Transcoding needs to be enabled for this feature</p>
-            <form action="javascript:submitYtdl()">
-              <input id="ytdl_url" autocomplete="off" type="url" required placeholder="Enter URL" style="color:#fff;" data-i18n="upload.urlPlaceholder" data-i18n-attr="placeholder">
-              <select id="ytdl_codec"></select>
-              <div id="ytdl_metadata" class="super-hide" style="display:flex; align-items:flex-start; gap:14px; margin:12px 0; color:#fff;">
-                <img id="ytdl_meta_thumb" src="" style="width:80px; height:80px; object-fit:cover; border-radius:4px; flex-shrink:0;">
-                <div style="flex:1; line-height:1.6;">
-                  <div><b data-i18n="upload.metaTitle">Title:</b> <span id="ytdl_meta_title" contenteditable="true" style="display:inline-block; min-width:120px; border-bottom:1px solid rgba(255,255,255,0.3);"></span></div>
-                  <div><b data-i18n="upload.metaArtist">Artist:</b> <span id="ytdl_meta_artist" contenteditable="true" style="display:inline-block; min-width:120px; border-bottom:1px solid rgba(255,255,255,0.3);"></span></div>
-                  <div><b data-i18n="upload.metaAlbum">Album:</b> <span id="ytdl_meta_album" contenteditable="true" style="display:inline-block; min-width:120px; border-bottom:1px solid rgba(255,255,255,0.3);"></span></div>
-                  <div><b data-i18n="upload.metaYear">Year:</b> <span id="ytdl_meta_year" contenteditable="true" style="display:inline-block; min-width:60px; border-bottom:1px solid rgba(255,255,255,0.3);"></span></div>
-                </div>
-              </div>
-              <div id="ytdl_meta_loading" class="super-hide" style="color:#fff; opacity:0.5; margin:12px 0;" data-i18n="upload.loadingMetadata">Loading metadata...</div>
-              <input id="ytdl_submit" type="submit" class="btn green" value="Download" data-i18n="upload.downloadButton" data-i18n-attr="value">
-            </form>
           </div>
 
           <!-- Torrent Tab — the "dumb" path. Pick a vpath in the file
@@ -632,6 +610,17 @@
       <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#DDD" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/><line x1="12" y1="3" x2="12" y2="15"/><path d="M3 17v2a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-2"/></svg>
       <span>Add Torrent</span>
     </div>
+    <!-- Add from YouTube — this server's: hidden until the ping says this
+         account may add files (uploads on, conversion ready, a library;
+         m.js ytdlApplyGates). The state pill and its words in place sit
+         beside the label, never inside it (translatePage() rewrites the
+         label's text); alpha/ytdl-ui.js renderPill fills them. -->
+    <div id="nav-ytdl" class="local-only side-nav-item my-waves super-hide" onclick="changeView(ytdlPanel, this);" data-panel="addFromYoutube">
+      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" stroke="#DDD" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="19" height="14" rx="3.5" fill="none"/><path d="M10 9.2v5.6l4.8-2.8z" fill="#DDD"/></svg>
+      <span data-i18n="nav.addFromYoutube">Add from YouTube</span>
+      <span id="nav-ytdl-sr" class="dm-sr"></span>
+      <span id="nav-ytdl-pill" class="nav-ytdl-pill super-hide" aria-hidden="true"></span>
+    </div>
     <div class="local-only side-nav-item my-waves" onclick="changeView(autoDjPanel, this);">
       <svg xmlns="http://www.w3.org/2000/svg" fill="#DDD" width="24" height="24" viewBox="0 0 55.334 55.334"><g><circle cx="27.667" cy="27.667" r="3.618"/><path d="M27.667 0C12.387 0 0 12.387 0 27.667s12.387 27.667 27.667 27.667 27.667-12.387 27.667-27.667S42.947 0 27.667 0zM17.118 6.881a23.213 23.213 0 0111.214-2.509c.367.01.619.922.564 2.025l-.282 5.677c-.055 1.103-.289 1.986-.523 1.979a13.577 13.577 0 00-6.027 1.196c-1.007.455-2.212.184-2.774-.767l-2.896-4.897c-.562-.951-.261-2.203.724-2.704zm-1.132 10.414l-4.278-3.742c-.832-.727-.918-1.994-.119-2.756l.057-.053c.802-.76 2.059-.605 2.737.266l3.494 4.484c.679.871.837 1.889.391 2.314-.447.427-1.45.214-2.282-.513zm1.891 10.372c0-5.407 4.383-9.79 9.79-9.79s9.79 4.383 9.79 9.79-4.383 9.79-9.79 9.79-9.79-4.383-9.79-9.79zM38.17 48.476a23.21 23.21 0 01-11.244 2.484c-.409-.013-.692-.929-.632-2.032l.31-5.676c.061-1.103.322-1.981.586-1.972a13.596 13.596 0 005.656-1.01c1.022-.42 2.275-.144 2.877.782l3.101 4.77c.602.925.332 2.155-.654 2.654zm5.449-3.82c-.766.72-2.005.551-2.703-.305l-3.59-4.407c-.698-.856-.876-1.848-.435-2.255.442-.407 1.443-.179 2.274.549l4.28 3.744c.832.727.941 1.954.174 2.674z"/></g></svg>
       <span data-i18n="nav.autoDJ">Auto DJ</span>
@@ -854,6 +843,13 @@
           </div>
           <svg id="mkdir_btn" onclick="openMkdirModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.createFolder">Create Folder</title><path d="M0 0h24v24H0z" fill="none"/><path d="M20 6h-8l-2-2H4c-1.11 0-1.99.89-1.99 2L2 18c0 1.11.89 2 2 2h16c1.11 0 2-.89 2-2V8c0-1.11-.89-2-2-2zm-1 8h-3v3h-2v-3h-3v-2h3V9h2v3h3v2z"/></svg>
           <svg id="upload_btn" onclick="openUploadModal();" class="pointer super-hide" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.upload">Upload</title><path d="M0 0h24v24H0z" fill="none"/><path d="M9 16h6v-6h4l-7-7-7 7h4zm-4 2h14v2H5z"/></svg>
+          <!-- Add from YouTube here (m.js ytdlOpenWindow): the window for the
+               folder on screen. A real button among the bar's icons; hidden
+               until the explorer shows a folder this account may add to
+               (senddir, ytdlRefreshExplorer) — never greyed. -->
+          <button type="button" id="ytdl_btn" class="ytdl-bar-btn super-hide" aria-haspopup="dialog" aria-label="Add from YouTube here" data-i18n="tooltip.addFromYoutubeHere" data-i18n-attr="aria-label" onclick="ytdlOpenWindow();">
+            <svg xmlns="http://www.w3.org/2000/svg" height="24" width="24" viewBox="0 0 24 24"><title data-i18n="tooltip.addFromYoutubeHere">Add from YouTube here</title><path fill-rule="evenodd" d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM9.5 16.5v-9l7 4.5-7 4.5z"/></svg>
+          </button>
           <svg onclick="addAll();" class="pointer" xmlns="http://www.w3.org/2000/svg" height="24" width="24"><title data-i18n="tooltip.addAllToQueue">Add All To Queue</title><path d="M0 0h24v24H0V0z" fill="none"/><path d="M21 3H3c-1.11 0-2 .89-2 2v12a2 2 0 0 0 2 2h5v2h8v-2h5c1.1 0 1.99-.9 1.99-2L23 5a2 2 0 0 0-2-2zm0 14H3V5h18v12zm-5-7v2h-3v3h-2v-3H8v-2h3V7h2v3h3z"/></svg>
         </div>
         <!-- The mood filters (m.js moodPanelHtml), hidden until the bar's
@@ -862,10 +858,15 @@
         <div class="upload-progress-bar">
           <div style="width:0%" id="upload-progress-inner" class="upload-progress-inner"></div>
         </div>
-        <div id="ytdl_download_indicator" class="super-hide" style="display:flex; align-items:center; gap:8px; padding:8px 14px; background:rgba(76,175,80,0.15); border-left:3px solid #4CAF50; color:#fff; font-size:13px;">
-          <svg class="spinner" style="width:18px; height:18px;" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>
-          <span id="ytdl_download_text" style="flex:1;" data-i18n="fileExplorer.downloading">Downloading...</span>
-          <a href="/downloads" style="color:#4CAF50; white-space:nowrap;" data-i18n="label.viewDownloads">view downloads</a>
+        <!-- Add from YouTube's strip, in the slot under the bar: while an add
+             of this browser's into the folder on screen runs (m.js
+             ytdlRefreshExplorer → alpha/ytdl-ui.js renderStrip). Above the
+             scroller, so the list's filter never redraws it. -->
+        <div id="ytdl_strip" class="ytdl-strip super-hide" role="status">
+          <span class="ytdl-strip-ic" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" focusable="false"><path d="M21 12a9 9 0 1 1-6.2-8.56"/></svg></span>
+          <span class="ytdl-strip-text"></span>
+          <span class="ytdl-strip-dot" aria-hidden="true">·</span>
+          <button type="button" class="ytdl-strip-all" data-i18n="ytdl.strip.seeAll" onclick="ytdlOpenPanel();">See all</button>
         </div>
         <!-- A connected server's album, artist or folder page: its header,
              with Keep a copy… (m.js browseHeadDraw). Above the scroller, so
@@ -1506,12 +1507,25 @@
     </a>
   </div>
 
+  <!-- Add from YouTube's windows (alpha/ytdl-ui.js mounts them here), and
+       its words for a screen reader outside them: an add's result (the
+       toast has no live region; ytdl-ui.js announce). -->
+  <div id="ytdl-windows"></div>
+  <div id="ytdl-announce" class="dm-sr" role="status" aria-live="polite"></div>
+
   <!-- The Discover job rows' pure half (window.DISCOVERJOBS) — vp.js reads it. -->
   <script src="alpha/discover-jobs.js"></script>
   <!-- The Discover page's pure half (window.DISCOVERYPAGE) — m.js reads it
        when the page opens (no load-time dependency). -->
   <script src="alpha/discovery-page.js"></script>
+  <!-- Add from YouTube's rules (window.YTDLCORE, on DISCOVERJOBS) and this
+       browser's jobs (window.YTDLJOBS) — no DOM, nothing runs at load. -->
+  <script src="alpha/ytdl-core.js"></script>
+  <script src="alpha/ytdl-jobs.js"></script>
   <script src="alpha/vp.js"></script>
+  <!-- Add from YouTube's panel and windows (window.YTDLUI): Vue components
+       on top of vp.js's (its focus trap); m.js wires them from init(). -->
+  <script src="alpha/ytdl-ui.js"></script>
   <script src="alpha/scan-progress.js"></script>
 </body>
 </html>
