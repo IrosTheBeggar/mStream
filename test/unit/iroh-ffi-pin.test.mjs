@@ -1,17 +1,20 @@
 /**
  * bin/iroh/iroh-ffi-pin.json — the upstream source pin build-bun.yml compiles
- * the darwin-x64 iroh binding from (upstream publishes no darwin-x64 npm
- * package; see bin/iroh/README.md).
+ * iroh bindings from: darwin-x64 because upstream publishes no such npm
+ * package, linux-x64 and linux-arm64 because upstream's prebuilts need glibc
+ * 2.34 while the bundles promise 2.28 (see bin/iroh/README.md).
  *
- * Two halves of @number0/iroh ship in the Intel-Mac bundle: the JS loader
- * from package-lock.json's version and a .node compiled from the pinned tag.
- * They must be one release — a dependency bump that forgets the pin would
- * ship a JS half calling into the wrong native ABI, and only Intel Macs would
- * notice, at runtime. Pure file reads, no network, no build.
+ * Two halves of @number0/iroh ship in those bundles: the JS loader from
+ * package-lock.json's version and a .node compiled from the pinned tag. They
+ * must be one release — a dependency bump that forgets the pin would ship a
+ * JS half calling into the wrong native ABI, noticed only at runtime. Pure
+ * file reads, no network, no build.
  *
- * The last case is an expiry alarm: it fails the day the lockfile gains a
+ * The darwin case is an expiry alarm: it fails the day the lockfile gains a
  * @number0/iroh-darwin-x64 platform package, which means upstream now ships
- * the binary and the source build should be retired, not kept.
+ * the binary and that source build should be retired, not kept. The Linux
+ * builds have no such alarm — their platform packages exist and stay pinned;
+ * the source build replaces them for their floor.
  */
 
 import { describe, test } from 'node:test';
@@ -29,13 +32,30 @@ const lock = read('package-lock.json').packages;
 describe('bin/iroh/iroh-ffi-pin.json', () => {
   test('has the shape build-bun.yml reads', () => {
     assert.equal(pin.family, 'iroh-ffi');
-    assert.equal(pin.schema, 1);
+    assert.equal(pin.schema, 2);
     assert.match(pin.repo, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo is owner/name');
     assert.match(pin.tag, /^v\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/, 'tag is v<semver>');
     assert.match(pin.commit, /^[0-9a-f]{40}$/, 'commit is a full sha');
     assert.match(pin.crate, /^[A-Za-z0-9_-]+$/, 'crate is a cargo package name');
+    // Every build names the napi triple (the .node file name stageIroh()
+    // looks for) and the rust target it compiles for.
+    for (const [key, b] of Object.entries(pin.builds)) {
+      assert.match(b.napi, /^(darwin|linux|win32)-(x64|arm64)(-(gnu|musl|msvc))?$/, `${key}: napi triple`);
+      assert.match(b.target, /^[a-z0-9_]+-[a-z0-9-]+$/, `${key}: rust target triple`);
+    }
     assert.equal(pin.builds['darwin-x64'].target, 'x86_64-apple-darwin');
     assert.match(pin.builds['darwin-x64'].macosxDeploymentTarget, /^\d+\.\d+$/);
+    assert.equal(pin.builds['linux-x64'].napi, 'linux-x64-gnu');
+    assert.equal(pin.builds['linux-x64'].target, 'x86_64-unknown-linux-gnu');
+    assert.equal(pin.builds['linux-arm64'].napi, 'linux-arm64-gnu');
+    assert.equal(pin.builds['linux-arm64'].target, 'aarch64-unknown-linux-gnu');
+  });
+
+  test('the Linux gnu builds replace prebuilts the lockfile still pins (for the glibc floor, not a gap)', () => {
+    // stageIroh() would fall back to these on a leg whose source-build
+    // step did not run — build-bun.yml's floor assert is what catches that.
+    assert.ok(lock['node_modules/@number0/iroh-linux-x64-gnu'], 'the linux-x64-gnu platform package is still pinned');
+    assert.ok(lock['node_modules/@number0/iroh-linux-arm64-gnu'], 'the linux-arm64-gnu platform package is still pinned');
   });
 
   test('pins the same @number0/iroh release the lockfile installs', () => {

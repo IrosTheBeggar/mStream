@@ -56,7 +56,11 @@ export async function loadIroh() {
         if (node) { process.env.NAPI_RS_NATIVE_LIBRARY_PATH = join(dir, node); }
       } catch { /* fall back to the loader's default resolution */ }
     }
-    irohMod = await import('@number0/iroh');
+    try {
+      irohMod = await import('@number0/iroh');
+    } catch (err) {
+      throw new Error(describeLoadError(err), { cause: err });
+    }
     // MSTREAM_IROH_LOG=trace|debug|info|warn turns on iroh's own tracing
     // (stderr) — the transport-level view the accept loops cannot give.
     const lvl = process.env.MSTREAM_IROH_LOG;
@@ -66,6 +70,39 @@ export async function loadIroh() {
     }
   }
   return irohMod;
+}
+
+// The reason behind napi-rs's generic load failure. Its loader tries every
+// candidate binding and throws one "Cannot find native binding. npm has a
+// bug related to optional dependencies…" whose `cause` chains the attempts
+// (each attempt's error is the cause of the next); the dlopen failure of
+// the binding we pointed it at is the one that explains a dead Quick
+// Connect — on Linux typically a glibc older than the binding was linked
+// against ("version `GLIBC_2.34' not found"). Pure; unit-tested.
+export function describeLoadError(err, hostGlibc = glibcVersionRuntime()) {
+  const dl = loadAttempts(err).find((c) => !/^Cannot find (module|package)/.test(c?.message ?? ''));
+  if (!dl) { return err?.message ?? String(err); }
+  const host = hostGlibc ? ` (this host's glibc is ${hostGlibc})` : '';
+  return `native binding failed to load${host}: ${dl.message}`;
+}
+
+// Every attempt behind the loader's error, newest first: a `cause` chain
+// today, an array should the loader change its mind.
+function loadAttempts(err) {
+  const out = [];
+  const walk = (c) => {
+    if (!c || out.length > 32) { return; }
+    if (Array.isArray(c)) { c.forEach(walk); return; }
+    out.push(c);
+    walk(c.cause);
+  };
+  walk(err?.cause);
+  return out;
+}
+
+function glibcVersionRuntime() {
+  if (process.platform !== 'linux') { return null; }
+  try { return process.report?.getReport()?.header?.glibcVersionRuntime ?? null; } catch { return null; }
 }
 
 // Where an endpoint stands: its home relay and how many direct addresses it
