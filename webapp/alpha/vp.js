@@ -4035,7 +4035,9 @@ const VUEPLAYERCORE = (() => {
             m.picker = null;
             this.dmDestFocus('change');
             const d = view && view.destination;
-            if (d) { iziToast.success({ title: this.tt(k.download ? 'discover.modal.dest.savedFiles' : 'discover.modal.dest.saved', { path: this.dmDestLanding(d) }), position: 'topCenter', timeout: 3000 }); }
+            // the landing names library and folder names: escaped for the
+            // toast, which takes markup (m.js's escapeHtml)
+            if (d) { iziToast.success({ title: escapeHtml(this.tt(k.download ? 'discover.modal.dest.savedFiles' : 'discover.modal.dest.saved', { path: this.dmDestLanding(d) })), position: 'topCenter', timeout: 3000 }); }
           }
         } catch (err) {
           if (this.dmLive(gen) && m.picker === k) {
@@ -4106,28 +4108,32 @@ const VUEPLAYERCORE = (() => {
         }
         if (DISCOVERJOBS.trayRows(jobs).length > 0) { this.ensureDiscoverPlugins(); }
       },
+      // iziToast inserts title and message as markup, and a job's words are
+      // another server's (its song, album and artist names, its error, the
+      // counts' names): each toast's text goes in through m.js's escapeHtml.
       toastDiscoverJob: function (job) {
         const row = DISCOVERJOBS.jobRowState(job);
         const message = DISCOVERJOBS.jobTitle(job);
+        const said = (...parts) => escapeHtml(parts.filter(Boolean).join(' · '));
         if (row.state === 'failed') {
           // a song's failure carries the server's words; an album's or an
           // artist's ends 'done' with no error: its title and its counts
-          iziToast.error({ title: this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) }), message: job.error || [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 5000 });
+          iziToast.error({ title: escapeHtml(this.tt('discover.job.toastFailed', { plugin: this.discoverPluginTitle(job.plugin) })), message: job.error ? said(job.error) : said(message, this.dmText(row.sub)), position: 'topCenter', timeout: 5000 });
         } else if (row.state === 'copied') {
-          iziToast.success({ title: this.tt('discover.job.toastCopied'), message, position: 'topCenter', timeout: 3000 });
+          iziToast.success({ title: this.tt('discover.job.toastCopied'), message: said(message), position: 'topCenter', timeout: 3000 });
         } else if (row.state === 'copiedMany') {
-          iziToast.success({ title: this.tt('discover.job.toastCopiedMany'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 3500 });
+          iziToast.success({ title: this.tt('discover.job.toastCopiedMany'), message: said(message, this.dmText(row.sub)), position: 'topCenter', timeout: 3500 });
         } else if (row.state === 'stopped') {
-          iziToast.warning({ title: this.tt('discover.job.toastStopped'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4500 });
+          iziToast.warning({ title: this.tt('discover.job.toastStopped'), message: said(message, this.dmText(row.sub)), position: 'topCenter', timeout: 4500 });
         } else if (row.state === 'downloaded') {
           const where = row.filepath ? DISCOVERJOBS.pathCrumbs(row.filepath).join(' / ') : '';
-          iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: [message, where].filter(Boolean).join(' · '), position: 'topCenter', timeout: 4000 });
+          iziToast.success({ title: this.tt('discover.job.toastDownloaded'), message: said(message, where), position: 'topCenter', timeout: 4000 });
         } else if (row.state === 'owned') {
-          iziToast.info({ title: this.tt('discover.job.toastOwned'), message, position: 'topCenter', timeout: 3000 });
+          iziToast.info({ title: this.tt('discover.job.toastOwned'), message: said(message), position: 'topCenter', timeout: 3000 });
         } else if (row.state === 'nothing') {
           // an album or artist copy that found nothing to take (an artist
           // who only guests on that server's albums, an empty listing)
-          iziToast.info({ title: this.tt('discover.job.toastNothing'), message: [message, this.dmText(row.sub)].filter(Boolean).join(' · '), position: 'topCenter', timeout: 3500 });
+          iziToast.info({ title: this.tt('discover.job.toastNothing'), message: said(message, this.dmText(row.sub)), position: 'topCenter', timeout: 3500 });
         }
       },
       scheduleDiscoverJobsPoll: function () {
@@ -4196,7 +4202,9 @@ const VUEPLAYERCORE = (() => {
           // a right gone (403) or the copy plug-in gone (404): the pages'
           // ways in read their gate again, as after the window's own start
           if (err && (err.status === 403 || err.status === 404)) { this.dmKeepGateChanged(); }
-          iziToast.error({ title: moved ? this.tt('discover.tray.destChanged') : this.dmErrorText(err), position: 'topCenter', timeout: 3500 });
+          // the server's own words (which may quote a peer's): escaped for
+          // the toast, which takes markup (m.js's escapeHtml)
+          iziToast.error({ title: escapeHtml(moved ? this.tt('discover.tray.destChanged') : this.dmErrorText(err)), position: 'topCenter', timeout: 3500 });
         }
         this.scheduleDiscoverJobsPoll();
       },
@@ -4232,14 +4240,17 @@ const VUEPLAYERCORE = (() => {
 
       // ── "From the network" rows ────────────────────────────────────
       // Not playable (the track lives on someone else's server) — clicking
-      // copies "Artist - Title" so the user can go find it.
+      // copies "Artist - Title" so the user can go find it. The text is the
+      // peer's: escaped for the toast, which takes markup (m.js's
+      // escapeHtml); the clipboard gets it as it is.
       copyDiscoverP2p: async function (track) {
         const text = `${track.artist || ''} - ${track.title || ''}`.trim();
         try {
           await navigator.clipboard.writeText(text);
-          iziToast.success({ title: t('discover.network.copied'), message: text, position: 'topCenter', timeout: 2500 });
+          iziToast.success({ title: t('discover.network.copied'), message: escapeHtml(text), position: 'topCenter', timeout: 2500 });
         } catch (_) {
-          iziToast.info({ title: text, position: 'topCenter', timeout: 3500 });
+          // no clipboard here (plain http): the text itself, to copy by hand
+          iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
         }
       },
       discoverP2pMbUrl: function (track) {
