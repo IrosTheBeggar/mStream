@@ -26,6 +26,7 @@ import * as fedDb from '../db/federation.js';
 import * as sim from '../db/discovery-similarity.js';
 import { mintGuestToken } from '../state/federation-guest.js';
 import { describeAllowance } from './federation-limits.js';
+import { AUTO_DJ_GENERATION } from './random.js';
 import WebError from '../util/web-error.js';
 
 // What a peer needs before sending vector queries: can this server answer
@@ -61,6 +62,11 @@ export function setup(mstream) {
       // parent may offer its devices a direct path to us. A flag, not a
       // probe — like everything else a peer learns here.
       guestAccess: true,
+      // The Auto DJ picker's generation — the same fact as `features.autoDj`
+      // on GET /api/. Here too because a peer already reads this route for
+      // `discovery.modelId` before sending the picker vectors; from 1 the
+      // body takes negative seeds (`lessLike` / `lessLikeVectors`).
+      autoDj: AUTO_DJ_GENERATION,
       // The caller's own allowance — its key's caps and today's use
       // (api/federation-limits.js describeAllowance) — for a key or a guest
       // of one; a local user has no key, so the field is absent. A parent

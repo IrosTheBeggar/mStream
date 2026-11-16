@@ -155,6 +155,9 @@ describe('layered /api/ server info', () => {
     // The peer stream proxy forwards X-mStream-Purpose (federation-stream.js
     // FORWARD_REQ): a client copying through it reads this, exactly.
     assert.deepEqual(j.features.federationProxy, { purpose: true });
+    // A version fact (the Auto DJ picker takes negative seeds), advertised
+    // with discovery off too — clients gate on it AND discoveryReady.
+    assert.equal(j.features.autoDj, 1);
     assert.equal(j.user.username, 'pleb');
     assert.equal(j.user.admin, false);
     assert.equal(j.user.federation, false);
