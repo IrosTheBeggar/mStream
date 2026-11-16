@@ -15,7 +15,9 @@
  *     and are still served when nothing else is left — never a new 400;
  *     the waterfall's repeat top-up counts only the clean songs of the
  *     best tier the fresh ones reach, so a clean off-tier song never
- *     keeps an in-tier repeat out of the pick;
+ *     keeps an in-tier repeat out of the pick, and a top-up only the skip
+ *     asked for leaves the just-served songs out, so none comes back from
+ *     a better tier either;
  *   - the candidate SQL: the `ll` column + ORDER BY alias, its json_each
  *     placeholder binding FIRST (ahead of the rating join's user id), the
  *     plan staying a tracks scan with a non-correlated list subquery, and
@@ -349,6 +351,64 @@ describe('runRandomSongs with negative seeds', () => {
     const two = pick({ ...body, ignoreList: [ids.G1, ids.G2, ids.U, ...stale], limit: 2 });
     assert.deepEqual(titles(two), ['M', 'G1']);
     assert.deepEqual(two.lessLike.avoided, [false, false]);
+  });
+
+  test('D22: a top-up only the skip asked for leaves out the song just served, even from a better tier', () => {
+    // 110-130 + 1A: G1, given bpm 120 and no key, is in range (tier 0) and
+    // was served last; X1, given bpm 120 and key 5B, has the wrong key
+    // (tier 2) and is like N. Neither holds a 1A-family key, so the
+    // tightBPM+key step is empty and the tightBPM step wins, X1 its one
+    // fresh song.
+    const set = manager.getDB().prepare('UPDATE tracks SET bpm = ?, musical_key = ? WHERE id = ?');
+    set.run(120, null, ids.G1);
+    set.run(120, '5B', ids.X1);
+    try {
+      const body = { bpmRanges: [{ min: 110, max: 130 }], musicalKeys: ['1A'], ignoreList: [ids.G1], limit: 1 };
+      assert.deepEqual(titles(pick(body)), ['X1']);
+      // X1 still fills the pick on its own, so only the skip asks for the
+      // top-up, and it leaves G1 out: on its tier G1 would outrank X1.
+      for (let i = 0; i < 5; i++) {
+        const out = pick({ ...body, lessLike: [pathOf('N')] });
+        assert.deepEqual(titles(out), ['X1']);
+        assert.deepEqual(out.lessLike.avoided, [true]);
+      }
+      // Short of the limit the repeats come back, skip or not: G1 leads.
+      assert.deepEqual(titles(pick({ ...body, limit: 2 })), ['G1', 'X1']);
+      const two = pick({ ...body, limit: 2, lessLike: [pathOf('N')] });
+      assert.deepEqual(titles(two), ['G1', 'X1']);
+      assert.deepEqual(two.lessLike.avoided, [false, true]);
+    } finally {
+      set.run(null, null, ids.G1);
+      set.run(null, null, ids.X1);
+    }
+  });
+
+  test('D23: the best-tier top-up brings back the older repeat, never the just-served song above it', () => {
+    // 110-130 + 1A: nothing has a bpm in range, so the unrestricted step
+    // serves. G1, given key 1A, is tier 0 and was served last; tier 1's
+    // fresh songs are P, N, X1, X2, all like N; tier 2 holds X3 and F,
+    // clean. M, served nine picks ago, is past the window (8 at limit 1).
+    const set = manager.getDB().prepare('UPDATE tracks SET musical_key = ? WHERE id = ?');
+    set.run('1A', ids.G1);
+    try {
+      const stale = [990001, 990002, 990003, 990004, 990005];
+      const body = {
+        lessLike: [pathOf('N')], bpmRanges: [{ min: 110, max: 130 }], musicalKeys: ['1A'],
+        ignoreList: [ids.M, ...stale, ids.G2, ids.U, ids.G1], limit: 1,
+      };
+      for (let i = 0; i < 5; i++) {
+        const out = pick(body);
+        assert.deepEqual(titles(out), ['M']);
+        assert.deepEqual(out.lessLike.avoided, [false]);
+      }
+      // Every cooled song just served: nothing older is left to fetch, so
+      // a fresh tier-1 song plays, like a skip, and G1 still stays out.
+      const recent = pick({ ...body, ignoreList: [ids.M, ids.G2, ids.U, ids.G1] });
+      assert.ok(['P', 'N', 'X1', 'X2'].includes(titles(recent)[0]), titles(recent).join());
+      assert.deepEqual(recent.lessLike.avoided, [true]);
+    } finally {
+      set.run(null, ids.G1);
+    }
   });
 
   test('D10: under a sonic seed the threshold follows minSimilarity', () => {

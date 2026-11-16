@@ -577,20 +577,31 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   // a skip still fetches the repeats that are not, however many clean rows
   // a worse tier holds (tier > not like a skip > fresh > oldest repeat,
   // see finalisePick).
-  const { ignoreIds, allowRepeatRetry, tierOrder, tierOf, limit, lessLike } = bounded;
+  //
+  // A top-up only the skips asked for — the fresh rows alone fill `limit`,
+  // so without negatives there would be none — leaves out the songs just
+  // served (`justServed`, finalisePick's window). The tier ranks above
+  // that window, so one of them in a better tier than every fresh row
+  // would come back first, and a skip would make the DJ play the song it
+  // just played again; when the window holds every cooled song, nothing
+  // is left to fetch. Fresh rows short of `limit` fetch every repeat, as
+  // they do without negatives.
+  const { ignoreIds, justServed, allowRepeatRetry, tierOrder, tierOf, limit, lessLike } = bounded;
   const orderBy = 'ORDER BY ' + [tierOrder?.expr, lessLike ? 'll' : null, 'RANDOM()'].filter(Boolean).join(', ');
   const tierParams = tierOrder ? tierOrder.params : [];
-  const attempt = (excludeIgnored) => {
-    const exclude = excludeIgnored && ignoreIds.length > 0
-      ? ` AND t.id NOT IN (${ignoreIds.map(() => '?').join(',')})`
+  const attempt = (excludeIds) => {
+    const exclude = excludeIds.length > 0
+      ? ` AND t.id NOT IN (${excludeIds.map(() => '?').join(',')})`
       : '';
     return d.prepare(`${sql}${exclude} ${orderBy} LIMIT ${SIMPLE_POOL_LIMIT}`)
-      .all(...baseParams, ...params, ...(exclude ? ignoreIds : []), ...tierParams);
+      .all(...baseParams, ...params, ...excludeIds, ...tierParams);
   };
-  const rows = attempt(true);
+  const rows = attempt(ignoreIds);
   if (cleanCount(rows, lessLike, tierOf) >= limit || ignoreIds.length === 0) { return rows; }
   if (rows.length === 0 && !allowRepeatRetry) { return rows; }
-  return mergeRows(rows, attempt(false));
+  if (rows.length < limit) { return mergeRows(rows, attempt([])); }
+  if (justServed.length >= ignoreIds.length) { return rows; }
+  return mergeRows(rows, attempt(justServed));
 }
 
 // ── Sonic similarity pool (discovery embeddings) ────────────────────────────
@@ -836,8 +847,8 @@ let lessLikeColdInPick = 0;
 
 // With negatives in play, how many of the newest ignoreList entries count
 // as "just served": max(limit × RECENT_PICKS_BATCHES, RECENT_PICKS_MIN).
-// Those rank behind every fresh song in finalisePick, like a skip or not,
-// and among themselves oldest first; older repeats that are not like a
+// Those rank behind every fresh song of their tier in finalisePick, like a
+// skip or not, and among themselves oldest first; older repeats not like a
 // skip keep ranking ahead of fresh songs that are. The window is counted
 // in list entries, and the list also holds picks the client REJECTED
 // without playing them, so it has to cover a client's whole retry loop:
@@ -858,9 +869,19 @@ let lessLikeColdInPick = 0;
 // limit 10 up the window (5 × 10 = 50) covers the whole list the server
 // hands back (IGNORE_COOLDOWN_MAX), so every repeat is "just served" and
 // the order falls back to the plain one — fresh songs (clean before like a
-// skip), then every repeat oldest first.
+// skip), then every repeat oldest first. The tier ranks above the window,
+// so a repeat top-up only the skips asked for leaves its songs out (see
+// runWaterfallQuery).
 export const RECENT_PICKS_MIN = 8;
 export const RECENT_PICKS_BATCHES = 5;
+
+// Where the just-served window starts in `sent` (the ignoreList ids, newest
+// last): that entry and every newer one. 0 or below when the window holds
+// the whole list. finalisePick ranks by it, and the waterfall's repeat
+// top-up leaves those songs out when only the skips asked for it.
+function justServedFrom(sent, limit) {
+  return sent.length - Math.max(limit * RECENT_PICKS_BATCHES, RECENT_PICKS_MIN);
+}
 
 // The negative threshold for a request (see the rule above). Exported for
 // tests.
@@ -1459,6 +1480,9 @@ function pickSongs(req, body, conflictGuard) {
   const tierOf = ll ? tierClassifier(body) : null;
   const ignoreIds = ignoreIdsFrom(body);
   const ignoreSet = new Set(ignoreIds);
+  // The songs just served, which a top-up only the skips asked for leaves
+  // out (see runWaterfallQuery) — likewise only read with negatives.
+  const justServed = ll ? ignoreIds.slice(Math.max(0, justServedFrom(ignoreIds, limit))) : [];
 
   let rows = [];
   for (const step of steps) {
@@ -1484,7 +1508,7 @@ function pickSongs(req, body, conflictGuard) {
     // step).
     const candidate = runWaterfallQuery(
       d, baseSql, baseParams, opts,
-      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder, tierOf, limit, lessLike: !!ll },
+      { ignoreIds, justServed, allowRepeatRetry: !enforcesCooldown, tierOrder, tierOf, limit, lessLike: !!ll },
     );
     if (candidate.length === 0) { continue; }
     if (enforcesCooldown && candidate.every((r) => ignoreSet.has(r.id))) { continue; }
@@ -1529,12 +1553,14 @@ function pickSongs(req, body, conflictGuard) {
 // songs served in the last few picks — the newest max(limit ×
 // RECENT_PICKS_BATCHES, RECENT_PICKS_MIN) entries of the ignoreList, wide
 // enough to hold a client's queue-ahead and the picks it rejected and
-// retried (see the constants) — rank behind every fresh song, like a skip
-// or not, and among themselves purely by age, so a skip can never make the
-// DJ play the song it just played again (the one failure the cooldown
-// exists to prevent), nor a batch repeat the batch before it, even when the
-// window covers the whole candidate set (splitting the window by the skip
-// would hand a pool smaller than it its one clean song twice running).
+// retried (see the constants) — rank behind every fresh song of their tier,
+// like a skip or not, and among themselves purely by age, and a repeat
+// top-up only the skips asked for leaves them out (see runWaterfallQuery),
+// so a skip can never make the DJ play the song it just played again (the
+// one failure the cooldown exists to prevent), nor a batch repeat the batch
+// before it, even when the window covers the whole candidate set
+// (splitting the window by the skip would hand a pool smaller than it its
+// one clean song twice running).
 // Within the older bands, rows not served recently come first; when the
 // cooldown covers the whole candidate set (tiny library / narrow filters /
 // long session) the repeats fill in — they beat stalling the session —
@@ -1556,7 +1582,7 @@ function finalisePick(req, rows, body, sonic, tierOpts = null, lessLike = null) 
   // its newest place).
   const servedAt = new Map(sent.map((id, i) => [id, i]));
   // The first "just served" place: this one and every newer entry.
-  const recentFrom = sent.length - Math.max(limit * RECENT_PICKS_BATCHES, RECENT_PICKS_MIN);
+  const recentFrom = justServedFrom(sent, limit);
   // The band (see above). `ll` is undefined without negatives, so the
   // like-a-skip bands are then empty and only fresh / older / just-served
   // remain — the plain fresh-then-oldest-repeat order.
