@@ -13,6 +13,9 @@
  *     the just-served window is the newest max(limit × 5, 8) ignoreList
  *     entries, which rank behind every fresh song, like a skip or not),
  *     and are still served when nothing else is left — never a new 400;
+ *     the waterfall's repeat top-up counts only the clean songs of the
+ *     best tier the fresh ones reach, so a clean off-tier song never
+ *     keeps an in-tier repeat out of the pick;
  *   - the candidate SQL: the `ll` column + ORDER BY alias, its json_each
  *     placeholder binding FIRST (ahead of the rating join's user id), the
  *     plan staying a tracks scan with a non-correlated list subquery, and
@@ -321,6 +324,31 @@ describe('runRandomSongs with negative seeds', () => {
     const recent = pick({ lessLike: [pathOf('N')], ignoreList: [...ignoreList.slice(1, 8), ids.F], limit: 1 });
     assert.ok(['P', 'X2'].includes(titles(recent)[0]), titles(recent).join());
     assert.deepEqual(recent.lessLike.avoided, [true]);
+  });
+
+  test('D21: the repeat top-up counts the best tier — a clean off-tier song does not stand in for an in-tier repeat', () => {
+    // 110-130 holds nothing, so the unrestricted step serves: tier 1 (no
+    // bpm) is P, N, X1, X2 (like N) and G1, G2, M, U; tier 2 (bpm 80) is
+    // X3 and F, both clean. With G1, G2, U and M cooled, every fresh song
+    // in tier 1 is like a skip and both of tier 2's are not. M, served
+    // nine picks ago (past the just-served window: 8 at limit 1), is the
+    // clean in-tier repeat that ranks ahead of them all, so X3 and F must
+    // not count toward the top-up. The stale ids are deleted tracks.
+    const stale = [990001, 990002, 990003, 990004, 990005, 990006, 990007, 990008];
+    const body = {
+      lessLike: [pathOf('N')], bpmRanges: [{ min: 110, max: 130 }],
+      ignoreList: [ids.M, ids.G1, ids.G2, ids.U, ...stale.slice(0, 5)], limit: 1,
+    };
+    for (let i = 0; i < 5; i++) {
+      const out = pick(body);
+      assert.deepEqual(titles(out), ['M']);
+      assert.deepEqual(out.lessLike.avoided, [false]);
+    }
+    // limit 2 (window 10): M is fresh, tier 1's one clean fresh song, so
+    // the top-up still runs and G1, the one older entry, comes next.
+    const two = pick({ ...body, ignoreList: [ids.G1, ids.G2, ids.U, ...stale], limit: 2 });
+    assert.deepEqual(titles(two), ['M', 'G1']);
+    assert.deepEqual(two.lessLike.avoided, [false, false]);
   });
 
   test('D10: under a sonic seed the threshold follows minSimilarity', () => {

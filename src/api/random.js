@@ -442,19 +442,30 @@ export function classifyRow(row, opts) {
 // first priority (see finalisePick), which the stable sort preserves
 // within a tier.
 export function rankByTier(rows, opts) {
-  const haveBpm = Array.isArray(opts.bpmRanges) && opts.bpmRanges.length > 0;
-  const haveKey = Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0;
+  const tierOf = tierClassifier(opts);
   // No active constraint → nothing to rank on.
-  if (!haveBpm && !haveKey) { return rows; }
-
-  const keySet = haveKey ? new Set(expandCamelotCodes(opts.musicalKeys)) : null;
-  const classifyOpts = { bpmRanges: opts.bpmRanges, keySet };
+  if (!tierOf) { return rows; }
 
   const tiers = [[], [], []];
   for (const row of rows) {
-    tiers[classifyRow(row, classifyOpts)].push(row);
+    tiers[tierOf(row)].push(row);
   }
   return [...tiers[0], ...tiers[1], ...tiers[2]];
+}
+
+// The row → tier function rankByTier ranks with, against the ORIGINAL
+// request constraints (`bpmRanges` / `musicalKeys`), or null when there is
+// no BPM/key constraint to rank on. The Camelot expansion is paid once
+// here, so the waterfall builds it once per pick for its repeat top-up
+// (see cleanCount), which must read the same tiers finalisePick serves by.
+function tierClassifier(opts) {
+  const haveBpm = Array.isArray(opts.bpmRanges) && opts.bpmRanges.length > 0;
+  const haveKey = Array.isArray(opts.musicalKeys) && opts.musicalKeys.length > 0;
+  if (!haveBpm && !haveKey) { return null; }
+
+  const keySet = haveKey ? new Set(expandCamelotCodes(opts.musicalKeys)) : null;
+  const classifyOpts = { bpmRanges: opts.bpmRanges, keySet };
+  return (row) => classifyRow(row, classifyOpts);
 }
 
 // SQL twin of classifyRow, built against the ORIGINAL request constraints
@@ -561,10 +572,12 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
   // With negative seeds in play (`lessLike`), the `ll` result column (see
   // runRandomSongs) sorts like-a-skip rows behind the rest of their tier —
   // an alias, so it adds no bind parameter — and the top-up counts only
-  // rows that are NOT like a skip: a fresh pool made only of like-a-skip
-  // rows still fetches the repeats that are not (tier > not like a skip >
-  // fresh > oldest repeat, see finalisePick).
-  const { ignoreIds, allowRepeatRetry, tierOrder, limit, lessLike } = bounded;
+  // rows that are NOT like a skip, in the best tier the fresh rows reach
+  // (`tierOf`, see cleanCount): a best tier whose fresh rows are all like
+  // a skip still fetches the repeats that are not, however many clean rows
+  // a worse tier holds (tier > not like a skip > fresh > oldest repeat,
+  // see finalisePick).
+  const { ignoreIds, allowRepeatRetry, tierOrder, tierOf, limit, lessLike } = bounded;
   const orderBy = 'ORDER BY ' + [tierOrder?.expr, lessLike ? 'll' : null, 'RANDOM()'].filter(Boolean).join(', ');
   const tierParams = tierOrder ? tierOrder.params : [];
   const attempt = (excludeIgnored) => {
@@ -575,7 +588,7 @@ function runWaterfallQuery(d, baseSql, baseParams, filterOpts, bounded) {
       .all(...baseParams, ...params, ...(exclude ? ignoreIds : []), ...tierParams);
   };
   const rows = attempt(true);
-  if (cleanCount(rows, lessLike) >= limit || ignoreIds.length === 0) { return rows; }
+  if (cleanCount(rows, lessLike, tierOf) >= limit || ignoreIds.length === 0) { return rows; }
   if (rows.length === 0 && !allowRepeatRetry) { return rows; }
   return mergeRows(rows, attempt(false));
 }
@@ -1051,13 +1064,22 @@ function mergeRows(fresh, more) {
 
 // How many of a candidate query's rows count toward `limit` for the repeat
 // top-up: every row without negatives, else only the rows that are NOT
-// like a skip (`ll` = 0). A pool whose fresh rows are all like a skip still
-// fetches the repeats, because a repeat that is not like a skip outranks
-// a fresh song that is (see finalisePick).
-function cleanCount(rows, active) {
+// like a skip (`ll` = 0) in the best tier the rows reach (`tierOf`: the
+// waterfall's tierClassifier; null in simple mode and without BPM/key
+// constraints, where every row shares one tier). A pool whose best-tier
+// fresh rows are all like a skip still fetches the repeats, because
+// finalisePick ranks the tier first and, within it, a repeat that is not
+// like a skip ahead of a fresh song that is; a clean song in a worse tier
+// is served after both, so it never stands in for them.
+function cleanCount(rows, active, tierOf = null) {
   if (!active) { return rows.length; }
+  let best = Infinity;
   let n = 0;
-  for (const r of rows) { if (!r.ll) { n++; } }
+  for (const r of rows) {
+    const tier = tierOf ? tierOf(r) : 0;
+    if (tier < best) { best = tier; n = 0; }
+    if (tier === best && !r.ll) { n++; }
+  }
   return n;
 }
 
@@ -1432,6 +1454,9 @@ function pickSongs(req, body, conflictGuard) {
   // key requests lead the ORDER BY with a tier expression so the pool
   // provably contains the best tier present (buildTierOrderExpr above).
   const tierOrder = (hasBpm || hasKey) ? buildTierOrderExpr(body) : null;
+  // The same tiers in JS, for the repeat top-up's like-a-skip count (see
+  // cleanCount) — only read with negatives, so only built then.
+  const tierOf = ll ? tierClassifier(body) : null;
   const ignoreIds = ignoreIdsFrom(body);
   const ignoreSet = new Set(ignoreIds);
 
@@ -1459,7 +1484,7 @@ function pickSongs(req, body, conflictGuard) {
     // step).
     const candidate = runWaterfallQuery(
       d, baseSql, baseParams, opts,
-      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder, limit, lessLike: !!ll },
+      { ignoreIds, allowRepeatRetry: !enforcesCooldown, tierOrder, tierOf, limit, lessLike: !!ll },
     );
     if (candidate.length === 0) { continue; }
     if (enforcesCooldown && candidate.every((r) => ignoreSet.has(r.id))) { continue; }
