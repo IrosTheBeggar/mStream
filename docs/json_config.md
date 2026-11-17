@@ -203,6 +203,12 @@ binaries (weekly auto-update; set `autoUpdate` to `false` to pin the current
 build). If you place your own binaries in a custom `ffmpegDirectory`, mStream
 uses them as-is and never auto-updates them.
 
+Those binaries have to be ffmpeg and ffprobe 6 or newer. Older ones (Debian
+12's `/usr/bin` holds ffmpeg 5) are left exactly as they are, and mStream
+downloads its own build into its default location (`bin/ffmpeg` under the
+data directory) instead. The same happens when the directory holds no ffmpeg
+and mStream cannot write to it. The boot log names both directories.
+
 `bulkConcurrency` (default `2`, 1-64) is how many transcodes flagged as bulk
 work (`?bulk=1`: one file of a long job, such as a library converted onto a
 portable player's card) run at once, server-wide. More wait in a queue, and
