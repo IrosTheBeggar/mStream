@@ -1,4 +1,4 @@
-import { ZipArchive } from 'archiver';
+import { getZipArchive } from '../util/lazy-archiver.js';
 import path from 'path';
 import fs from 'fs/promises';
 import winston from 'winston';
@@ -78,6 +78,8 @@ export function setup(mstream) {
   });
 
   async function downloadM3U(req, res) {
+    // Top of the handler on purpose — see util/lazy-archiver.js.
+    const Zip = await getZipArchive();
     joiValidate(Joi.object({ path: Joi.string().required() }), req.body);
     const pathInfo = vpath.getVPathInfo(req.body.path, req.user);
     const playlistParentDir = path.dirname(pathInfo.fullPath);
@@ -104,7 +106,7 @@ export function setup(mstream) {
     }
     await enforceFileLimit([...songPaths, pathInfo.fullPath]);
 
-    const archive = new ZipArchive();
+    const archive = new Zip();
     archive.on('error', function (err) {
       winston.error('Download Error', { stack: err });
       res.status(500).json({ error: err.message });
@@ -124,6 +126,8 @@ export function setup(mstream) {
   });
 
   async function downloadDir(req, res) {
+    // Top of the handler on purpose — see util/lazy-archiver.js.
+    const Zip = await getZipArchive();
     joiValidate(Joi.object({ directory: Joi.string().required() }), req.body);
 
     const pathInfo = vpath.getVPathInfo(req.body.directory, req.user);
@@ -136,7 +140,7 @@ export function setup(mstream) {
     if (!stat.isDirectory()) { throw new WebError('Not A Directory', 400); }
     await enforceDirLimit(pathInfo.fullPath);
 
-    const archive = new ZipArchive();
+    const archive = new Zip();
     archive.on('error', (err) => {
       winston.error('Download Error', { stack: err })
       res.status(500).json({ error: 'Download Error' });
@@ -162,6 +166,8 @@ export function setup(mstream) {
   });
 
   async function download(req, res, fileArray) {
+    // Top of the handler on purpose — see util/lazy-archiver.js.
+    const Zip = await getZipArchive();
     // Resolve + access-check every requested file up front so we can size-gate
     // before streaming. Anything that fails resolution/access is skipped (it
     // wouldn't be archived anyway) and excluded from the size total.
@@ -177,7 +183,7 @@ export function setup(mstream) {
     }
     await enforceFileLimit(entries.map(e => e.abs));
 
-    const archive = new ZipArchive();
+    const archive = new Zip();
 
     archive.on('error', err => {
       winston.error('Download Error', { stack: err })

@@ -4,7 +4,7 @@ import os from 'os';
 import fs from 'fs/promises';
 import Joi from 'joi';
 import winston from 'winston';
-import { ZipArchive } from 'archiver';
+import { getZipArchive } from '../util/lazy-archiver.js';
 import * as fileExplorer from '../util/file-explorer.js';
 import * as admin from '../util/admin.js';
 import * as config from '../state/config.js';
@@ -2018,8 +2018,13 @@ export function setup(mstream) {
     res.json(logger.getRecentLogs(req.query.since));
   });
 
-  mstream.get("/api/v1/admin/logs/download", (req, res) => {
-    const archive = new ZipArchive();
+  // async only so archiver can be loaded on demand (util/lazy-archiver.js).
+  // Express 5 forwards a rejection here to the error middleware, same as the
+  // other async admin handlers rely on for joiValidate.
+  mstream.get("/api/v1/admin/logs/download", async (req, res) => {
+    // Top of the handler on purpose — see util/lazy-archiver.js.
+    const Zip = await getZipArchive();
+    const archive = new Zip();
     archive.on('error', err => {
       winston.error('Download Error', { stack: err });
       res.status(500).json({ error: err.message });
