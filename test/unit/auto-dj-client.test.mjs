@@ -1639,152 +1639,89 @@ describe('genres-list cache', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────
-// Sonic anchor (discovery-embedding similarity — PR #697 client side)
+// Sonic similarity state (the session seeds themselves, More like and Less
+// like, are pinned by auto-dj-seeds.test.mjs)
 // ─────────────────────────────────────────────────────────────────────
 
 describe('sonic state defaults + hydration hardening', () => {
-  test('fresh install: off, rolling, 0.55, no seed/history/anchor', () => {
+  test('fresh install: off, rolling (Drift), 0.55, Learn from skips and the box off', () => {
     assert.equal(AUTODJ.state.sonicEnabled, false);
     assert.equal(AUTODJ.state.sonicAnchorMode, 'rolling');
     assert.equal(AUTODJ.state.sonicMinSimilarity, AUTODJ._internals.DEFAULT_SONIC_MIN_SIMILARITY);
-    assert.equal(AUTODJ.state.sonicSeed, null);
-    assert.deepEqual(AUTODJ.state.sonicHistory, []);
-    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+    assert.equal(AUTODJ.state.learnFromSkips, false);
+    assert.equal(AUTODJ.state.clearPinsOnQueueClear, false);
+    for (const gone of ['sonicSeed', 'sonicHistory', 'sonicHistoryOwners', 'sonicLockedAnchor']) {
+      assert.equal(gone in AUTODJ.state, false, `${gone} is no state key any more`);
+    }
   });
 
   test('junk localStorage values fall back to safe defaults', () => {
     localStorage.setItem('mstream-dj-sonicAnchorMode', JSON.stringify('blocklist'));
-    localStorage.setItem('mstream-dj-sonicSeed', JSON.stringify('not-an-object'));
     localStorage.setItem('mstream-dj-sonicMinSimilarity', JSON.stringify(7));
-    localStorage.setItem('mstream-dj-sonicHistory', JSON.stringify({ a: 1 }));
+    localStorage.setItem('mstream-dj-learnFromSkips', JSON.stringify('yes'));
+    localStorage.setItem('mstream-dj-clearPinsOnQueueClear', JSON.stringify(1));
     AUTODJ._internals.rehydrate();
     assert.equal(AUTODJ.state.sonicAnchorMode, 'rolling');
-    assert.equal(AUTODJ.state.sonicSeed, null);
     assert.equal(AUTODJ.state.sonicMinSimilarity, 1, 'numeric clamp to [0,1]');
-    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    assert.equal(AUTODJ.state.learnFromSkips, false, 'only an explicit true reads as on');
+    assert.equal(AUTODJ.state.clearPinsOnQueueClear, false, 'only an explicit true reads as on');
+  });
+
+  test('Learn from skips and the box are persisted preferences that survive reset()', () => {
+    AUTODJ.setState({ learnFromSkips: true, clearPinsOnQueueClear: true });
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.learnFromSkips, true);
+    assert.equal(AUTODJ.state.clearPinsOnQueueClear, true);
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.learnFromSkips, true);
+    assert.equal(AUTODJ.state.clearPinsOnQueueClear, true);
+  });
+
+  test('the mode goes through seeds.setMode: locked freezes the lists, a junk mode changes nothing', () => {
+    AUTODJ.setState({ sonicAnchorMode: 'locked' });
+    assert.equal(AUTODJ.state.sonicAnchorMode, 'locked');
+    assert.equal(JSON.parse(localStorage.getItem('mstream-dj-sonicAnchorMode')), 'locked');
+    assert.equal(AUTODJ.seeds.view().frozen, true, 'Stay close freezes the lists');
+    AUTODJ.setState({ sonicAnchorMode: 'junk' });
+    assert.equal(AUTODJ.state.sonicAnchorMode, 'locked', 'an unknown mode is refused');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.sonicAnchorMode, 'locked');
+    assert.equal(AUTODJ.seeds.view().frozen, true, 'a stored Stay close comes back frozen');
   });
 });
 
-describe('setSonicSeed / clearSonicSeed', () => {
-  test('normalizes leading slash + stores title, clears session anchors', () => {
-    AUTODJ.pushSonicHistory('lib/old.mp3');
-    AUTODJ.setState({ sonicLockedAnchor: 'lib/old.mp3' });
-    assert.equal(AUTODJ.setSonicSeed('/lib/artist/song.mp3', 'Song — Artist'), true);
-    assert.deepEqual(AUTODJ.getSonicSeed(), { filepath: 'lib/artist/song.mp3', title: 'Song — Artist' });
-    assert.deepEqual(AUTODJ.state.sonicHistory, [], 'new seed drops rolling history');
-    assert.equal(AUTODJ.state.sonicLockedAnchor, null, 'new seed drops the locked pin');
-  });
-
-  test('falsy/empty path is rejected', () => {
-    assert.equal(AUTODJ.setSonicSeed(''), false);
-    assert.equal(AUTODJ.setSonicSeed(null), false);
-    assert.equal(AUTODJ.setSonicSeed('/'), false);
-    assert.equal(AUTODJ.getSonicSeed(), null);
-  });
-
-  test('clearSonicSeed only clears the seed', () => {
-    AUTODJ.setSonicSeed('lib/a.mp3', 'A');
-    AUTODJ.pushSonicHistory('lib/b.mp3');
-    AUTODJ.clearSonicSeed();
-    assert.equal(AUTODJ.getSonicSeed(), null);
-    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/b.mp3']);
-  });
-});
-
-describe('pushSonicHistory ring buffer', () => {
-  test('caps at SONIC_HISTORY_LIMIT, oldest evicted', () => {
-    const cap = AUTODJ._internals.SONIC_HISTORY_LIMIT;
-    for (let i = 0; i < cap + 2; i++) { AUTODJ.pushSonicHistory(`lib/${i}.mp3`); }
-    assert.equal(AUTODJ.state.sonicHistory.length, cap);
-    assert.equal(AUTODJ.state.sonicHistory[0], 'lib/2.mp3');
-    assert.equal(AUTODJ.state.sonicHistory[cap - 1], `lib/${cap + 1}.mp3`);
-  });
-
-  test('re-pick moves the path to most-recent instead of duplicating', () => {
-    AUTODJ.pushSonicHistory('lib/a.mp3');
-    AUTODJ.pushSonicHistory('lib/b.mp3');
-    AUTODJ.pushSonicHistory('lib/a.mp3');
-    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/b.mp3', 'lib/a.mp3']);
-  });
-
-  test('normalizes leading slash so wire + queue forms dedup together', () => {
-    AUTODJ.pushSonicHistory('/lib/a.mp3');
-    AUTODJ.pushSonicHistory('lib/a.mp3');
-    assert.deepEqual(AUTODJ.state.sonicHistory, ['lib/a.mp3']);
-  });
-});
-
-describe('buildSonicParams', () => {
-  test('null when the feature is off', () => {
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    assert.equal(AUTODJ.buildSonicParams('lib/cur.mp3'), null);
-  });
-
-  test('rolling: history wins, else explicit seed, else current song, else null', () => {
-    AUTODJ.setState({ sonicEnabled: true, sonicMinSimilarity: 0.62 });
-
-    assert.equal(AUTODJ.buildSonicParams(null), null, 'nothing resolvable');
-
-    assert.deepEqual(AUTODJ.buildSonicParams('/lib/cur.mp3'),
-      { similarTo: ['lib/cur.mp3'], minSimilarity: 0.62 }, 'current song fallback (normalized)');
-
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/seed.mp3'],
-      'explicit seed beats current song');
-
-    AUTODJ.pushSonicHistory('lib/p1.mp3');
-    AUTODJ.pushSonicHistory('lib/p2.mp3');
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/p1.mp3', 'lib/p2.mp3'],
-      'history beats everything once picks accumulate');
-  });
-
-  test('locked: pins once and holds while the current song changes', () => {
-    AUTODJ.setState({ sonicEnabled: true, sonicAnchorMode: 'locked' });
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur1.mp3').similarTo, ['lib/seed.mp3']);
-    // Rolling history exists but must not leak into locked mode.
-    AUTODJ.pushSonicHistory('lib/p1.mp3');
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur2.mp3').similarTo, ['lib/seed.mp3'],
-      'anchor survives current-song changes and ignores history');
-    assert.equal(AUTODJ.state.sonicLockedAnchor, 'lib/seed.mp3');
-  });
-
-  test('locked without a seed pins the current song; null when nothing plays', () => {
-    AUTODJ.setState({ sonicEnabled: true, sonicAnchorMode: 'locked' });
-    assert.equal(AUTODJ.buildSonicParams(null), null);
-    assert.deepEqual(AUTODJ.buildSonicParams('/lib/cur.mp3').similarTo, ['lib/cur.mp3']);
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/other.mp3').similarTo, ['lib/cur.mp3'],
-      'first current song stays pinned');
+describe('the old sonic anchor API is gone', () => {
+  test('no seed, ring, owners map or anchor read-out remains', () => {
+    for (const name of ['setSonicSeed', 'clearSonicSeed', 'getSonicSeed', 'pushSonicHistory', 'clearSonicHistory',
+      'clearSonicAnchors', 'buildSonicParams', 'sonicAnchors', 'resolveSonicOwners']) {
+      assert.equal(name in AUTODJ, false, `${name} is gone`);
+    }
+    assert.equal('SONIC_HISTORY_LIMIT' in AUTODJ._internals, false);
   });
 });
 
 describe('sonic anchor lifecycle', () => {
-  test('resetAnchors (manual pick) clears seed + history + pin', () => {
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    AUTODJ.pushSonicHistory('lib/p1.mp3');
-    AUTODJ.setState({ sonicLockedAnchor: 'lib/seed.mp3' });
+  test('resetAnchors resets continuity only: pins and picks stay', () => {
+    AUTODJ.seeds.setArmed(true);
+    AUTODJ.seeds.laneEdge({ now: 1000 });
+    AUTODJ.seeds.beginPick({ current: null, now: 1000 });
+    AUTODJ.seeds.add('more', { owner: null, path: 'lib/pin.mp3', title: 'Pin' }, 2000);
+    AUTODJ.seeds.onPlay({ owner: null, path: 'lib/pick.mp3', title: 'Pick' }, { lanePick: true, now: 3000 });
+    AUTODJ.pushBpmHistory(124);
+    AUTODJ.setCamelotAnchor('8A');
+    AUTODJ.markFilepathCounted('lib/pick.mp3');
     AUTODJ.resetAnchors();
-    assert.equal(AUTODJ.getSonicSeed(), null);
-    assert.deepEqual(AUTODJ.state.sonicHistory, []);
-    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
+    assert.deepEqual(AUTODJ.state.bpmHistory, []);
+    assert.equal(AUTODJ.state.camelotAnchor, null);
+    assert.deepEqual(AUTODJ.state.djCountedFilepaths, []);
+    assert.deepEqual(AUTODJ.seeds.view(4000).more.map((r) => [r.key, r.pinned]),
+      [['local|lib/pick.mp3', false], ['local|lib/pin.mp3', true]]);
   });
 
-  test('reset (DJ off/session reset) keeps the explicit seed', () => {
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    AUTODJ.pushSonicHistory('lib/p1.mp3');
-    AUTODJ.setState({ sonicLockedAnchor: 'lib/x.mp3' });
+  test('reset() leaves the seeds alone', () => {
+    AUTODJ.seeds.add('more', { owner: null, path: 'lib/pin.mp3', title: 'Pin' }, 2000);
     AUTODJ.reset();
-    assert.deepEqual(AUTODJ.getSonicSeed(), { filepath: 'lib/seed.mp3', title: 'S' });
-    assert.deepEqual(AUTODJ.state.sonicHistory, []);
-    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
-  });
-
-  test('clearSonicAnchors (panel toggle-off) keeps the explicit seed', () => {
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'S');
-    AUTODJ.pushSonicHistory('lib/p1.mp3');
-    AUTODJ.clearSonicAnchors();
-    assert.notEqual(AUTODJ.getSonicSeed(), null);
-    assert.deepEqual(AUTODJ.state.sonicHistory, []);
+    assert.deepEqual(AUTODJ.seeds.view(3000).more.map((r) => r.key), ['local|lib/pin.mp3']);
   });
 });
 
@@ -1843,131 +1780,6 @@ describe('meanUnitVector', () => {
     const m = AUTODJ.meanUnitVector([f(1, 0, 0, 0), f(0, 1, 0)], 4);
     assert.deepEqual([...m], [1, 0, 0, 0]);
     assert.equal(AUTODJ.meanUnitVector([f(0, 1, 0)], 4), null);
-  });
-});
-
-describe('sonic history owners', () => {
-  test('a pick records its owner; a local pick records null; the map is pruned with the ring', () => {
-    AUTODJ.setState({ sonicEnabled: true });
-    AUTODJ.pushSonicHistory('music/a.mp3');
-    AUTODJ.pushSonicHistory('/music/b.mp3', 7);
-    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, { 'music/a.mp3': null, 'music/b.mp3': 7 });
-    for (const p of ['c', 'd', 'e', 'f']) { AUTODJ.pushSonicHistory(`music/${p}.mp3`, 3); }
-    // Ring is 5: 'a' fell out, and so did its owner entry.
-    assert.equal(AUTODJ.state.sonicHistory.length, AUTODJ._internals.SONIC_HISTORY_LIMIT);
-    assert.ok(!('music/a.mp3' in AUTODJ.state.sonicHistoryOwners));
-    assert.equal(AUTODJ.state.sonicHistoryOwners['music/b.mp3'], 7);
-  });
-
-  test('a re-pick from another server moves it to most-recent and updates its owner', () => {
-    AUTODJ.pushSonicHistory('music/a.mp3', 7);
-    AUTODJ.pushSonicHistory('music/b.mp3');
-    AUTODJ.pushSonicHistory('music/a.mp3');
-    assert.deepEqual(AUTODJ.state.sonicHistory, ['music/b.mp3', 'music/a.mp3']);
-    assert.equal(AUTODJ.state.sonicHistoryOwners['music/a.mp3'], null);
-  });
-
-  test('clearing history, anchors, a new seed, resetAnchors and reset all drop the owners', () => {
-    for (const clear of [
-      () => AUTODJ.clearSonicHistory(),
-      () => AUTODJ.clearSonicAnchors(),
-      () => AUTODJ.setSonicSeed('music/seed.mp3', 'Seed'),
-      () => AUTODJ.resetAnchors(),
-      () => AUTODJ.reset(),
-    ]) {
-      AUTODJ.pushSonicHistory('music/x.mp3', 2);
-      clear();
-      assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
-      assert.deepEqual(AUTODJ.state.sonicHistory, []);
-    }
-  });
-
-  test('owners survive a re-hydrate, and junk in storage hydrates to an empty map', () => {
-    AUTODJ.pushSonicHistory('music/a.mp3', 9);
-    AUTODJ._internals.rehydrate();
-    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, { 'music/a.mp3': 9 });
-    _store.set(`${AUTODJ._internals.LS_PREFIX}sonicHistoryOwners`, JSON.stringify(['not', 'a', 'map']));
-    AUTODJ._internals.rehydrate();
-    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
-  });
-});
-
-describe('resolveSonicOwners', () => {
-  test('history paths take their recorded owner, the playing track its federation marker, the rest this server', () => {
-    AUTODJ.pushSonicHistory('music/hist-local.mp3');
-    AUTODJ.pushSonicHistory('music/hist-peer.mp3', 4);
-    const cur = { rawFilePath: '/music/playing.mp3', federation: { peerId: 8, peerName: 'NAS' } };
-    const out = AUTODJ.resolveSonicOwners(
-      ['music/hist-local.mp3', 'music/hist-peer.mp3', '/music/playing.mp3', 'music/explicit-seed.mp3'], cur);
-    assert.deepEqual(out, [
-      { path: 'music/hist-local.mp3', peerId: null },
-      { path: 'music/hist-peer.mp3', peerId: 4 },
-      { path: 'music/playing.mp3', peerId: 8 },
-      { path: 'music/explicit-seed.mp3', peerId: null },
-    ]);
-  });
-
-  test('a local playing track resolves to this server; empty and junk input resolve to nothing', () => {
-    const out = AUTODJ.resolveSonicOwners(['music/p.mp3'], { rawFilePath: 'music/p.mp3' });
-    assert.deepEqual(out, [{ path: 'music/p.mp3', peerId: null }]);
-    assert.deepEqual(AUTODJ.resolveSonicOwners([], null), []);
-    assert.deepEqual(AUTODJ.resolveSonicOwners([null, '', 42], null), []);
-  });
-});
-
-describe('sonicAnchors + local-only buildSonicParams (cross-server)', () => {
-  const PEER_CUR = { rawFilePath: 'ashared/a.mp3', federation: { peerId: 1, peerName: 'A' } };
-
-  beforeEach(() => { AUTODJ.setState({ sonicEnabled: true }); });
-
-  test('rolling: the snapshot pairs every history path with its owner; the local body keeps only this server\'s', () => {
-    AUTODJ.pushSonicHistory('lib/p1.mp3', null);
-    AUTODJ.pushSonicHistory('ashared/p2.mp3', 1);
-    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }),
-      [{ path: 'lib/p1.mp3', peerId: null }, { path: 'ashared/p2.mp3', peerId: 1 }]);
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/p1.mp3'],
-      'a peer\'s path never reaches this server (it would answer 404)');
-    assert.deepEqual(AUTODJ.sonicAnchors('lib/cur.mp3'), AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }),
-      'a bare path is accepted');
-  });
-
-  test('rolling: a history that lives entirely on peers falls back to the seed, else the playing song when local', () => {
-    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
-    AUTODJ.pushSonicHistory('ashared/p2.mp3', 2);
-    assert.equal(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }).length, 2, 'the federated pick still sees both');
-    assert.deepEqual(AUTODJ.buildSonicParams('lib/cur.mp3').similarTo, ['lib/cur.mp3'], 'no seed: the local playing song');
-    assert.equal(AUTODJ.buildSonicParams(PEER_CUR), null, 'no seed and a peer track playing: nothing local');
-    AUTODJ.setSonicSeed('lib/seed.mp3', 'Seed');
-    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
-    assert.deepEqual(AUTODJ.buildSonicParams(PEER_CUR).similarTo, ['lib/seed.mp3'], 'the seed stands in');
-  });
-
-  test('locked: a pin taken from a playing peer track remembers its owner across ring prunes', () => {
-    AUTODJ.setState({ sonicAnchorMode: 'locked' });
-    assert.deepEqual(AUTODJ.sonicAnchors(PEER_CUR), [{ path: 'ashared/a.mp3', peerId: 1 }]);
-    assert.equal(AUTODJ.state.sonicLockedAnchor, 'ashared/a.mp3');
-    for (let i = 0; i < AUTODJ._internals.SONIC_HISTORY_LIMIT + 2; i++) { AUTODJ.pushSonicHistory(`lib/h${i}.mp3`, null); }
-    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/other.mp3' }), [{ path: 'ashared/a.mp3', peerId: 1 }],
-      'the pin\'s owner survives the prune even with another song playing');
-    assert.equal(AUTODJ.buildSonicParams({ rawFilePath: 'lib/other.mp3' }), null,
-      'locked on a peer track with no seed: nothing this server can honour');
-    AUTODJ.clearSonicAnchors();
-    assert.equal(AUTODJ.state.sonicLockedAnchor, null);
-    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {});
-  });
-
-  test('locked: a pin from a local song or the seed stays a plain local anchor', () => {
-    AUTODJ.setState({ sonicAnchorMode: 'locked' });
-    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }), [{ path: 'lib/cur.mp3', peerId: null }]);
-    assert.deepEqual(AUTODJ.buildSonicParams(PEER_CUR).similarTo, ['lib/cur.mp3'], 'the pin holds whatever plays next');
-    assert.deepEqual(AUTODJ.state.sonicHistoryOwners, {}, 'no owner entry for a local pin');
-  });
-
-  test('sonic off: no anchors, no params', () => {
-    AUTODJ.pushSonicHistory('ashared/p1.mp3', 1);
-    AUTODJ.setState({ sonicEnabled: false });
-    assert.deepEqual(AUTODJ.sonicAnchors({ rawFilePath: 'lib/cur.mp3' }), []);
-    assert.equal(AUTODJ.buildSonicParams('lib/cur.mp3'), null);
   });
 });
 

@@ -419,6 +419,10 @@ function setBrowserRootPanel(panelName, showBar) {
   // Add from YouTube's panel is a Vue instance in #filelist: it goes with
   // the column (its draft stays for the next visit).
   if (typeof YTDLUI !== 'undefined') { YTDLUI.unmountPanel(); }
+  // The Seeds drawer belongs to the Auto DJ page: a view that takes the
+  // column under it (a toast's Details, say: toasts sit above its scrim)
+  // closes it, the keyboard left where it is.
+  if (typeof autoDjSeedsClose === 'function') { autoDjSeedsClose({ noFocus: true }); }
 
   if(showBar === false) {
     document.getElementById('directory_bar').style.display = 'none';
@@ -832,6 +836,11 @@ async function init() {
     // and the row simply never shows.
     MSTREAMAPI.serverInfo()
       .then((info) => {
+        // Whether the discovery scan has analysed anything yet (/api/'s
+        // features.discoveryReady; unknown without the key): Auto DJ sends
+        // seeds only while it is not false (mstream.player.js _sonicOn).
+        const feats = info && info.features;
+        MSTREAMAPI.currentServer.discoveryReady = feats && typeof feats === 'object' && 'discoveryReady' in feats ? feats.discoveryReady === true : undefined;
         const admin = !!(info && info.user && info.user.admin === true);
         MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
         VUEPLAYERCORE.setAdmin(admin);
@@ -841,6 +850,7 @@ async function init() {
         ytdlStart(MSTREAMAPI.currentServer.username);
       })
       .catch(() => {
+        MSTREAMAPI.currentServer.discoveryReady = undefined;
         MSTREAMAPI.currentServer.admin = false;
         VUEPLAYERCORE.setAdmin(false);
         MSTREAMAPI.currentServer.username = ytdlTokenUser();
@@ -908,8 +918,9 @@ async function init() {
       // get current playlist
       const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
 
-      // set the queue to the current playlist
-      MSTREAMPLAYER.clearPlaylist();
+      // set the queue to the current playlist — the boot's own clear, not
+      // the user's (the seeds' "clear pins" box ignores it)
+      MSTREAMPLAYER.clearPlaylist({ userClear: false });
       response.forEach(value => {
         VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
       });
@@ -4511,6 +4522,10 @@ function applyDiscoveryPing(response) {
   MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
   // Auto DJ's mood filter reads it here (mstream.player.js).
   MSTREAMAPI.currentServer.moodFilters = r.moodFilters === true;
+  // The Auto DJ picker's generation: from 1, random-songs takes Less like
+  // (lessLike); below it Less like and Learn from skips read "Needs a newer
+  // server" (AUTODJ.seeds.takesNegatives / needsNewerServer).
+  MSTREAMAPI.currentServer.autoDj = Number(r.autoDj) || 0;
   discoveryView.flags = {
     discovery: r.discovery === true,
     discoveryTaste: MSTREAMAPI.currentServer.discoveryTaste,
@@ -4616,7 +4631,9 @@ function discoveryPanel(opts) {
   setBrowserRootPanel(t('panel.discover'), false);
   currentBrowsingList = [];
   sonicPathHideBanner();
-  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.dpage === true) { VUEPLAYERCORE.songCapture = null; }
+  // The banner goes: its pick too, when it was this page's or the Auto DJ
+  // Seeds drawer's (Sonic Path's comes back to its own page).
+  if (VUEPLAYERCORE.songCapture && (VUEPLAYERCORE.songCapture.dpage === true || VUEPLAYERCORE.songCapture.seeds)) { VUEPLAYERCORE.songCapture = null; }
   if (!keep) {
     const np = discoveryNowPlayingPath();
     const local = discoveryLocalChoices();
@@ -6223,6 +6240,9 @@ function sonicPathStartOver() {
 function sonicPathPanel() {
   setBrowserRootPanel(t('sonicPath.title'), false);
   sonicPathHideBanner();
+  // The banner goes: an Auto DJ Seeds pick with it (no armed pick without
+  // its banner).
+  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.seeds) { VUEPLAYERCORE.songCapture = null; }
 
   const tags = (row) => {
     if (!row.genreTags || !row.genreTags.length) { return ''; }
@@ -6342,9 +6362,1099 @@ function sonicPathPanel() {
   });
 }
 
+// ── Auto DJ panel (design E) ────────────────────────────────────────────
+//
+// The card, top to bottom: Sources and Batch; Filters (Smart filters,
+// Genres, Rating, Length, Skip words); Match (Sonic similarity, with its
+// amount on a second line while it is on and its indented sub-items —
+// Learn from skips, Seeds and, on a federated server, Play from federated
+// servers — then Beat matching, Harmonic mixing and Similar artists).
+// A filter's switch is its on/off: its editor shows only while it is on,
+// and turning it off keeps the values. Sonic similarity off dims its
+// sub-items and keeps both seed lists. No hero, status or hint lines: the
+// Start/Stop label (and the player bar's lit DJ glyph) carries the state.
+//
+// The builders are pure: they draw from one ctx that autoDjPanel reads
+// ({ state, server, vpaths, includedSet, lastfmAvailable, genres: { list,
+// loadState }, djOn, limitMax, seeds: AUTODJ.seeds.view() }), so every
+// state draws without the page. The panel then wires the drawn controls,
+// and keeps the Seeds covers and the Start/Stop label live
+// (AUTODJ.seeds.subscribe, MSTREAMPLAYER.onAutoDj) without redrawing.
+
+// A seed row's cover (Facts, or a seeds View row): this server's art
+// through its album-art route, a connected server's through the art proxy
+// — never the ambient peerContext (artUrl), which follows what is being
+// browsed, not whose song it is. No art: null (the caller draws the empty
+// tile).
+function autoDjSeedArtUrl(facts) {
+  if (!facts || !facts.art) { return null; }
+  if (facts.owner !== null && facts.owner !== undefined) {
+    return MSTREAMAPI.peerArtUrl(facts.owner, facts.art, 's');
+  }
+  return `${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(facts.art)}?compress=s&token=${MSTREAMAPI.currentServer.token}`;
+}
+
+// Seconds (AUTODJ's wire unit) → the minutes a Length field shows; no
+// bound is an empty field. Trims the float tail: 150 → "2.5", 120 → "2".
+function autoDjSecToMin(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) { return ''; }
+  return String(Math.round((n / 60) * 100) / 100);
+}
+
+// A filter's chips — Skip words' words ([kind] 'word') or Genres' genres
+// ('genre') — each with its ×.
+function autoDjChipsHtml(values, kind) {
+  const genre = kind === 'genre';
+  const attr = genre ? 'data-genre' : 'data-word';
+  return (values || []).map((v) => {
+    const label = genre ? t('autoDJ.genreTagRemove', { genre: v }) : t('autoDJ.keywordFilterTagRemove', { word: v });
+    return `<span class="dj-filter-tag" role="listitem">${escapeHtml(v)}<button type="button" class="dj-filter-tag-rm" ${attr}="${escapeHtml(v)}" aria-label="${escapeHtml(label)}">×</button></span>`;
+  }).join('');
+}
+
+// One switch row (kit d4): the label, then the switch, and the whole row
+// the switch's target (the input takes its name from the wrapping label).
+// o = { id, label, checked, disabled, sub?, desc?, labelId?, descId? }.
+// [sub]: a sub-item's row, dimmed by its .dj-sub (never .is-disabled);
+// [desc]: a title over a subtext (kit d3), named and described by their
+// ids.
+function autoDjSwitchRowHtml(o) {
+  const described = typeof o.desc === 'string';
+  const text = described
+    ? `<span class="dj-sub-text"><span class="dj-sub-title" id="${o.labelId}">${escapeHtml(o.label)}</span><span class="dj-sub-desc" id="${o.descId}">${escapeHtml(o.desc)}</span></span>`
+    : `<span class="dj-row-label">${escapeHtml(o.label)}</span>`;
+  const names = described ? ` aria-labelledby="${o.labelId}" aria-describedby="${o.descId}"` : '';
+  const cls = `dj-row${described ? ' dj-sub-row' : ''}${o.disabled && !o.sub ? ' is-disabled' : ''}`;
+  return `<label class="${cls}">${text}<span class="toggle-sw">`
+    + `<input type="checkbox" role="switch" id="${o.id}"${names}${o.checked ? ' checked' : ''}${o.disabled ? ' disabled' : ''}>`
+    + '<span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></span></label>';
+}
+
+// What Sonic similarity's sub-items (rows 9–11) can do: dimmed and inert
+// while Sonic similarity is off or the server has no discovery (their
+// values still show). Learn from skips is also inert while the server
+// takes no negatives, and reads "Needs a newer server" when its ping
+// answered a picker generation below 1; before the ping answers it is
+// inert, with no reason (AUTODJ.seeds.takesNegatives / needsNewerServer).
+function autoDjSubState(ctx) {
+  const server = ctx.server || {};
+  const sonicOn = server.discovery === true && ctx.state.sonicEnabled === true;
+  const learnable = sonicOn && AUTODJ.seeds.takesNegatives(server);
+  return {
+    dim: !sonicOn,
+    inert: !sonicOn,
+    learnDim: !learnable,
+    learnInert: !learnable,
+    learnReason: AUTODJ.seeds.needsNewerServer(server) ? 'needsNewer' : null,
+  };
+}
+
+// The Seeds row's covers: the three newest More like rows, newest
+// leftmost (the View's tiles); a row without art is an empty tile.
+function autoDjSeedsTilesHtml(view) {
+  const tiles = view && Array.isArray(view.tiles) ? view.tiles.slice(0, 3) : [];
+  return tiles.map((row) => {
+    const url = autoDjSeedArtUrl(row);
+    return url ? `<img class="dj-seeds-tile" alt="" src="${escapeHtml(url)}">` : '<span class="dj-seeds-tile is-none"></span>';
+  }).join('');
+}
+
+// Rows 9–11, indented under Sonic similarity: Learn from skips (with its
+// subtext, or "Needs a newer server"), Seeds (the covers and a chevron;
+// it opens the Seeds drawer) and, only where the ping has
+// federationBrowse, Play from federated servers.
+function autoDjSubRowsHtml(ctx) {
+  const sub = autoDjSubState(ctx);
+  const s = ctx.state;
+  const learn = `<div class="dj-sub${sub.learnDim ? ' is-dim' : ''}" id="dj-sub-skips">${autoDjSwitchRowHtml({
+    id: 'dj-skips-on', sub: true, labelId: 'dj-skips-t', descId: 'dj-skips-d',
+    label: t('autoDJ.learnFromSkipsLabel'),
+    desc: t(sub.learnReason === 'needsNewer' ? 'autoDJ.needsNewerServer' : 'autoDJ.learnFromSkipsHint'),
+    checked: s.learnFromSkips === true, disabled: sub.learnInert,
+  })}</div>`;
+  const seeds = `<div class="dj-sub${sub.dim ? ' is-dim' : ''}" id="dj-sub-seeds">`
+    + `<button type="button" id="dj-seeds-btn" class="dj-seeds-row" aria-haspopup="dialog" aria-expanded="false"${sub.inert ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-row-label">${escapeHtml(t('autoDJ.seedsLabel'))}</span>`
+    + `<span class="dj-seeds-tiles" id="dj-seeds-tiles" aria-hidden="true">${autoDjSeedsTilesHtml(ctx.seeds)}</span>`
+    + '<svg class="dj-seeds-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>'
+    + '</button></div>';
+  const federated = ctx.server && ctx.server.federationBrowse === true
+    ? `<div class="dj-sub${sub.dim ? ' is-dim' : ''}" id="dj-sub-federated">${autoDjSwitchRowHtml({
+      id: 'dj-federated-on', sub: true, label: t('autoDJ.federatedLabel'),
+      checked: s.federatedEnabled === true, disabled: sub.inert,
+    })}</div>`
+    : '';
+  return learn + seeds + federated;
+}
+
+// The page: Start/Stop, then the card (see the section comment above).
+function autoDjPanelHtml(ctx) {
+  const s = ctx.state;
+  const server = ctx.server || {};
+  const vpaths = ctx.vpaths || [];
+  const block = (row, part) => `<div class="dj-block">${row}${part}</div>`;
+  const editor = (id, shown, inner) => `<div class="dj-editor" id="${id}"${shown ? '' : ' hidden'}>${inner}</div>`;
+
+  const sources = vpaths.length > 1
+    ? `<div class="dj-sources"><span class="dj-sources-label" id="dj-src">${escapeHtml(t('autoDJ.sectionSources'))}</span>`
+      + `<div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-labelledby="dj-src">${vpaths.map((v) => {
+        const on = ctx.includedSet.has(v);
+        return `<button type="button" class="dj-vpath-pill${on ? ' on' : ''}" data-vpath="${escapeHtml(v)}" aria-pressed="${on ? 'true' : 'false'}">${escapeHtml(v)}</button>`;
+      }).join('')}</div></div>`
+    : '';
+
+  const batch = `<div class="dj-field"><label class="dj-field-label" for="dj-limit">${escapeHtml(t('autoDJ.batchLabel'))}</label>`
+    + `<input type="number" id="dj-limit" class="autodj-select browser-default dj-limit-num" min="1" max="${escapeHtml(ctx.limitMax)}" step="1" inputmode="numeric" value="${escapeHtml(s.djLimit)}"></div>`;
+
+  // Smart filters: the browse lists' segments and chips (moodPanelHtml),
+  // only where the server can filter by mood (the route refuses the key
+  // otherwise).
+  const moodOn = s.djMoodEnabled === true;
+  const smart = server.moodFilters === true
+    ? block(autoDjSwitchRowHtml({ id: 'dj-mood-on', label: t('autoDJ.smartFiltersLabel'), checked: moodOn }),
+      editor('dj-mood-editor', moodOn, `<div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...s.djMoods, level: s.djMoodLevel })}</div>`))
+    : '';
+
+  // Genres: off (and its editor away) while the library's genre list is
+  // empty or failed to load — the suggestions come from it.
+  const genresOff = ctx.genres.loadState !== 'ready' || ctx.genres.list.length === 0;
+  const genreOn = s.djGenreEnabled === true;
+  const genres = block(autoDjSwitchRowHtml({ id: 'dj-genre-on', label: t('autoDJ.genresLabel'), checked: genreOn, disabled: genresOff }),
+    editor('dj-genre-editor', genreOn && !genresOff,
+      `<div class="dj-genre-mode" role="group" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">`
+      + `<button type="button" class="dj-genre-mode-btn" data-mode="whitelist" aria-pressed="${s.djGenreMode === 'whitelist'}">${escapeHtml(t('autoDJ.genreModeWhitelist'))}</button>`
+      + `<button type="button" class="dj-genre-mode-btn" data-mode="blacklist" aria-pressed="${s.djGenreMode === 'blacklist'}">${escapeHtml(t('autoDJ.genreModeBlacklist'))}</button></div>`
+      + `<div class="dj-filter-tags" id="dj-genre-tags" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${autoDjChipsHtml(s.djGenres, 'genre')}</div>`
+      + `<div class="dj-genre-combo"><input type="text" class="dj-filter-input browser-default" id="dj-genre-input" placeholder="${escapeHtml(t('autoDJ.genrePlaceholder'))}" autocomplete="off" aria-autocomplete="list" aria-controls="dj-genre-suggest" aria-label="${escapeHtml(t('autoDJ.genreInputLabel'))}">`
+      + '<div class="dj-genre-suggest" id="dj-genre-suggest" role="listbox" hidden></div></div>'));
+
+  // Rating: 0..10 in half stars, 0 = Any (the server's scale).
+  let ratings = `<option value="0"${s.djMinRating === 0 ? ' selected' : ''}>${escapeHtml(t('autoDJ.ratingAny'))}</option>`;
+  for (let i = 1; i <= 10; i++) {
+    ratings += `<option value="${i}"${s.djMinRating === i ? ' selected' : ''}>★ ${+(i / 2).toFixed(1)}</option>`;
+  }
+  const rating = `<div class="dj-field"><label class="dj-field-label" for="dj-min-rating">${escapeHtml(t('autoDJ.ratingLabel'))}</label>`
+    + `<select class="autodj-select browser-default" id="dj-min-rating">${ratings}</select></div>`;
+
+  // Length: minutes in the fields (AUTODJ keeps seconds); an empty field
+  // is no bound on that side.
+  const durOn = s.djDurationEnabled === true;
+  const durField = (id, caption, name, value) => `<label class="dj-duration-field"><span class="dj-duration-field-label">${escapeHtml(caption)}</span>`
+    + `<input type="number" class="dj-filter-input dj-duration-num browser-default" id="${id}" min="0" max="1440" step="any" placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}" value="${escapeHtml(autoDjSecToMin(value))}" aria-label="${escapeHtml(name)}"></label>`;
+  const length = block(autoDjSwitchRowHtml({ id: 'dj-duration-on', label: t('autoDJ.lengthLabel'), checked: durOn }),
+    editor('dj-duration-editor', durOn,
+      '<div class="dj-duration-inputs">'
+      + durField('dj-duration-min', t('autoDJ.durationMinLabel'), t('autoDJ.durationMinInputLabel'), s.djMinDuration)
+      + durField('dj-duration-max', t('autoDJ.durationMaxLabel'), t('autoDJ.durationMaxInputLabel'), s.djMaxDuration) + '</div>'
+      + autoDjSwitchRowHtml({ id: 'dj-duration-unknown', label: t('autoDJ.durationUnknownLabel'), checked: s.djAllowUnknownDuration === true })));
+
+  const skipOn = s.djFilterEnabled === true;
+  const skipWords = block(autoDjSwitchRowHtml({ id: 'dj-filter-on', label: t('autoDJ.skipWordsLabel'), checked: skipOn }),
+    editor('dj-filter-editor', skipOn,
+      `<div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${autoDjChipsHtml(s.djFilterWords, 'word')}</div>`
+      + `<input type="text" class="dj-filter-input browser-default" id="dj-filter-input" placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}" aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">`));
+
+  // Sonic similarity: the switch, and the amount (the raw cosine floor
+  // 0.30–0.90, as a percentage) while it is on. Off without discovery.
+  const discovery = server.discovery === true;
+  const sonicOn = discovery && s.sonicEnabled === true;
+  const pct = Math.round(s.sonicMinSimilarity * 100);
+  const amount = t('autoDJ.sonicAmountValue', { pct });
+  const sonic = block(autoDjSwitchRowHtml({ id: 'dj-sonic-on', label: t('autoDJ.sonicLabel'), checked: sonicOn, disabled: !discovery }),
+    `<div class="dj-amount" id="dj-sonic-amount-row"${sonicOn ? '' : ' hidden'}>`
+    + `<input type="range" id="dj-sonic-sim" class="autodj-slider" min="30" max="90" step="1" value="${pct}" aria-label="${escapeHtml(t('autoDJ.sonicSimilarityLabel'))}" aria-valuetext="${escapeHtml(amount)}">`
+    + `<span class="dj-amount-value" id="dj-sonic-sim-val" aria-hidden="true">${escapeHtml(amount)}</span></div>`);
+
+  // Beat matching: the switch, and its tolerance while it is on.
+  const bpmOn = s.bpmContinuity === true;
+  const tolerance = t('autoDJ.bpmToleranceValue', { n: s.bpmTolerance });
+  const beat = block(autoDjSwitchRowHtml({ id: 'dj-bpm-cont', label: t('autoDJ.beatMatchingLabel'), checked: bpmOn }),
+    `<div class="dj-amount" id="dj-bpm-tol-row"${bpmOn ? '' : ' hidden'}>`
+    + `<input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${escapeHtml(s.bpmTolerance)}" aria-label="${escapeHtml(t('autoDJ.bpmToleranceLabel'))}" aria-valuetext="${escapeHtml(tolerance)}">`
+    + `<span class="dj-amount-value" id="dj-bpm-tol-val" aria-hidden="true">${escapeHtml(tolerance)}</span></div>`);
+
+  const harmonic = autoDjSwitchRowHtml({ id: 'dj-harmonic', label: t('autoDJ.harmonicMixingLabel'), checked: s.harmonicMixing === true });
+  // Similar artists (Last.fm): web-only, the card's last row; off without
+  // the server's Last.fm key.
+  const similar = autoDjSwitchRowHtml({ id: 'dj-similar', label: t('autoDJ.similarLabel'), checked: s.similar === true && ctx.lastfmAvailable === true, disabled: ctx.lastfmAvailable !== true });
+
+  return `<div class="pad-6 autodj-root">`
+    + `<button type="button" class="autodj-toggle${ctx.djOn ? ' on' : ''}" id="autodj-main-btn">${escapeHtml(t(ctx.djOn ? 'autoDJ.btnStop' : 'autoDJ.btnStart'))}</button>`
+    + '<div class="autodj-opts">'
+    + sources + batch
+    + `<h4 class="autodj-section-heading">${escapeHtml(t('autoDJ.sectionFilters'))}</h4>`
+    + smart + genres + rating + length + skipWords
+    + `<h4 class="autodj-section-heading">${escapeHtml(t('autoDJ.sectionMatch'))}</h4>`
+    + sonic + autoDjSubRowsHtml(ctx) + beat + harmonic + similar
+    + '</div></div>';
+}
+
+// Sonic similarity's dependants, in place after its switch: the amount
+// line shows only while it is on, and rows 9–11 dim and go inert while it
+// is off (their values stay, and so do both seed lists).
+function autoDjApplySonicDim() {
+  const sub = autoDjSubState({ state: AUTODJ.state, server: MSTREAMAPI.currentServer });
+  const amount = document.getElementById('dj-sonic-amount-row');
+  if (amount) { amount.hidden = sub.inert; }
+  const apply = (boxId, controlId, dim, inert) => {
+    const box = document.getElementById(boxId);
+    if (box) { box.classList.toggle('is-dim', dim); }
+    const control = document.getElementById(controlId);
+    if (control) { control.disabled = inert; }
+  };
+  apply('dj-sub-skips', 'dj-skips-on', sub.learnDim, sub.learnInert);
+  apply('dj-sub-seeds', 'dj-seeds-btn', sub.dim, sub.inert);
+  apply('dj-sub-federated', 'dj-federated-on', sub.dim, sub.inert);
+}
+
+// The Seeds row's covers, redrawn in place from [view] (a seeds change
+// hands it over) or the current one. False once the panel is gone.
+function autoDjRenderTiles(view) {
+  const el = document.getElementById('dj-seeds-tiles');
+  if (!el) { return false; }
+  el.innerHTML = autoDjSeedsTilesHtml(view || AUTODJ.seeds.view());
+  return true;
+}
+
+// Start/Stop follows the DJ — the player bar's toggle too: its label and
+// its lit look change in place, so the button keeps the keyboard's focus.
+// False once the panel is gone.
+function autoDjRenderToggle() {
+  const btn = document.getElementById('autodj-main-btn');
+  if (!btn) { return false; }
+  const on = MSTREAMPLAYER.playerStats.autoDJ === true;
+  btn.classList.toggle('on', on);
+  btn.textContent = t(on ? 'autoDJ.btnStop' : 'autoDJ.btnStart');
+  return true;
+}
+
+// ── The Seeds drawer (design B) ─────────────────────────────────────
+//
+// A modal drawer from the right over the Auto DJ page (boards B-Drift,
+// B-StayClose, B-AddSong): Drift | Stay close with its line, More like and
+// Less like (each row's cover, title, artist, pin and ⋮ menu, each list
+// ending with Add song), and "Clear pins when the queue is cleared". Add
+// song is its second step: "Pick a song from the library" (the library
+// pick: Sonic Path's capture mode), the search, then Up next, Skipped (Less
+// like only) and Recently played. The scrim is a .dmodal-shadow on body,
+// so the player's hotkeys and YouTube paste stay off under it and the
+// panel's own redraws leave it be. The seeds, the song, the queue and the
+// Skipped ring redraw it in place, the keyboard kept on its control by the
+// row's key (never by a selector built from it: a path may hold a quote or
+// a bracket). Every title, artist and path is escaped where it is drawn.
+
+// The drawer's one state: open or not, its step ('lists' | 'add'), the
+// list Add song was opened for ('more' | 'less'), the row whose ⋮ menu is
+// open (and whether that menu opens upward), Add song's typed search, its
+// latest hits (Facts) and the request they answer, and the Recently played
+// answer (Facts; null until it lands). The rest is bookkeeping: the asks
+// still out, the songs drawn as pick rows (by key), the step and the part
+// last drawn, a press that began on the scrim, the listeners and the
+// timers.
+const autoDjSeedsUi = {
+  open: false,
+  step: 'lists',
+  list: null,
+  menuKey: null,
+  menuUp: false,
+  query: '',
+  hits: null,
+  reqId: 0,
+  recent: null,
+  recentAsk: 0,
+  picks: null,
+  drawn: null,
+  drawnPart: '',
+  shadeDown: false,
+  offSeeds: null,
+  offPlayer: null,
+  searchTimer: null,
+  expiryTimer: null,
+};
+
+// The drawer's icons (kit d11–d15): stroked or filled in currentColor, but
+// the locked pin's badge, drawn on the window ground.
+const AUTODJ_SEEDS_ICONS = {
+  close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>',
+  back: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>',
+  pin: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z"></path><path d="M12 15v6"></path></svg>',
+  pinned: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z" fill="currentColor"></path><path d="M12 15v6"></path></svg>',
+  locked: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path><path d="M12 15v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><circle cx="18.5" cy="18.5" r="5.5" fill="#2d333b"></circle><rect x="15.5" y="18" width="6" height="4.5" rx="1" fill="#f5f7fa"></rect><path d="M16.75 18v-1.25a1.75 1.75 0 0 1 3.5 0V18" fill="none" stroke="#f5f7fa" stroke-width="1.5"></path></svg>',
+  more: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>',
+  add: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+  library: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="13" height="13" rx="2"></rect><path d="M4 7v12a2 2 0 0 0 2 2h12"></path><circle cx="13.5" cy="12" r="1.5"></circle><path d="M15 12V6.5h2.5"></path></svg>',
+  search: '<svg class="dj-add-search-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a0a7b3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>',
+  note: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"></path></svg>',
+};
+
+// A seed row's or a pick row's cover (kit d11): its art (autoDjSeedArtUrl:
+// a connected server's through the art proxy), or the house note on the
+// empty tile.
+function autoDjSeedArtHtml(facts) {
+  const url = autoDjSeedArtUrl(facts);
+  return url
+    ? `<img class="dj-seed-art" alt="" src="${escapeHtml(url)}">`
+    : `<span class="dj-seed-art is-none" aria-hidden="true">${AUTODJ_SEEDS_ICONS.note}</span>`;
+}
+
+// A row's title over its artist (no artist line without one).
+function autoDjSeedTextHtml(title, artist) {
+  return `<span class="dj-seed-text"><span class="dj-seed-title">${escapeHtml(title)}</span>`
+    + `${artist ? `<span class="dj-seed-artist">${escapeHtml(artist)}</span>` : ''}</span>`;
+}
+
+// One row of More like or Less like (kit d11, a seeds View row): cover,
+// title, artist, the pin and the ⋮. The pin is pressed as the row shows
+// pinned; in Stay close every row is locked (pressed, inert, the lock
+// badge); a Less like row the server can't use is dimmed and its pin
+// inert. The ⋮ always works; its menu, when open, is the row's last child.
+// ctx = autoDjSeedsCtx's.
+function autoDjSeedRowHtml(row, ctx) {
+  const dim = row.list === 'less' && !ctx.lessOn;
+  const open = ctx.menuKey === row.key;
+  const icon = row.locked ? AUTODJ_SEEDS_ICONS.locked : (row.shownPinned ? AUTODJ_SEEDS_ICONS.pinned : AUTODJ_SEEDS_ICONS.pin);
+  return `<li class="dj-seed${dim ? ' is-dim' : ''}" data-seed-key="${escapeHtml(row.key)}">`
+    + autoDjSeedArtHtml(row)
+    + autoDjSeedTextHtml(row.displayTitle, row.artist)
+    + '<span class="dj-seed-acts">'
+    + `<button type="button" class="dj-seed-btn dj-seed-pin" data-dj-act="pin" aria-label="${escapeHtml(t('autoDJ.seedPin', { title: row.displayTitle }))}" aria-pressed="${row.shownPinned ? 'true' : 'false'}"${row.locked || dim ? ' aria-disabled="true"' : ''}>${icon}</button>`
+    + `<button type="button" class="dj-seed-btn dj-seed-more" data-dj-act="menu" aria-label="${escapeHtml(t('autoDJ.seedMore', { title: row.displayTitle }))}" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dj-seeds-menu"' : ''}>${AUTODJ_SEEDS_ICONS.more}</button>`
+    + '</span>'
+    + (open ? autoDjSeedMenuHtml(row, ctx) : '')
+    + '</li>';
+}
+
+// A row's ⋮ menu (kit d12a): the move to the other list ("Less like this"
+// in More like, "More like this" in Less like), then Remove. The move is
+// off (aria-disabled, still focusable) while the other list can't take the
+// row: it is full, or — into Less like — the server takes no negatives or
+// the song is a connected server's. Remove always works.
+function autoDjSeedMenuHtml(row, ctx) {
+  const toLess = row.list === 'more';
+  const off = toLess ? (!ctx.lessOn || row.owner !== null || !ctx.canAdd.less) : !ctx.canAdd.more;
+  return `<div class="dj-seeds-menu${ctx.menuUp ? ' is-up' : ''}" id="dj-seeds-menu" role="menu" aria-label="${escapeHtml(t('autoDJ.seedMore', { title: row.displayTitle }))}">`
+    + `<button type="button" class="dj-seeds-menu-item" role="menuitem" data-dj-act="move"${off ? ' aria-disabled="true"' : ''}>${escapeHtml(t(toLess ? 'autoDJ.seedLessLikeThis' : 'autoDJ.seedMoreLikeThis'))}</button>`
+    + `<button type="button" class="dj-seeds-menu-item" role="menuitem" data-dj-act="remove">${escapeHtml(t('autoDJ.seedRemove'))}</button>`
+    + '</div>';
+}
+
+// More like and Less like (the lists step's part that follows the seeds):
+// each newest first, then its Add song, off while the list can't take a
+// row. On a server whose ping answered a picker generation below 1, Less
+// like says it needs a newer one; while the server takes no negatives (or
+// before its ping answers) Less like's rows are dimmed and its Add song is
+// off.
+function autoDjSeedsListsHtml(view, ctx) {
+  const addRow = (list, off) => `<li><button type="button" class="dj-seeds-add" data-dj-act="add" data-add="${list}" aria-describedby="dj-seeds-${list}-h"${off ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-add-ic" aria-hidden="true">${AUTODJ_SEEDS_ICONS.add}</span>${escapeHtml(t('autoDJ.addSong'))}</button></li>`;
+  const rows = (list) => (view[list] || []).map((row) => autoDjSeedRowHtml(row, ctx)).join('');
+  const reason = ctx.needsNewer
+    ? `<p class="dj-seeds-reason" id="dj-seeds-less-reason">${escapeHtml(t('autoDJ.needsNewerServer'))}</p>`
+    : '';
+  return `<h3 class="dj-seeds-h" id="dj-seeds-more-h">${escapeHtml(t('autoDJ.seedsMoreLike'))}</h3>`
+    + `<ul class="dj-seeds-list" data-list="more" aria-labelledby="dj-seeds-more-h">${rows('more')}${addRow('more', !ctx.canAdd.more)}</ul>`
+    + `<h3 class="dj-seeds-h" id="dj-seeds-less-h">${escapeHtml(t('autoDJ.seedsLessLike'))}</h3>${reason}`
+    + `<ul class="dj-seeds-list" data-list="less" aria-labelledby="dj-seeds-less-h"${ctx.needsNewer ? ' aria-describedby="dj-seeds-less-reason"' : ''}>`
+    + `${rows('less')}${addRow('less', !ctx.lessOn || !ctx.canAdd.less)}</ul>`;
+}
+
+// The lists step (B-Drift / B-StayClose) under Close: the head, Drift |
+// Stay close with the mode's line, the lists' box (autoDjSeedsListsHtml
+// draws into it) and the box "Clear pins when the queue is cleared".
+function autoDjSeedsStepHtml(view, ctx) {
+  const mode = (m, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="mode" data-mode="${m}" aria-pressed="${view.mode === m ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  return `<div class="dj-seeds-head"><h2 class="dj-seeds-title" id="dj-seeds-title">${escapeHtml(t('autoDJ.seedsLabel'))}</h2></div>`
+    + '<div class="dj-seeds-body" id="dj-seeds-body">'
+    + `<div class="dj-seeds-mode" role="group" aria-label="${escapeHtml(t('autoDJ.seedModeLabel'))}">${mode('rolling', 'autoDJ.seedModeDrift')}${mode('locked', 'autoDJ.seedModeStayClose')}</div>`
+    + `<p class="dj-seeds-mode-desc" id="dj-seeds-mode-desc" aria-live="polite">${escapeHtml(t(view.mode === 'locked' ? 'autoDJ.seedModeStayCloseHint' : 'autoDJ.seedModeDriftHint'))}</p>`
+    + '<div class="dj-seeds-lists" id="dj-seeds-lists"></div>'
+    + '<div class="dj-seeds-foot"><label class="dj-check"><span class="dj-check-ctl">'
+    + `<input type="checkbox" id="dj-seeds-clear-pins"${ctx.clearPins ? ' checked' : ''}>`
+    + `<span class="dj-check-box" aria-hidden="true">${AUTODJ_SEEDS_ICONS.check}</span></span>${escapeHtml(t('autoDJ.seedsClearPins'))}</label></div>`
+    + '</div>';
+}
+
+// The Add song step (B-AddSong) under Close: Go Back and the head, then
+// "Pick a song from the library", the search field (today's Seed song
+// search) and the songs' box (autoDjAddResultsHtml draws into it).
+function autoDjAddSongHtml(ui) {
+  const placeholder = escapeHtml(t('autoDJ.sonicSeedPlaceholder'));
+  return '<div class="dj-seeds-head is-step">'
+    + `<button type="button" class="dj-seeds-back" data-dj-act="back" aria-label="${escapeHtml(t('tooltip.goBack'))}">${AUTODJ_SEEDS_ICONS.back}</button>`
+    + `<h2 class="dj-seeds-title" id="dj-add-title">${escapeHtml(t('autoDJ.addSong'))}</h2></div>`
+    + '<div class="dj-seeds-body" id="dj-add-body">'
+    + `<button type="button" id="dj-add-library" class="dj-seeds-add dj-seeds-library" data-dj-act="library"><span class="dj-seeds-add-ic" aria-hidden="true">${AUTODJ_SEEDS_ICONS.library}</span>${escapeHtml(t('autoDJ.addSongFromLibrary'))}</button>`
+    + `<label class="dj-add-search">${AUTODJ_SEEDS_ICONS.search}<input type="search" id="dj-add-search" class="dj-filter-input browser-default" placeholder="${placeholder}" aria-label="${placeholder}" autocomplete="off" value="${escapeHtml(ui.query || '')}"></label>`
+    + '<div class="dj-add-results" id="dj-add-results"></div>'
+    + '</div>';
+}
+
+// Add song's songs: under two typed characters its sections, each hidden
+// when empty — Up next, Skipped (Less like only: the song playing, marked
+// as the queue marks its row, then the Skipped ring) and Recently played
+// ([sections]: AUTODJ.seeds.addSongSections, this server's songs the list
+// doesn't hold yet, each once); from two, the search's hits in one list
+// (none: nothing). ctx = { taken: Set of the list's keys, playingKey }.
+function autoDjAddResultsHtml(ui, sections, ctx) {
+  if (String(ui.query || '').trim().length >= 2) {
+    const hits = Array.isArray(ui.hits) ? ui.hits : [];
+    return hits.length
+      ? `<ul class="dj-pick-list" id="dj-add-hits">${hits.map((f) => autoDjPickRowHtml(f, { taken: ctx.taken, playingKey: null })).join('')}</ul>`
+      : '';
+  }
+  const section = (id, key, songs, playingKey) => (songs && songs.length
+    ? `<h3 class="dj-seeds-h" id="dj-add-${id}-h">${escapeHtml(t(key))}</h3>`
+      + `<ul class="dj-pick-list" aria-labelledby="dj-add-${id}-h">${songs.map((f) => autoDjPickRowHtml(f, { taken: ctx.taken, playingKey })).join('')}</ul>`
+    : '');
+  return section('upnext', 'autoDJ.addSongUpNext', sections.upNext, null)
+    + (ui.list === 'less' ? section('skipped', 'autoDJ.addSongSkipped', sections.skipped, ctx.playingKey) : '')
+    + section('recent', 'autoDJ.addSongRecent', sections.recent, null);
+}
+
+// One pick row (kit d11 line 17; Facts): the whole row is the button. The
+// song playing is marked as the queue marks its row (aria-current); a song
+// the list holds already (a search hit) is dimmed and inert.
+function autoDjPickRowHtml(facts, ctx) {
+  const key = AUTODJ.seeds.keyOf(facts.owner, facts.path);
+  const title = facts.title || String(facts.path || '').split('/').pop();
+  const taken = !!(ctx.taken && ctx.taken.has(key));
+  return `<li><button type="button" class="dj-pick" data-dj-act="pick" data-seed-key="${escapeHtml(key)}"${ctx.playingKey === key ? ' aria-current="true"' : ''}${taken ? ' aria-disabled="true"' : ''}>`
+    + autoDjSeedArtHtml(facts) + autoDjSeedTextHtml(title, facts.artist) + '</button></li>';
+}
+
+// What the lists draw from: whether this server takes Less like songs (its
+// ping's picker generation and discovery), whether its ping said it needs
+// a newer one, what each list can take, the box, and the open menu.
+function autoDjSeedsCtx(view) {
+  const server = MSTREAMAPI.currentServer || {};
+  return {
+    lessOn: AUTODJ.seeds.takesNegatives(server),
+    needsNewer: AUTODJ.seeds.needsNewerServer(server),
+    canAdd: view.canAdd,
+    menuKey: autoDjSeedsUi.menuKey,
+    menuUp: autoDjSeedsUi.menuUp,
+    clearPins: AUTODJ.state.clearPinsOnQueueClear === true,
+  };
+}
+
+// Add song's sections for its list now — the queue after the current row,
+// the current row (the song playing, while it is that row) and the Skipped
+// ring for Less like, the Recently played answer — and what its rows draw
+// from.
+function autoDjSeedsAddData(view) {
+  const ui = autoDjSeedsUi;
+  const playlist = Array.isArray(MSTREAMPLAYER.playlist) ? MSTREAMPLAYER.playlist : [];
+  const position = MSTREAMPLAYER.positionCache ? MSTREAMPLAYER.positionCache.val : -1;
+  const row = playlist[position];
+  const current = row && typeof MSTREAMPLAYER.getCurrentSong === 'function' && row === MSTREAMPLAYER.getCurrentSong() ? row : null;
+  const sections = AUTODJ.seeds.addSongSections({
+    list: ui.list, playlist, position, current, skips: AUTODJ.seeds.recentSkips(), recent: ui.recent || [], view,
+  });
+  const playing = current && !current.federation ? AUTODJ.seeds.factsFromSong(current) : null;
+  return {
+    sections,
+    ctx: {
+      taken: new Set((view[ui.list] || []).map((r) => r.key)),
+      playingKey: playing ? AUTODJ.seeds.keyOf(null, playing.path) : null,
+    },
+  };
+}
+
+// The drawn row [key] of the lists, compared by key.
+function autoDjSeedsRowEl(key) {
+  const lists = document.getElementById('dj-seeds-lists');
+  if (!lists || key === null || key === undefined) { return null; }
+  return Array.from(lists.querySelectorAll('[data-seed-key]')).find((el) => el.getAttribute('data-seed-key') === key) || null;
+}
+
+// The keyboard to the ⋮ of the row [key]; false when that row is gone.
+function autoDjSeedsFocusRow(key) {
+  const row = autoDjSeedsRowEl(key);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if (!btn) { return false; }
+  btn.focus();
+  return true;
+}
+
+// The keyboard to [list]'s Add song; while that is off (the list is full,
+// or the server takes no Less like songs), to the list's newest row's ⋮,
+// else to Close.
+function autoDjSeedsFocusAdd(list) {
+  const dialog = document.getElementById('dj-seeds-drawer');
+  if (!dialog) { return; }
+  const add = Array.from(dialog.querySelectorAll('.dj-seeds-add')).find((b) => b.getAttribute('data-add') === list);
+  if (add && !add.disabled) { add.focus(); return; }
+  const ul = Array.from(dialog.querySelectorAll('.dj-seeds-list')).find((u) => u.getAttribute('data-list') === list);
+  const more = ul ? ul.querySelector('.dj-seed-more') : null;
+  const close = dialog.querySelector('.dj-seeds-close');
+  if (more) { more.focus(); } else if (close) { close.focus(); }
+}
+
+// What holds the keyboard inside [box], to find again once [box] is
+// redrawn: its row's key and its action (a pick row is its own control),
+// its Add song's list, the list its row is in. null when the keyboard is
+// elsewhere.
+function autoDjSeedsFocusOf(box) {
+  const a = document.activeElement;
+  if (!box || !a || a === box || !box.contains(a) || typeof a.closest !== 'function') { return null; }
+  const row = a.closest('[data-seed-key]');
+  const list = a.closest('[data-list]');
+  return {
+    key: row ? row.getAttribute('data-seed-key') : null,
+    act: a.getAttribute('data-dj-act'),
+    add: a.getAttribute('data-add'),
+    list: list ? list.getAttribute('data-list') : null,
+  };
+}
+
+// The keyboard back on [at]'s control in the redrawn [box]: the same row's
+// same control (a menu item gone with its menu: the row's ⋮); a row that
+// left gives it to its list's Add song; Add song's songs give it to the
+// field.
+function autoDjSeedsRefocus(box, at) {
+  if (!at) { return; }
+  let el = null;
+  if (at.key !== null) {
+    const row = Array.from(box.querySelectorAll('[data-seed-key]')).find((r) => r.getAttribute('data-seed-key') === at.key);
+    if (row) {
+      el = row.getAttribute('data-dj-act') === at.act
+        ? row
+        : (Array.from(row.querySelectorAll('[data-dj-act]')).find((c) => c.getAttribute('data-dj-act') === at.act) || row.querySelector('.dj-seed-more'));
+    }
+  }
+  if (!el && (at.add || at.list)) { autoDjSeedsFocusAdd(at.add || at.list); return; }
+  if (!el) { el = document.getElementById('dj-add-search'); }
+  if (el) { el.focus(); }
+}
+
+// [el]'s contents as [html], unless it holds them already (a redraw that
+// changes nothing leaves the controls, and a press on one, where they
+// are). The keyboard comes back to its control.
+function autoDjSeedsDrawPart(el, html) {
+  const ui = autoDjSeedsUi;
+  if (!el || ui.drawnPart === html) { return false; }
+  const at = autoDjSeedsFocusOf(el);
+  el.innerHTML = html;
+  ui.drawnPart = html;
+  autoDjSeedsRefocus(el, at);
+  return true;
+}
+
+// One timer, re-armed by every draw: the drawer redraws when the next
+// unpinned Less like row runs out (Drift time; none in Stay close).
+function autoDjSeedsArmExpiry() {
+  const ui = autoDjSeedsUi;
+  clearTimeout(ui.expiryTimer);
+  ui.expiryTimer = null;
+  const at = AUTODJ.seeds.nextExpiry();
+  if (at === null || at === undefined) { return; }
+  ui.expiryTimer = setTimeout(() => {
+    ui.expiryTimer = null;
+    if (!ui.open) { return; }
+    AUTODJ.seeds.prune();
+    autoDjSeedsRender();
+  }, Math.max(0, at - Date.now()));
+}
+
+// Draws the open drawer: a new step whole (Close first, then the step's
+// head and body, the dialog named by the step's heading); then, in place,
+// what follows the seeds and the player — the mode and the lists, or Add
+// song's songs (never its field). An open menu whose row left closes.
+function autoDjSeedsRender() {
+  const ui = autoDjSeedsUi;
+  if (!ui.open) { return false; }
+  const dialog = document.getElementById('dj-seeds-drawer');
+  if (!dialog) {
+    // its scrim went some other way: let go of the listeners too
+    autoDjSeedsClose({ noFocus: true });
+    return false;
+  }
+  const view = AUTODJ.seeds.view();
+  if (ui.menuKey !== null && !view.more.concat(view.less).some((r) => r.key === ui.menuKey)) {
+    ui.menuKey = null;
+    ui.menuUp = false;
+  }
+  if (ui.drawn !== ui.step) {
+    dialog.innerHTML = `<button type="button" class="dj-seeds-close" data-dj-act="close" aria-label="${escapeHtml(t('modal.close'))}">${AUTODJ_SEEDS_ICONS.close}</button>`
+      + (ui.step === 'add' ? autoDjAddSongHtml(ui) : autoDjSeedsStepHtml(view, autoDjSeedsCtx(view)));
+    dialog.setAttribute('aria-labelledby', ui.step === 'add' ? 'dj-add-title' : 'dj-seeds-title');
+    ui.drawn = ui.step;
+    ui.drawnPart = null;
+  }
+  if (ui.step === 'add') {
+    const data = autoDjSeedsAddData(view);
+    ui.picks = new Map();
+    for (const f of [...data.sections.upNext, ...data.sections.skipped, ...data.sections.recent, ...(ui.hits || [])]) {
+      ui.picks.set(AUTODJ.seeds.keyOf(f.owner, f.path), f);
+    }
+    autoDjSeedsDrawPart(document.getElementById('dj-add-results'), autoDjAddResultsHtml(ui, data.sections, data.ctx));
+  } else {
+    dialog.querySelectorAll('.dj-seeds-mode-btn').forEach((b) => {
+      b.setAttribute('aria-pressed', b.getAttribute('data-mode') === view.mode ? 'true' : 'false');
+    });
+    const desc = document.getElementById('dj-seeds-mode-desc');
+    const line = t(view.mode === 'locked' ? 'autoDJ.seedModeStayCloseHint' : 'autoDJ.seedModeDriftHint');
+    if (desc && desc.textContent !== line) { desc.textContent = line; }
+    autoDjSeedsDrawPart(document.getElementById('dj-seeds-lists'), autoDjSeedsListsHtml(view, autoDjSeedsCtx(view)));
+  }
+  autoDjSeedsArmExpiry();
+  return true;
+}
+
+// The lists step; the keyboard on [focusAdd]'s Add song (Go Back, a pick,
+// the return from the library pick). Add song's search and any answer
+// still out are dropped.
+function autoDjSeedsShowLists(focusAdd) {
+  const ui = autoDjSeedsUi;
+  clearTimeout(ui.searchTimer);
+  ui.searchTimer = null;
+  ui.step = 'lists';
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recentAsk++;
+  autoDjSeedsRender();
+  if (focusAdd) { autoDjSeedsFocusAdd(focusAdd); }
+}
+
+// The Add song step for [list]: the field takes the keyboard, and
+// Recently played is asked once (it shows when it lands; a failure shows
+// nothing).
+function autoDjSeedsShowAdd(list) {
+  const ui = autoDjSeedsUi;
+  ui.step = 'add';
+  ui.list = list === 'less' ? 'less' : 'more';
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recent = null;
+  const ask = ++ui.recentAsk;
+  autoDjSeedsRender();
+  const field = document.getElementById('dj-add-search');
+  if (field) { field.focus(); }
+  const ignore = MSTREAMPLAYER.ignoreVPaths || {};
+  Promise.resolve()
+    .then(() => MSTREAMAPI.getRecentlyPlayed(20, Object.keys(ignore).filter((v) => ignore[v] === true)))
+    .then((res) => (Array.isArray(res) ? res.map((item) => AUTODJ.seeds.factsFromRecent(item)).filter(Boolean) : []))
+    .catch(() => [])
+    .then((recent) => {
+      if (ask !== ui.recentAsk || !ui.open || ui.step !== 'add') { return; }
+      ui.recent = recent;
+      autoDjSeedsRender();
+    });
+}
+
+// The Seeds drawer, the Seeds row's one way in: opts {} from the row (the
+// keyboard on Close), { list, focus: 'add' } when autoDjPanel({ seeds:
+// list }) comes back from the library pick (the lists, the keyboard on
+// that list's Add song). Its scrim lives on body, so a redraw of the
+// column's markup leaves it be; a view that takes the column closes it
+// (setBrowserRootPanel).
+function autoDjSeedsOpen(opts) {
+  const o = opts || {};
+  const ui = autoDjSeedsUi;
+  if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return false; }
+  const list = o.list === 'more' || o.list === 'less' ? o.list : null;
+  if (!ui.open) {
+    const shade = document.createElement('div');
+    shade.className = 'dmodal-shadow dj-seeds-shade';
+    shade.id = 'dj-seeds-shade';
+    shade.innerHTML = '<div class="dj-seeds" id="dj-seeds-drawer" role="dialog" aria-modal="true" aria-labelledby="dj-seeds-title" tabindex="-1"></div>';
+    shade.addEventListener('mousedown', onAutoDjSeedsShadeDown);
+    shade.addEventListener('touchstart', onAutoDjSeedsShadeDown, { passive: true });
+    shade.addEventListener('click', onAutoDjSeedsShadeClick);
+    const dialog = shade.querySelector('.dj-seeds');
+    dialog.addEventListener('click', onAutoDjSeedsClick);
+    dialog.addEventListener('keydown', onAutoDjSeedsMenuKey);
+    dialog.addEventListener('input', onAutoDjSeedsInput);
+    dialog.addEventListener('change', onAutoDjSeedsInput);
+    document.body.appendChild(shade);
+    document.addEventListener('keydown', onAutoDjSeedsKey);
+    ui.open = true;
+    ui.drawn = null;
+    ui.offSeeds = AUTODJ.seeds.subscribe(() => { autoDjSeedsRender(); });
+    ui.offPlayer = typeof MSTREAMPLAYER.onAutoDj === 'function'
+      ? MSTREAMPLAYER.onAutoDj((reason) => {
+        if (reason === 'song' || reason === 'queue' || reason === 'skip') { autoDjSeedsRender(); }
+      })
+      : null;
+  }
+  const btn = document.getElementById('dj-seeds-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'true');
+    btn.setAttribute('aria-controls', 'dj-seeds-drawer');
+  }
+  const back = list && o.focus === 'add';
+  autoDjSeedsShowLists(back ? list : null);
+  if (!back) {
+    // (Close is always in view: no scroll while the drawer slides in)
+    const dialog = document.getElementById('dj-seeds-drawer');
+    const close = dialog ? dialog.querySelector('.dj-seeds-close') : null;
+    if (close) { close.focus({ preventScroll: true }); }
+  }
+  return true;
+}
+
+// Closes the drawer: the scrim, its listeners and timers go, and the
+// keyboard goes back to the Seeds row (looked up again: the panel may have
+// redrawn). opts.noFocus: the library pick, and any view that takes the
+// column, which leave the page.
+function autoDjSeedsClose(opts) {
+  const ui = autoDjSeedsUi;
+  if (!ui.open) { return false; }
+  const o = opts || {};
+  ui.open = false;
+  clearTimeout(ui.searchTimer);
+  clearTimeout(ui.expiryTimer);
+  ui.searchTimer = null;
+  ui.expiryTimer = null;
+  if (ui.offSeeds) { ui.offSeeds(); }
+  if (ui.offPlayer) { ui.offPlayer(); }
+  ui.offSeeds = null;
+  ui.offPlayer = null;
+  document.removeEventListener('keydown', onAutoDjSeedsKey);
+  const shade = document.getElementById('dj-seeds-shade');
+  if (shade) { shade.remove(); }
+  ui.step = 'lists';
+  ui.list = null;
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recent = null;
+  ui.recentAsk++;
+  ui.picks = null;
+  ui.drawn = null;
+  ui.drawnPart = '';
+  ui.shadeDown = false;
+  const btn = document.getElementById('dj-seeds-btn');
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.removeAttribute('aria-controls');
+    if (!o.noFocus) { btn.focus(); }
+  }
+  return true;
+}
+
+// Opens the ⋮ menu of the row [key] in place (no redraw under the
+// pointer), upward when it would hang past the drawer's body; the keyboard
+// on its first item ([at] -1: its last).
+function autoDjSeedsMenuOpen(key, at) {
+  const ui = autoDjSeedsUi;
+  if (ui.menuKey !== null) { autoDjSeedsMenuClose(false); }
+  const view = AUTODJ.seeds.view();
+  const data = view.more.concat(view.less).find((r) => r.key === key);
+  const row = autoDjSeedsRowEl(key);
+  if (!data || !row) { return false; }
+  ui.menuKey = key;
+  ui.menuUp = false;
+  ui.drawnPart = null;
+  row.insertAdjacentHTML('beforeend', autoDjSeedMenuHtml(data, autoDjSeedsCtx(view)));
+  const btn = row.querySelector('.dj-seed-more');
+  btn.setAttribute('aria-expanded', 'true');
+  btn.setAttribute('aria-controls', 'dj-seeds-menu');
+  const menu = document.getElementById('dj-seeds-menu');
+  const body = menu.closest('.dj-seeds-body');
+  if (body && menu.getBoundingClientRect().bottom > body.getBoundingClientRect().bottom) {
+    menu.classList.add('is-up');
+    ui.menuUp = true;
+  }
+  const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+  items[at === -1 ? items.length - 1 : 0].focus();
+  return true;
+}
+
+// Closes the open ⋮ menu in place; [focusButton]: the keyboard back on its
+// ⋮ (an Esc, a Tab) — a press elsewhere keeps where it went.
+function autoDjSeedsMenuClose(focusButton) {
+  const ui = autoDjSeedsUi;
+  const key = ui.menuKey;
+  if (key === null) { return false; }
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.drawnPart = null;
+  const menu = document.getElementById('dj-seeds-menu');
+  if (menu) { menu.remove(); }
+  const row = autoDjSeedsRowEl(key);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.removeAttribute('aria-controls');
+    if (focusButton) { btn.focus(); }
+  }
+  return true;
+}
+
+// The drawer's presses (one delegated listener; data-dj-act): Close, the
+// mode, a row's pin and ⋮, a menu's move and Remove, Add song, Go Back,
+// the library row and a pick. A disabled or aria-disabled control does
+// nothing. The keyboard: a pin and the mode keep it; a move follows the
+// row to its new list; Remove gives it to the row now in its place (the
+// next one), else the one before, else Add song.
+function onAutoDjSeedsClick(e) {
+  const ui = autoDjSeedsUi;
+  const el = ui.open && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-dj-act]') : null;
+  if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') { return; }
+  const act = el.getAttribute('data-dj-act');
+  const row = el.closest('[data-seed-key]');
+  const key = row ? row.getAttribute('data-seed-key') : null;
+  if (act === 'close') {
+    autoDjSeedsClose();
+  } else if (act === 'mode') {
+    AUTODJ.seeds.setMode(el.getAttribute('data-mode'));
+    autoDjSeedsRender();
+    el.focus();
+  } else if (act === 'pin') {
+    AUTODJ.seeds.setPinned(key, el.getAttribute('aria-pressed') !== 'true');
+    autoDjSeedsRender();
+  } else if (act === 'menu') {
+    if (ui.menuKey === key) { autoDjSeedsMenuClose(true); } else { autoDjSeedsMenuOpen(key, 0); }
+  } else if (act === 'move') {
+    ui.menuKey = null;
+    ui.menuUp = false;
+    AUTODJ.seeds.move(key);
+    autoDjSeedsRender();
+    autoDjSeedsFocusRow(key);
+  } else if (act === 'remove') {
+    const view = AUTODJ.seeds.view();
+    const list = view.less.some((r) => r.key === key) ? 'less' : 'more';
+    const rows = view[list];
+    const i = rows.findIndex((r) => r.key === key);
+    const next = i >= 0 && rows[i + 1] ? rows[i + 1].key : null;
+    const prev = i > 0 ? rows[i - 1].key : null;
+    ui.menuKey = null;
+    ui.menuUp = false;
+    AUTODJ.seeds.remove(key);
+    autoDjSeedsRender();
+    if (!autoDjSeedsFocusRow(next) && !autoDjSeedsFocusRow(prev)) { autoDjSeedsFocusAdd(list); }
+  } else if (act === 'add') {
+    autoDjSeedsShowAdd(el.getAttribute('data-add'));
+  } else if (act === 'back') {
+    autoDjSeedsShowLists(ui.list);
+  } else if (act === 'library') {
+    autoDjSeedsPickFromLibrary(ui.list);
+  } else if (act === 'pick') {
+    // A hand-added (pinned) row of the list Add song was opened for, then
+    // back to the lists. A list that filled meanwhile takes nothing. A
+    // More like song may start a DJ stalled on an empty queue.
+    const facts = ui.picks ? ui.picks.get(key) : null;
+    const list = ui.list;
+    if (!facts) { return; }
+    if (AUTODJ.seeds.add(list, facts) && list === 'more' && typeof MSTREAMPLAYER.autoDjKick === 'function') {
+      MSTREAMPLAYER.autoDjKick();
+    }
+    autoDjSeedsShowLists(list);
+  }
+}
+
+// Keys inside the drawer: Enter in Add song's field searches at once; on a
+// row's ⋮, Down opens its menu on the first item and Up on the last; in an
+// open menu (ytdl's menuMixin) Up and Down cycle, Home and End jump, Esc
+// closes the menu — only the menu: the drawer stays — and gives its ⋮ the
+// keyboard, and Tab closes it from its ⋮ (the browser's Tab moves on from
+// there). An IME's keys are its own.
+function onAutoDjSeedsMenuKey(e) {
+  const ui = autoDjSeedsUi;
+  const el = e.target;
+  if (!ui.open || !el || e.isComposing || e.keyCode === 229) { return; }
+  if (el.id === 'dj-add-search' && e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(ui.searchTimer);
+    ui.searchTimer = null;
+    autoDjSeedsSearch(el.value);
+    return;
+  }
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && el.classList && el.classList.contains('dj-seed-more')) {
+    e.preventDefault();
+    const row = el.closest('[data-seed-key]');
+    if (row) { autoDjSeedsMenuOpen(row.getAttribute('data-seed-key'), e.key === 'ArrowDown' ? 0 : -1); }
+    return;
+  }
+  if (ui.menuKey === null) { return; }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    autoDjSeedsMenuClose(true);
+    return;
+  }
+  const menu = document.getElementById('dj-seeds-menu');
+  if (!menu || !menu.contains(el)) { return; }
+  const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+  const at = items.indexOf(el);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length].focus();
+  } else if (e.key === 'Home' || e.key === 'End') {
+    e.preventDefault();
+    items[e.key === 'Home' ? 0 : items.length - 1].focus();
+  } else if (e.key === 'Tab') {
+    autoDjSeedsMenuClose(true);
+  }
+}
+
+// Add song's field and the box. The field: from two typed characters the
+// search runs once typing pauses (300 ms), the last hits staying until the
+// next answer; under two, the sections come back at once and a search
+// still out is dropped. The box: "Clear pins when the queue is cleared".
+function onAutoDjSeedsInput(e) {
+  const ui = autoDjSeedsUi;
+  const el = e.target;
+  if (!ui.open || !el) { return; }
+  if (el.id === 'dj-seeds-clear-pins') {
+    if (e.type === 'change') { AUTODJ.setState({ clearPinsOnQueueClear: el.checked === true }); }
+    return;
+  }
+  if (el.id !== 'dj-add-search' || e.type !== 'input') { return; }
+  ui.query = String(el.value || '');
+  clearTimeout(ui.searchTimer);
+  ui.searchTimer = null;
+  if (ui.query.trim().length < 2) {
+    ui.reqId++;
+    ui.hits = null;
+  } else {
+    ui.searchTimer = setTimeout(() => {
+      ui.searchTimer = null;
+      autoDjSeedsSearch(ui.query);
+    }, 300);
+  }
+  autoDjSeedsRender();
+}
+
+// The drawer holds the keyboard while it is open (the house window's way:
+// VUEPLAYERCORE.dmTabbables / dmTrapTarget): Tab and Shift+Tab wrap inside
+// it, and Esc closes it from either step (an open menu takes its own Esc
+// first). An IME's keys are its own.
+function onAutoDjSeedsKey(e) {
+  const ui = autoDjSeedsUi;
+  const dialog = ui.open ? document.getElementById('dj-seeds-drawer') : null;
+  if (!dialog || e.isComposing || e.keyCode === 229) { return; }
+  if (e.key === 'Tab') {
+    if (typeof VUEPLAYERCORE === 'undefined' || typeof VUEPLAYERCORE.dmTabbables !== 'function') { return; }
+    const to = VUEPLAYERCORE.dmTrapTarget(VUEPLAYERCORE.dmTabbables(dialog), document.activeElement, e.shiftKey);
+    if (to) {
+      e.preventDefault();
+      to.focus();
+    }
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    autoDjSeedsClose();
+  }
+}
+
+// A press on the scrim closes the drawer only when it both began and ended
+// there (a drag out of a field is no press outside: ytdl's windows), and
+// was no later press of a multi-click: a double-click on the Seeds row
+// opens the drawer, and its second press lands on the scrim (a touch's
+// detail is 0). Any press outside an open row menu and its ⋮ closes the
+// menu, in place.
+function onAutoDjSeedsShadeDown(e) {
+  const ui = autoDjSeedsUi;
+  ui.shadeDown = e.target === e.currentTarget && !(e.detail > 1);
+  if (ui.menuKey === null) { return; }
+  const menu = document.getElementById('dj-seeds-menu');
+  const row = autoDjSeedsRowEl(ui.menuKey);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if ((menu && menu.contains(e.target)) || (btn && btn.contains(e.target))) { return; }
+  autoDjSeedsMenuClose(false);
+}
+
+function onAutoDjSeedsShadeClick(e) {
+  const ui = autoDjSeedsUi;
+  const outside = ui.shadeDown && e.target === e.currentTarget;
+  ui.shadeDown = false;
+  if (outside) { autoDjSeedsClose(); }
+}
+
+// Add song's title search (today's Seed song search): this server's title
+// hits for [q], the first eight. An answer that is no longer the newest
+// ask's is dropped.
+async function autoDjSeedsSearch(q) {
+  const ui = autoDjSeedsUi;
+  const term = String(q || '').trim();
+  if (!ui.open || ui.step !== 'add' || term.length < 2) { return false; }
+  const rid = ++ui.reqId;
+  let hits = [];
+  try {
+    const res = await MSTREAMAPI.search({ search: term, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true });
+    hits = (res && Array.isArray(res.title) ? res.title : []).slice(0, 8);
+  } catch (err) {
+    console.error('seed search failed', err);
+  }
+  if (rid !== ui.reqId || !ui.open || ui.step !== 'add') { return false; }
+  ui.hits = hits.map((h) => AUTODJ.seeds.factsFromSearchHit(h)).filter(Boolean);
+  autoDjSeedsRender();
+  return true;
+}
+
+// Add song's "Pick a song from the library" (the phone's library row):
+// Sonic Path's capture mode for [list]. The drawer closes, the banner names
+// the list and the File Explorer opens; the next single row click anywhere
+// (onFileClick; bulk actions and DB search hits never come through) adds
+// that song pinned, its title, artist and art looked up, and the Auto DJ
+// page comes back with the drawer open on its lists. Cancel comes back the
+// same way with nothing added. A connected server's row is refused there
+// and the pick stays armed: seeds are this server's songs. Coming back
+// while a connected server is browsed goes home first, as the Discover
+// page's return does (in that library every row is refused, so Cancel is
+// the way out).
+function autoDjSeedsPickFromLibrary(list) {
+  const l = list === 'less' ? 'less' : 'more';
+  autoDjSeedsClose({ noFocus: true });
+  const back = () => {
+    if (peerContext) {
+      peerContext = null;
+      browseGeneration++;
+      fileExplorerArray = [];
+      applyServerContext();
+    }
+    changeView(() => autoDjPanel({ seeds: l }), document.getElementById('nav-auto-dj'));
+  };
+  const capture = async (song) => {
+    sonicPathHideBanner();
+    const raw = String((song && song.filepath) || '');
+    const path = raw.replace(/^\/+/, '');
+    let meta = (song && song.metadata) || {};
+    if (path && !meta.title) {
+      try {
+        const response = await MSTREAMAPI.lookupMetadata(raw);
+        if (response && response.metadata) { meta = response.metadata; }
+      } catch (_err) { /* the file name stands in */ }
+    }
+    if (path && AUTODJ.seeds.add(l, AUTODJ.seeds.factsFromMeta(path, meta)) && l === 'more'
+      && typeof MSTREAMPLAYER.autoDjKick === 'function') {
+      MSTREAMPLAYER.autoDjKick();
+    }
+    back();
+  };
+  capture.seeds = l;
+  VUEPLAYERCORE.songCapture = capture;
+  showPickBanner(t(l === 'less' ? 'autoDJ.seedPickBannerLess' : 'autoDJ.seedPickBannerMore'), back);
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
 let _autoDjPanelAbortController = null;
 
-async function autoDjPanel() {
+// The Auto DJ page. opts = { seeds: 'more' | 'less' } when it comes back
+// from the Seeds drawer's library pick: the drawer opens again on its
+// lists. The side nav passes nothing.
+async function autoDjPanel(opts) {
+  const o = opts || {};
+  // A Seeds library pick left armed (its banner still up) ends when the
+  // page is entered again: no armed pick without its banner. The pick's
+  // own return finds the slot empty already.
+  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.seeds) {
+    VUEPLAYERCORE.songCapture = null;
+    sonicPathHideBanner();
+  }
   _autoDjPanelAbortController?.abort();
   _autoDjPanelAbortController = new AbortController();
   const _autoDjPanelSignal = _autoDjPanelAbortController.signal;
@@ -6358,11 +7468,10 @@ async function autoDjPanel() {
   const lastfm = await _fetchLastfmStatus();
   const lastfmAvailable = !!lastfm.serverEnabled;
 
-  // Library genres list — feeds the suggestion dropdown in the genre
-  // filter row. Cached for 5 min (see AUTODJ.getCachedGenresList);
-  // a stale cache returns null so we re-fetch transparently. Network
-  // / auth errors are non-blocking: the panel still renders, the
-  // dropdown just shows the appropriate inline hint.
+  // Library genres list — feeds the Genres editor's suggestions. Cached
+  // for 5 min (see AUTODJ.getCachedGenresList); a stale cache returns null
+  // so we re-fetch transparently. A failed load is non-blocking: the panel
+  // still renders, with Genres off.
   let genresListLoadState = 'ready';   // 'ready' | 'auth' | 'error'
   let cachedGenresList = AUTODJ.getCachedGenresList();
   if (!cachedGenresList) {
@@ -6371,9 +7480,6 @@ async function autoDjPanel() {
       AUTODJ.setCachedGenresList(res.value);
       cachedGenresList = AUTODJ.getCachedGenresList();
     } else {
-      // 401 from the server when unauthenticated → soft-disable the
-      // toggle and surface the auth hint. Any other error (5xx, 0 =
-      // network) gets the generic "couldn't load" message.
       genresListLoadState = res.code === 401 ? 'auth' : 'error';
       cachedGenresList = [];
     }
@@ -6385,434 +7491,25 @@ async function autoDjPanel() {
     AUTODJ.state.djVpaths.length > 0 ? AUTODJ.state.djVpaths : allVpaths,
   );
 
-  const sourcesBlock = allVpaths.length > 1 ? `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div>
-        <div class="autodj-opt-label">${t('autoDJ.sectionSources')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.sourcesHint')}</div>
-      </div>
-      <div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-label="${escapeHtml(t('autoDJ.sectionSources'))}">
-        ${allVpaths.map(v => `
-          <button type="button" class="dj-vpath-pill${includedSet.has(v) ? ' on' : ''}" data-vpath="${escapeHtml(v)}" aria-pressed="${includedSet.has(v) ? 'true' : 'false'}">${escapeHtml(v)}</button>
-        `).join('')}
-      </div>
-    </div>` : '';
+  document.getElementById('filelist').innerHTML = autoDjPanelHtml({
+    state: AUTODJ.state,
+    server: MSTREAMAPI.currentServer,
+    vpaths: allVpaths,
+    includedSet,
+    lastfmAvailable,
+    genres: { list: cachedGenresList, loadState: genresListLoadState },
+    djOn: MSTREAMPLAYER.playerStats.autoDJ === true,
+    limitMax: AUTODJ.LIMIT_MAX,
+    seeds: AUTODJ.seeds.view(),
+  });
 
-  // Min-rating select: 0..10 in 0.5-star increments. Labels match
-  // velvet's "★" visual vocabulary so the panel reads as a rating
-  // chooser at a glance — backend stays continuous so half-star
-  // ratings still work (e.g. ★ 3 catches 3, 3.5, 4, 4.5, 5).
-  // 0 is rendered as "Any" via `autoDJ.ratingAny`.
-  let ratingOptions = `<option value="0" ${AUTODJ.state.djMinRating === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
-  for (let i = 1; i <= 10; i++) {
-    const stars = +(i / 2).toFixed(1); // 0.5, 1, 1.5, …, 5
-    const label = `★ ${stars}`;
-    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${label}</option>`;
-  }
+  // ── Wire the drawn controls ─────────────────────────────────────
 
-  // Similar-artists toggle row. When no API key is configured the
-  // toggle is rendered disabled with an explanatory hint so the
-  // user understands WHY it's not available.
-  //
-  // a11y note: the `.toggle-sw` input is opacity:0 (the visible
-  // affordance is the .toggle-sw-track sibling), so it needs an
-  // explicit aria-labelledby pointing to the label div — screen
-  // readers won't otherwise associate the description text with the
-  // checkbox.
-  const similarRow = `
-    <div class="autodj-opt-row${lastfmAvailable ? '' : ' autodj-opt-disabled'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-similar-label">${t('autoDJ.similarLabel')}</div>
-        <div class="autodj-opt-hint">${lastfmAvailable ? t('autoDJ.similarHint') : '<em>' + t('autoDJ.similarHintNoKey') + '</em>'}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-similar" aria-labelledby="dj-similar-label" ${AUTODJ.state.similar && lastfmAvailable ? 'checked' : ''} ${lastfmAvailable ? '' : 'disabled'}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  const bpmContinuityRow = `
-    <div class="autodj-opt-row">
-      <div>
-        <div class="autodj-opt-label" id="dj-bpm-cont-label">${t('autoDJ.bpmContinuityLabel')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.bpmContinuityHint')}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-bpm-cont" aria-labelledby="dj-bpm-cont-label" ${AUTODJ.state.bpmContinuity ? 'checked' : ''}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  // BPM tolerance slider — hidden when BPM continuity is off so the
-  // panel doesn't waste vertical space on an inert control.
-  const bpmToleranceRow = `
-    <div class="autodj-opt-row" id="dj-bpm-tol-row" style="${AUTODJ.state.bpmContinuity ? '' : 'display:none'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-bpm-tol-label">${t('autoDJ.bpmToleranceLabel')}</div>
-        <div class="autodj-opt-hint" id="dj-bpm-tol-val">${t('autoDJ.bpmToleranceValue', { n: AUTODJ.state.bpmTolerance })}</div>
-      </div>
-      <input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${AUTODJ.state.bpmTolerance}" aria-labelledby="dj-bpm-tol-label" aria-valuemin="1" aria-valuemax="20" aria-valuenow="${AUTODJ.state.bpmTolerance}">
-    </div>`;
-
-  const harmonicRow = `
-    <div class="autodj-opt-row">
-      <div>
-        <div class="autodj-opt-label" id="dj-harmonic-label">${t('autoDJ.harmonicMixingLabel')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.harmonicMixingHint')}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-harmonic" aria-labelledby="dj-harmonic-label" ${AUTODJ.state.harmonicMixing ? 'checked' : ''}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  // Keyword filter — full-width row (autodj-opt-col stacks the
-  // toggle row above the tag chips + input field). The chip list
-  // is rendered initially here; subsequent add/remove operations
-  // call the inline `_renderFilterTags()` helper below to avoid
-  // a full panel re-render (which would lose input focus + steal
-  // the typed-but-not-yet-Enter'd word from the field).
-  const filterTagsHtml = AUTODJ.state.djFilterWords.map(w => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-    </span>
-  `).join('');
-  const keywordFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-filter-label">${t('autoDJ.keywordFilterLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.keywordFilterHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-filter-on" aria-labelledby="dj-filter-label" ${AUTODJ.state.djFilterEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${filterTagsHtml}</div>
-      <input
-        type="text"
-        class="dj-filter-input"
-        id="dj-filter-input"
-        placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}"
-        ${AUTODJ.state.djFilterEnabled ? '' : 'disabled'}
-        aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">
-    </div>`;
-
-  // Genre filter row. Mirrors keywordFilterRow's outer shape (head with
-  // label/hint/toggle + chip list + input). Differences:
-  //   • A two-button segmented control between the head and the chip
-  //     list selects whitelist vs blacklist mode (aria-pressed reflects
-  //     the active mode).
-  //   • The input has a sibling suggestion dropdown (.dj-genre-suggest)
-  //     populated from the cached library-genres list. Free-text adds
-  //     are allowed (Enter / comma commits whatever's typed, even if
-  //     it's not in the dropdown) so the user can target a scanner-
-  //     produced typo'd genre name.
-  //
-  // Empty-library / error states disable the toggle + mode buttons +
-  // input. The hint text below the label swaps to the appropriate
-  // explanation. genresListLoadState (auth / error / ready) and
-  // cachedGenresList.length are the two inputs driving the state.
-  const genreTagsHtml = AUTODJ.state.djGenres.map(g => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-    </span>
-  `).join('');
-  const genreFilterDisabled = (genresListLoadState !== 'ready') || (cachedGenresList.length === 0);
-  const genreInputDisabled = genreFilterDisabled || !AUTODJ.state.djGenreEnabled;
-  let genreHintKey = 'autoDJ.genreFilterHint';
-  if (genresListLoadState === 'auth')         { genreHintKey = 'autoDJ.genreHintAuth'; }
-  else if (genresListLoadState === 'error')   { genreHintKey = 'autoDJ.genreHintError'; }
-  else if (cachedGenresList.length === 0)     { genreHintKey = 'autoDJ.genreHintEmpty'; }
-  const genreMode = AUTODJ.state.djGenreMode;
-  const genreFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-genre-label">${t('autoDJ.genreFilterLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-genre-hint">${t(genreHintKey)}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-genre-on" aria-labelledby="dj-genre-label" ${AUTODJ.state.djGenreEnabled ? 'checked' : ''} ${genreFilterDisabled ? 'disabled' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">
-        <button type="button" class="dj-genre-mode-btn" data-mode="whitelist" aria-pressed="${genreMode === 'whitelist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeWhitelist')}</button>
-        <button type="button" class="dj-genre-mode-btn" data-mode="blacklist" aria-pressed="${genreMode === 'blacklist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeBlacklist')}</button>
-      </div>
-      <div class="dj-filter-tags" id="dj-genre-tags" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${genreTagsHtml}</div>
-      <div class="dj-genre-combo">
-        <input
-          type="text"
-          class="dj-filter-input"
-          id="dj-genre-input"
-          placeholder="${escapeHtml(t('autoDJ.genrePlaceholder'))}"
-          ${genreInputDisabled ? 'disabled' : ''}
-          autocomplete="off"
-          aria-autocomplete="list"
-          aria-controls="dj-genre-suggest"
-          aria-label="${escapeHtml(t('autoDJ.genreInputLabel'))}">
-        <div class="dj-genre-suggest" id="dj-genre-suggest" role="listbox" hidden></div>
-      </div>
-    </div>`;
-
-  // ── Track-length window ────────────────────────────────────────
-  //
-  // Toggle + two bounds + an unknown-length switch. AUTODJ stores
-  // SECONDS (wire units); the inputs are MINUTES because that's how
-  // people think about track length, and the handlers convert at the
-  // edge (Math.round(minutes * 60), so 0.5 → 30s).
-  //
-  // `step="any"` rather than a fixed grid: the conversion accepts any
-  // decimal, so a grid would mark perfectly valid entries like 1.25 or
-  // 0.1 as :invalid — asserting a constraint the code doesn't have,
-  // and one that would start rendering as an error the moment anything
-  // styles :invalid. The spinner arrows are hidden in CSS, so there is
-  // no stepping affordance a grid would serve anyway.
-  //
-  // An empty / 0 field means "no bound on this side", so a user can
-  // set only a floor or only a ceiling. Both empty is a no-op even
-  // with the toggle on — same "toggled on but nothing entered yet"
-  // grace the keyword and genre filters give.
-  //
-  // The unknown-length switch maps to the server's
-  // allowUnknownDuration. Default off = tracks the scanner never read
-  // a length from are excluded, which is the strict reading of the
-  // window; on = they ride along. Worth surfacing because a partially
-  // scanned library can otherwise lose far more of the pool than the
-  // user expects.
-  //
-  // It reuses the panel-wide `.toggle-sw` switch (text left, control
-  // right) rather than a native checkbox: every other on/off control
-  // in this panel is that switch, and .toggle-sw already carries the
-  // Materialize suppression a bare checkbox would need to re-solve.
-  // Like the other .toggle-sw rows the caption is a sibling div, not
-  // a wrapping <label>, so the input gets aria-labelledby.
-  const _secToMin = (s) => {
-    const n = Number(s);
-    if (!Number.isFinite(n) || n <= 0) { return ''; }
-    // Trim the float tail: 150s → 2.5, 120s → 2 (not 2.0).
-    return String(Math.round((n / 60) * 100) / 100);
-  };
-  // Mood — the browse lists' segments and chips (moodPanelHtml), kept as
-  // AUTODJ.state.djMoods. Only where the server can filter by mood (the
-  // ping's `moodFilters`): the route refuses the key otherwise.
-  const moodFilterRow = MSTREAMAPI.currentServer.moodFilters === true ? `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div class="autodj-opt-label" id="dj-mood-label">${t('autoDJ.moodFilterLabel')}</div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-mood-on" aria-labelledby="dj-mood-label" ${AUTODJ.state.djMoodEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...AUTODJ.state.djMoods, level: AUTODJ.state.djMoodLevel })}</div>
-    </div>` : '';
-
-  const durationOn = AUTODJ.state.djDurationEnabled;
-  const durationFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-duration-label">${t('autoDJ.durationFilterLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.durationFilterHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-duration-on" aria-labelledby="dj-duration-label" ${durationOn ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-duration-inputs">
-        <label class="dj-duration-field">
-          <span class="dj-duration-field-label">${t('autoDJ.durationMinLabel')}</span>
-          <input
-            type="number"
-            class="dj-filter-input dj-duration-num"
-            id="dj-duration-min"
-            min="0" max="1440" step="any"
-            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
-            value="${escapeHtml(_secToMin(AUTODJ.state.djMinDuration))}"
-            ${durationOn ? '' : 'disabled'}
-            aria-label="${escapeHtml(t('autoDJ.durationMinInputLabel'))}">
-        </label>
-        <label class="dj-duration-field">
-          <span class="dj-duration-field-label">${t('autoDJ.durationMaxLabel')}</span>
-          <input
-            type="number"
-            class="dj-filter-input dj-duration-num"
-            id="dj-duration-max"
-            min="0" max="1440" step="any"
-            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
-            value="${escapeHtml(_secToMin(AUTODJ.state.djMaxDuration))}"
-            ${durationOn ? '' : 'disabled'}
-            aria-label="${escapeHtml(t('autoDJ.durationMaxInputLabel'))}">
-        </label>
-      </div>
-      <div class="dj-duration-unknown">
-        <div>
-          <div class="dj-duration-unknown-label" id="dj-duration-unknown-label">${t('autoDJ.durationUnknownLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.durationUnknownHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-duration-unknown" aria-labelledby="dj-duration-unknown-label" ${AUTODJ.state.djAllowUnknownDuration ? 'checked' : ''} ${durationOn ? '' : 'disabled'}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-    </div>`;
-
-  // ── Sonic similarity (discovery embeddings) ─────────────────────
-  //
-  // Server capability comes from the ping response (same flag that
-  // gates the Discover panel). When absent the section renders
-  // disabled with an explanatory hint — same treatment as the
-  // similar-artists row without a Last.fm key.
-  //
-  // The slider stores the RAW cosine threshold (0.30–0.90); the hint
-  // translates it to a perceptual word + percentage so users don't
-  // need to know what cosine similarity is.
-  const discoveryAvailable = MSTREAMAPI.currentServer.discovery === true;
-  const sonicOn = AUTODJ.state.sonicEnabled && discoveryAvailable;
-  const sonicSeed = AUTODJ.getSonicSeed();
-  const anchorMode = AUTODJ.state.sonicAnchorMode;
-  function _sonicSimHint(cos) {
-    const pct = Math.round(cos * 100);
-    let word = t('autoDJ.sonicSimLockedIn');
-    if (cos < 0.45)      { word = t('autoDJ.sonicSimAdventurous'); }
-    else if (cos < 0.6)  { word = t('autoDJ.sonicSimBalanced'); }
-    else if (cos < 0.75) { word = t('autoDJ.sonicSimFocused'); }
-    return t('autoDJ.sonicSimValue', { word, pct });
-  }
-  const sonicSeedChip = sonicSeed ? `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(sonicSeed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
-    </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
-  const sonicBlock = `
-    <h4 class="autodj-section-heading">${t('autoDJ.sectionSonic')}</h4>
-    <div class="autodj-opt-row${discoveryAvailable ? '' : ' autodj-opt-disabled'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-sonic-label">${t('autoDJ.sonicLabel')}</div>
-        <div class="autodj-opt-hint">${discoveryAvailable ? t('autoDJ.sonicHint') : '<em>' + t('autoDJ.sonicHintNoDiscovery') + '</em>'}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-sonic-on" aria-labelledby="dj-sonic-label" ${sonicOn ? 'checked' : ''} ${discoveryAvailable ? '' : 'disabled'}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>
-    <div id="dj-sonic-opts" style="${sonicOn ? '' : 'display:none'}">
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label" id="dj-sonic-sim-label">${t('autoDJ.sonicSimilarityLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-sonic-sim-val">${_sonicSimHint(AUTODJ.state.sonicMinSimilarity)}</div>
-        </div>
-        <input type="range" id="dj-sonic-sim" class="autodj-slider" min="30" max="90" step="1" value="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}" aria-labelledby="dj-sonic-sim-label" aria-valuemin="30" aria-valuemax="90" aria-valuenow="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}">
-      </div>
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label">${t('autoDJ.sonicAnchorLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-sonic-anchor-hint">${t(anchorMode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint')}</div>
-        </div>
-        <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.sonicAnchorLabel'))}">
-          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="rolling" aria-pressed="${anchorMode === 'rolling'}">${t('autoDJ.sonicAnchorRolling')}</button>
-          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="locked" aria-pressed="${anchorMode === 'locked'}">${t('autoDJ.sonicAnchorLocked')}</button>
-        </div>
-      </div>
-      ${MSTREAMAPI.currentServer.federationBrowse === true ? `
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label" id="dj-federated-label">${t('autoDJ.federatedLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.federatedHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-federated-on" aria-labelledby="dj-federated-label" ${AUTODJ.state.federatedEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>` : ''}
-      <div class="autodj-opt-row autodj-opt-col">
-        <div>
-          <div class="autodj-opt-label">${t('autoDJ.sonicSeedLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.sonicSeedHint')}</div>
-        </div>
-        <div class="dj-filter-tags" id="dj-sonic-seed-tag" role="list" aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">${sonicSeedChip}</div>
-        <div class="dj-genre-combo">
-          <input
-            type="text"
-            class="dj-filter-input"
-            id="dj-sonic-seed-input"
-            placeholder="${escapeHtml(t('autoDJ.sonicSeedPlaceholder'))}"
-            autocomplete="off"
-            aria-autocomplete="list"
-            aria-controls="dj-sonic-seed-suggest"
-            aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">
-          <div class="dj-genre-suggest" id="dj-sonic-seed-suggest" role="listbox" hidden></div>
-        </div>
-      </div>
-    </div>`;
-
-  const html = `
-    <div class="pad-6 autodj-root">
-      <div class="autodj-hero">
-        <h2>${t('panel.autoDJ')}</h2>
-        <p class="autodj-hero-desc">${t('autoDJ.heroDescription')}</p>
-      </div>
-
-      <button type="button" class="autodj-toggle${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-main-btn">
-        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.btnStop') : t('autoDJ.btnStart')}
-      </button>
-      <div class="autodj-status${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-status-msg">
-        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.statusOn') : t('autoDJ.statusOff')}
-      </div>
-
-      <div class="autodj-opts">
-        ${sourcesBlock}
-
-        <div class="autodj-opt-row">
-          <div class="autodj-opt-label">${t('autoDJ.minRating')}</div>
-          <!-- .browser-default opts out of Materialize's select-replacement
-               wrapper so we can style the native control directly. -->
-          <select class="autodj-select browser-default" id="dj-min-rating">${ratingOptions}</select>
-        </div>
-
-        <div class="autodj-opt-row">
-          <div>
-            <div class="autodj-opt-label" id="dj-limit-label">${t('autoDJ.limitLabel')}</div>
-            <div class="autodj-opt-hint">${t('autoDJ.limitHint', { max: AUTODJ.LIMIT_MAX })}</div>
-          </div>
-          <input
-            type="number"
-            class="autodj-select browser-default dj-limit-num"
-            id="dj-limit"
-            min="1" max="${AUTODJ.LIMIT_MAX}" step="1" inputmode="numeric"
-            value="${AUTODJ.state.djLimit}"
-            aria-labelledby="dj-limit-label">
-        </div>
-
-        <h4 class="autodj-section-heading">${t('autoDJ.sectionContinuity')}</h4>
-        ${similarRow}
-        ${bpmContinuityRow}
-        ${bpmToleranceRow}
-        ${harmonicRow}
-
-        ${sonicBlock}
-
-        <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
-        ${keywordFilterRow}
-        ${genreFilterRow}
-        ${moodFilterRow}
-        ${durationFilterRow}
-      </div>
-    </div>`;
-
-  document.getElementById('filelist').innerHTML = html;
-
-  // ── Wire event handlers (post-innerHTML attach) ─────────────────
-
-  // Start/stop button — delegates to the existing player module.
+  // Start/Stop — the player toggles; the label follows in place (the
+  // player's 'dj' event below says so too, for the player bar's toggle).
   document.getElementById('autodj-main-btn').onclick = () => {
     MSTREAMPLAYER.toggleAutoDJ();
-    // Re-render so the button label + status text flip immediately.
-    autoDjPanel();
+    autoDjRenderToggle();
   };
 
   // Vpath pills — click to toggle inclusion.
@@ -6827,8 +7524,8 @@ async function autoDjPanel() {
       } else {
         current.add(vpath);
       }
-      // Disallow deselecting every vpath — matches the previous panel
-      // behaviour. Re-add the just-removed one with a toast.
+      // Disallow deselecting every vpath — re-add the just-removed one
+      // with a toast.
       if (current.size === 0) {
         current.add(vpath);
         iziToast.warning({
@@ -6843,466 +7540,33 @@ async function autoDjPanel() {
       const next = current.size === allVpaths.length ? [] : [...current];
       AUTODJ.setState({ djVpaths: next });
       _syncVpathsToLegacy();
-      // Visual update without full re-render — flip the class on
-      // the clicked pill AND its aria-pressed attribute (screen
-      // readers depend on the latter to announce the new state).
+      // Flip the class AND aria-pressed in place (screen readers depend
+      // on the latter to announce the new state).
       btn.classList.toggle('on');
       btn.setAttribute('aria-pressed', current.has(vpath) ? 'true' : 'false');
     }, { signal: _autoDjPanelSignal });
   }
 
-  // Min-rating select.
+  // Rating.
   document.getElementById('dj-min-rating').onchange = (e) => {
     const val = Math.max(0, Math.min(10, parseInt(e.target.value, 10)));
     AUTODJ.setState({ djMinRating: val });
   };
 
-  // Songs per fetch. `change` (blur / Enter), not `input`, so "12" isn't
-  // clamped the moment the user types "1". AUTODJ owns the integer +
-  // range rule and hands back what it stored, which is written into the
-  // field so it always shows what the next request will send.
+  // Batch. `change` (blur / Enter), not `input`, so "12" isn't clamped the
+  // moment the user types "1". AUTODJ owns the integer + range rule and
+  // hands back what it stored, which is written into the field so it
+  // always shows what the next request will send.
   const limitEl = document.getElementById('dj-limit');
   limitEl.onchange = () => { limitEl.value = AUTODJ.setLimit(limitEl.value); };
 
-  // Similar-artists toggle (no-op while disabled, but the event still
-  // fires on label-click in some browsers).
-  const simEl = document.getElementById('dj-similar');
-  if (simEl && !simEl.disabled) {
-    simEl.onchange = (e) => {
-      AUTODJ.setState({ similar: !!e.target.checked });
-    };
-  }
-
-  // BPM continuity toggle. Show/hide the tolerance row reactively.
-  // Toggling OFF clears the rolling BPM history — re-enabling should
-  // re-anchor on whatever's playing then, not on stale data from a
-  // previous session segment.
-  document.getElementById('dj-bpm-cont').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ bpmContinuity: on });
-    if (!on) { AUTODJ.clearBpmHistory(); }
-    document.getElementById('dj-bpm-tol-row').style.display = on ? '' : 'none';
-  };
-
-  // BPM tolerance slider — update the displayed value AND persist.
-  // Sync aria-valuenow so screen readers announce the current
-  // tolerance as the user drags.
-  const tolEl = document.getElementById('dj-bpm-tol');
-  tolEl.oninput = (e) => {
-    const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
-    AUTODJ.setState({ bpmTolerance: val });
-    document.getElementById('dj-bpm-tol-val').textContent =
-      t('autoDJ.bpmToleranceValue', { n: val });
-    e.target.setAttribute('aria-valuenow', String(val));
-  };
-
-  // Harmonic mixing toggle. Same anchor-reset semantics as BPM
-  // continuity: turning OFF clears the locked Camelot anchor so the
-  // next ON-cycle re-locks on the current song.
-  document.getElementById('dj-harmonic').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ harmonicMixing: on });
-    if (!on) { AUTODJ.clearCamelotAnchor(); }
-  };
-
-  // ── Sonic similarity ───────────────────────────────────────────
-  //
-  // Toggle shows/hides the sub-options and clears the per-session
-  // anchors on OFF (same semantics as BPM/harmonic: re-enabling
-  // should re-anchor on whatever's playing then). The explicit seed
-  // survives the toggle.
-  const sonicOnEl = document.getElementById('dj-sonic-on');
-  if (sonicOnEl && !sonicOnEl.disabled) {
-    sonicOnEl.onchange = (e) => {
-      const on = !!e.target.checked;
-      AUTODJ.setState({ sonicEnabled: on });
-      if (!on) { AUTODJ.clearSonicAnchors(); }
-      document.getElementById('dj-sonic-opts').style.display = on ? '' : 'none';
-    };
-  }
-
-  // Similarity slider — stores the raw cosine; hint shows the
-  // perceptual word + percentage.
-  const sonicSimEl = document.getElementById('dj-sonic-sim');
-  if (sonicSimEl) {
-    sonicSimEl.oninput = (e) => {
-      const val = Math.max(30, Math.min(90, parseInt(e.target.value, 10))) / 100;
-      AUTODJ.setState({ sonicMinSimilarity: val });
-      document.getElementById('dj-sonic-sim-val').textContent = _sonicSimHint(val);
-      e.target.setAttribute('aria-valuenow', String(Math.round(val * 100)));
-    };
-  }
-
-  // Anchor mode segmented control. Switching modes drops the pinned
-  // locked-anchor so 'locked' re-pins fresh on the next pick.
-  document.querySelectorAll('.dj-sonic-anchor-btn').forEach((btn) => {
-    btn.onclick = () => {
-      const mode = btn.dataset.anchor;
-      AUTODJ.setState({ sonicAnchorMode: mode, sonicLockedAnchor: null });
-      document.querySelectorAll('.dj-sonic-anchor-btn').forEach((b) => {
-        b.setAttribute('aria-pressed', b.dataset.anchor === mode ? 'true' : 'false');
-      });
-      document.getElementById('dj-sonic-anchor-hint').textContent =
-        t(mode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint');
-    };
-  });
-
-  // Federated session toggle — present only when the server advertises
-  // federationBrowse (rendered inside the sonic block, so it is already
-  // gated on sonic being on). A pure preference: the player decides per
-  // pick whether a cross-server pick can actually run.
-  const fedOnEl = document.getElementById('dj-federated-on');
-  if (fedOnEl) {
-    fedOnEl.onchange = (e) => { AUTODJ.setState({ federatedEnabled: !!e.target.checked }); };
-  }
-
-  // Seed picker — title search against /api/v1/db/search (titles
-  // only), debounced; picking a result stores the seed and, if
-  // Auto-DJ is already running against an empty queue (the "enabled
-  // sonic on an empty queue" flow), kicks the stalled session into
-  // its first pick.
-  const sonicSeedTagEl = document.getElementById('dj-sonic-seed-tag');
-  const sonicSeedInpEl = document.getElementById('dj-sonic-seed-input');
-  const sonicSeedSugEl = document.getElementById('dj-sonic-seed-suggest');
-  function _renderSonicSeedChip() {
-    const seed = AUTODJ.getSonicSeed();
-    sonicSeedTagEl.innerHTML = seed ? `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(seed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
-      </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
-  }
-  // Chip remove — delegated so the re-rendered chip stays wired.
-  if (sonicSeedTagEl) {
-    sonicSeedTagEl.addEventListener('click', (e) => {
-      if (e.target.closest('#dj-sonic-seed-rm')) {
-        AUTODJ.clearSonicSeed();
-        _renderSonicSeedChip();
-      }
-    }, { signal: _autoDjPanelSignal });
-  }
-  let _sonicSeedDebounce = null;
-  if (sonicSeedInpEl) {
-    sonicSeedInpEl.addEventListener('input', () => {
-      clearTimeout(_sonicSeedDebounce);
-      const q = sonicSeedInpEl.value.trim();
-      if (q.length < 2) { sonicSeedSugEl.hidden = true; return; }
-      _sonicSeedDebounce = setTimeout(async () => {
-        let hits = [];
-        try {
-          const res = await MSTREAMAPI.search({
-            search: q, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true,
-          });
-          hits = (res.title || []).slice(0, 8);
-        } catch (err) {
-          console.error('sonic seed search failed', err);
-        }
-        if (hits.length === 0) { sonicSeedSugEl.hidden = true; return; }
-        sonicSeedSugEl.innerHTML = hits.map(h => `
-          <div class="dj-genre-suggest-row" role="option"
-               data-filepath="${escapeHtml(h.filepath)}"
-               data-title="${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? escapeHtml(' — ' + h.metadata.artist) : ''}">
-            ${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? ` <small>${escapeHtml(h.metadata.artist)}</small>` : ''}
-          </div>`).join('');
-        sonicSeedSugEl.hidden = false;
-      }, 300);
-    }, { signal: _autoDjPanelSignal });
-    sonicSeedInpEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { sonicSeedSugEl.hidden = true; }
-    }, { signal: _autoDjPanelSignal });
-  }
-  if (sonicSeedSugEl) {
-    sonicSeedSugEl.addEventListener('click', (e) => {
-      const item = e.target.closest('.dj-genre-suggest-row');
-      if (!item) { return; }
-      AUTODJ.setSonicSeed(item.dataset.filepath, item.dataset.title);
-      _renderSonicSeedChip();
-      sonicSeedInpEl.value = '';
-      sonicSeedSugEl.hidden = true;
-      // The "enabled Auto-DJ on an empty queue" flow ends here: the
-      // seed just arrived, so nudge the stalled session into picking.
-      MSTREAMPLAYER.autoDjKick();
-    }, { signal: _autoDjPanelSignal });
-  }
-
-  // ── Keyword filter ─────────────────────────────────────────────
-  //
-  // Re-renders ONLY the tag chip list so the user's typed-but-
-  // unsubmitted input stays in the field. Full panel re-render
-  // would also lose focus, which is jarring when the user is
-  // adding multiple words in a row.
-  const filterTagsEl = document.getElementById('dj-filter-tags');
-  const filterInpEl  = document.getElementById('dj-filter-input');
-  function _renderFilterTags() {
-    const words = AUTODJ.getFilterWords();
-    filterTagsEl.innerHTML = words.map(w => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-      </span>
-    `).join('');
-  }
-
-  // Toggle controls just the filter on/off; the word list survives
-  // toggling so the user can keep their list and flip the feature
-  // on/off without rebuilding.
-  document.getElementById('dj-filter-on').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ djFilterEnabled: on });
-    filterInpEl.disabled = !on;
-  };
-
-  // Enter OR comma commits the typed word. Comma lets users paste a
-  // CSV-shaped list and have each piece chip-ify as they go.
-  filterInpEl.onkeydown = (e) => {
-    if (e.key !== 'Enter' && e.key !== ',') { return; }
-    e.preventDefault();
-    const raw = filterInpEl.value;
-    const added = AUTODJ.addFilterWord(raw);
-    if (added) {
-      filterInpEl.value = '';
-      _renderFilterTags();
-    }
-    // On dup / empty / cap-hit, leave the input alone so the user
-    // can edit and retry. No toast — the silent no-op matches
-    // velvet's behaviour and avoids spam on rapid-fire input.
-  };
-
-  // Event-delegation on the chip container so we don't have to re-
-  // bind individual × buttons after each re-render.
-  filterTagsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dj-filter-tag-rm');
-    if (!btn) { return; }
-    AUTODJ.removeFilterWord(btn.dataset.word);
-    _renderFilterTags();
-  }, { signal: _autoDjPanelSignal });
-
-  // ── Genre filter ───────────────────────────────────────────────
-  //
-  // Three pieces of state, three handlers + a fourth handler for the
-  // suggestion dropdown:
-  //
-  //   • Toggle (#dj-genre-on)   — onchange flips djGenreEnabled, also
-  //                               toggles input + suggestion enablement.
-  //   • Mode buttons (.dj-genre-mode-btn) — click flips
-  //                               aria-pressed on both buttons + writes
-  //                               djGenreMode via AUTODJ.setGenreMode.
-  //   • Input (#dj-genre-input) — input event filters the suggestion
-  //                               dropdown; keydown handles Enter /
-  //                               Comma / Esc / Arrow keys.
-  //   • Chips (#dj-genre-tags)  — same event-delegated × pattern as
-  //                               the keyword filter.
-  const genreTagsEl  = document.getElementById('dj-genre-tags');
-  const genreInpEl   = document.getElementById('dj-genre-input');
-  const genreOnEl    = document.getElementById('dj-genre-on');
-  const genreSuggEl  = document.getElementById('dj-genre-suggest');
-  const genreModeBtns = document.querySelectorAll('.dj-genre-mode-btn');
-
-  // Re-render the chip list only (same surgical-update rationale as
-  // _renderFilterTags). Also reused after the suggestion dropdown's
-  // "click to add" handler.
-  function _renderGenreTags() {
-    const gs = AUTODJ.getGenres();
-    genreTagsEl.innerHTML = gs.map(g => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-      </span>
-    `).join('');
-  }
-
-  // Render the suggestion dropdown. Filters the cached genres list
-  // case-insensitively by the input's current value; excludes genres
-  // already in the user's list; caps at 50 visible rows with a
-  // "+N more" footer so the dropdown never grows unwieldy on huge
-  // libraries.
-  const SUGGEST_VISIBLE_LIMIT = 50;
-  function _renderGenreSuggest() {
-    if (!genreSuggEl || !genreInpEl) { return; }
-    // Read live DOM state, not the closure variable. `genreInputDisabled`
-    // was captured at panel-render time as `!djGenreEnabled` — when the
-    // user later flipped the toggle ON, the toggle handler enabled the
-    // input element but the closure stayed stale at `true`, so this
-    // function early-returned and the dropdown never showed. Reading
-    // `genreInpEl.disabled` reflects the live state the toggle handler
-    // mutates, so a typed character after toggle-on now surfaces matches.
-    if (genreInpEl.disabled) {
-      genreSuggEl.setAttribute('hidden', '');
-      return;
-    }
-    const q = String(genreInpEl.value || '').trim().toLowerCase();
-    if (!q) {
-      genreSuggEl.setAttribute('hidden', '');
-      genreSuggEl.innerHTML = '';
-      return;
-    }
-    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
-    const matches = cachedGenresList
-      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
-    if (matches.length === 0) {
-      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${t('autoDJ.genreNoMatchesHint')}</div>`;
-      genreSuggEl.removeAttribute('hidden');
-      return;
-    }
-    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
-    const extra   = matches.length - visible.length;
-    genreSuggEl.innerHTML = visible.map((g, i) => `
-      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
-    `).join('') + (extra > 0
-      ? `<div class="dj-genre-suggest-more">${t('autoDJ.genreMoreSuggestions', { n: extra })}</div>`
-      : '');
-    genreSuggEl.removeAttribute('hidden');
-  }
-
-  // Outer toggle: flips djGenreEnabled. The toggle itself may be
-  // disabled (no library genres / auth error / load error) — in
-  // those states this handler doesn't fire.
-  if (genreOnEl) {
-    genreOnEl.onchange = (e) => {
-      const on = !!e.target.checked;
-      AUTODJ.setState({ djGenreEnabled: on });
-      // Input + suggestion enablement tracks the toggle.
-      if (genreInpEl) {
-        genreInpEl.disabled = !on;
-      }
-      if (!on && genreSuggEl) {
-        genreSuggEl.setAttribute('hidden', '');
-      }
-    };
-  }
-
-  // Mode buttons: click flips djGenreMode and updates aria-pressed
-  // on both buttons. Disabled state inherited from the disabled
-  // attribute on the buttons themselves (set in markup).
-  genreModeBtns.forEach((btn) => {
-    btn.onclick = () => {
-      if (btn.disabled) { return; }
-      const mode = btn.dataset.mode;
-      if (!AUTODJ.setGenreMode(mode)) { return; }
-      genreModeBtns.forEach((b) => {
-        b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
-      });
-    };
-  });
-
-  if (genreInpEl) {
-    // Filter the dropdown on each keystroke.
-    genreInpEl.oninput = () => { _renderGenreSuggest(); };
-
-    // Enter / comma commit; Esc closes the dropdown; Tab / blur lets
-    // the browser handle focus normally. Up/Down arrow navigation
-    // through the dropdown isn't wired here — keeping the keyboard
-    // surface minimal to match the keyword filter's UX. (Future
-    // enhancement: aria-activedescendant + ↑/↓ if usability feedback
-    // asks for it.)
-    genreInpEl.onkeydown = (e) => {
-      if (e.key === 'Escape') {
-        if (genreSuggEl) { genreSuggEl.setAttribute('hidden', ''); }
-        return;
-      }
-      if (e.key !== 'Enter' && e.key !== ',') { return; }
-      e.preventDefault();
-      const raw = genreInpEl.value;
-      const added = AUTODJ.addGenre(raw);
-      if (added) {
-        genreInpEl.value = '';
-        _renderGenreTags();
-        _renderGenreSuggest();
-      }
-      // Silent no-op on dup / empty / cap-hit — same UX as keyword.
-    };
-
-    // Click on a suggestion row → add it.
-    if (genreSuggEl) {
-      genreSuggEl.addEventListener('mousedown', (e) => {
-        // Use mousedown not click so the blur handler doesn't fire
-        // first (the suggestion dropdown disappears on blur otherwise
-        // and the click never lands).
-        const row = e.target.closest('.dj-genre-suggest-row');
-        if (!row) { return; }
-        e.preventDefault();
-        AUTODJ.addGenre(row.dataset.genre);
-        genreInpEl.value = '';
-        _renderGenreTags();
-        _renderGenreSuggest();
-        genreInpEl.focus();
-      }, { signal: _autoDjPanelSignal });
-      // Blur the input → hide the dropdown. 150ms grace lets the
-      // mousedown handler above fire before the dropdown vanishes.
-      genreInpEl.onblur = () => {
-        setTimeout(() => { genreSuggEl.setAttribute('hidden', ''); }, 150);
-      };
-    }
-  }
-
-  // Chip remove — event-delegated, same pattern as keyword.
-  genreTagsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dj-filter-tag-rm');
-    if (!btn) { return; }
-    AUTODJ.removeGenre(btn.dataset.genre);
-    _renderGenreTags();
-  }, { signal: _autoDjPanelSignal });
-
-  // ── Track-length window ────────────────────────────────────────
-  //
-  // Four controls. The inputs are MINUTES and AUTODJ stores SECONDS,
-  // so this layer converts and AUTODJ.setDurationBounds does the
-  // clamping + backwards-window repair (it owns those rules so they
-  // hold for any caller, not just this panel).
-  const durOnEl      = document.getElementById('dj-duration-on');
-  const durMinEl     = document.getElementById('dj-duration-min');
-  const durMaxEl     = document.getElementById('dj-duration-max');
-  const durUnknownEl = document.getElementById('dj-duration-unknown');
-
-  // Minutes (as typed) → seconds. A blank field gives Number('') === 0,
-  // which is exactly the "no bound on this side" sentinel; the guard
-  // makes that intentional rather than incidental and also absorbs a
-  // typed '-' or 'e'.
-  function _minutesToSeconds(raw) {
-    const mins = Number(raw);
-    if (!Number.isFinite(mins) || mins <= 0) { return 0; }
-    return Math.round(mins * 60);
-  }
-
-  // `edited` names the side the user just changed — setDurationBounds
-  // keeps that one and pushes the other, so the repair never fights
-  // the field being typed in. Persisted values are written back so the
-  // inputs always show what the next request will actually send.
-  function _commitDuration(edited) {
-    const { min, max } = AUTODJ.setDurationBounds(
-      _minutesToSeconds(durMinEl.value),
-      _minutesToSeconds(durMaxEl.value),
-      edited === 'max' ? 'max' : 'min',
-    );
-    durMinEl.value = _secToMin(min);
-    durMaxEl.value = _secToMin(max);
-  }
-
-  // Toggle gates the three inputs. The bounds survive toggling so the
-  // user can flip the feature off and back on without re-entering
-  // them — same contract the keyword and genre filters give.
-  durOnEl.onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ djDurationEnabled: on });
-    durMinEl.disabled = !on;
-    durMaxEl.disabled = !on;
-    durUnknownEl.disabled = !on;
-  };
-
-  // `change` (not `input`) so the commit fires on blur / Enter rather
-  // than mid-typing — otherwise "12" would clamp-and-rewrite the
-  // moment the user typed "1".
-  durMinEl.onchange = () => { _commitDuration('min'); };
-  durMaxEl.onchange = () => { _commitDuration('max'); };
-
-  durUnknownEl.onchange = (e) => {
-    AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
-  };
-
-  // ── Mood ───────────────────────────────────────────────────────
+  // ── Smart filters ──────────────────────────────────────────────
   //
   // The buttons carry no handlers (moodPanelHtml's Auto DJ form): one
-  // listener on the row reads the pressed button and stores the new
-  // filter, then the pressed states change in place so the focused
-  // button keeps focus. The toggle gates the buttons; the filter
-  // survives toggling, like the genre list.
+  // listener on the editor reads the pressed button and stores the new
+  // filter, then the pressed states change in place so the focused button
+  // keeps focus. The switch shows and hides the editor; the filter
+  // survives it.
   const moodOnEl = document.getElementById('dj-mood-on');
   const moodBox = document.getElementById('dj-moods');
   if (moodOnEl && moodBox) {
@@ -7318,12 +7582,11 @@ async function autoDjPanel() {
         b.setAttribute('aria-pressed', String(AUTODJ.state.djMoodLevel === b.getAttribute('data-mood-level')));
       });
       moodBox.querySelector('.mood-clear')?.classList.toggle('super-hide', AUTODJ.cleanMoods(f) === null);
-      moodBox.querySelectorAll('button').forEach((b) => { b.disabled = !AUTODJ.state.djMoodEnabled; });
     };
-    syncMoods();
     moodOnEl.onchange = (e) => {
-      AUTODJ.setState({ djMoodEnabled: !!e.target.checked });
-      syncMoods();
+      const on = !!e.target.checked;
+      AUTODJ.setState({ djMoodEnabled: on });
+      document.getElementById('dj-mood-editor').hidden = !on;
     };
     moodBox.onclick = (e) => {
       const btn = e.target.closest('button');
@@ -7348,7 +7611,7 @@ async function autoDjPanel() {
       } else if (btn.classList.contains('mood-clear')) {
         AUTODJ.setState({ djMoods: {}, djMoodLevel: 'standard' });
         syncMoods();
-        // Clear hides itself: the keyboard goes back to the toggle.
+        // Clear hides itself: the keyboard goes back to the switch.
         moodOnEl.focus();
         return;
       } else {
@@ -7359,11 +7622,294 @@ async function autoDjPanel() {
     };
   }
 
-  // Initial sync — the `ignoreVPaths` legacy global IS still read by
-  // every browse/search panel in m.js, so we keep it in lockstep with
-  // AUTODJ.state.djVpaths. (The minRating legacy global is dead — see
-  // the comment block above _syncMinRatingToLegacy's removed position.)
+  // ── Genres ─────────────────────────────────────────────────────
+  //
+  // The switch flips djGenreEnabled and shows or hides the editor (it is
+  // disabled, with no handler, while the library's genre list is empty or
+  // failed to load). In the editor: Whitelist | Blacklist, the chips (an
+  // event-delegated ×), and the input, which filters the suggestions from
+  // the cached genre list. Free-text adds are allowed (Enter / comma
+  // commits whatever's typed) so a scanner-produced odd genre name can
+  // still be targeted.
+  const genreEditor = document.getElementById('dj-genre-editor');
+  const genreTagsEl = document.getElementById('dj-genre-tags');
+  const genreInpEl = document.getElementById('dj-genre-input');
+  const genreOnEl = document.getElementById('dj-genre-on');
+  const genreSuggEl = document.getElementById('dj-genre-suggest');
+  const genreModeBtns = genreEditor.querySelectorAll('.dj-genre-mode-btn');
+  const _renderGenreTags = () => { genreTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getGenres(), 'genre'); };
+
+  // The suggestions: the cached list filtered case-insensitively by the
+  // input, minus the genres already chosen, at most 50 rows with a "+N
+  // more" footer.
+  const SUGGEST_VISIBLE_LIMIT = 50;
+  function _renderGenreSuggest() {
+    if (!AUTODJ.state.djGenreEnabled) {
+      genreSuggEl.setAttribute('hidden', '');
+      return;
+    }
+    const q = String(genreInpEl.value || '').trim().toLowerCase();
+    if (!q) {
+      genreSuggEl.setAttribute('hidden', '');
+      genreSuggEl.innerHTML = '';
+      return;
+    }
+    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
+    const matches = cachedGenresList
+      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
+    if (matches.length === 0) {
+      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${escapeHtml(t('autoDJ.genreNoMatchesHint'))}</div>`;
+      genreSuggEl.removeAttribute('hidden');
+      return;
+    }
+    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
+    const extra = matches.length - visible.length;
+    genreSuggEl.innerHTML = visible.map((g, i) => `
+      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
+    `).join('') + (extra > 0
+      ? `<div class="dj-genre-suggest-more">${escapeHtml(t('autoDJ.genreMoreSuggestions', { n: extra }))}</div>`
+      : '');
+    genreSuggEl.removeAttribute('hidden');
+  }
+
+  if (genreOnEl && !genreOnEl.disabled) {
+    genreOnEl.onchange = (e) => {
+      const on = !!e.target.checked;
+      AUTODJ.setState({ djGenreEnabled: on });
+      genreEditor.hidden = !on;
+      if (!on) { genreSuggEl.setAttribute('hidden', ''); }
+    };
+  }
+
+  // Whitelist | Blacklist: flips djGenreMode and aria-pressed on both.
+  genreModeBtns.forEach((btn) => {
+    btn.onclick = () => {
+      const mode = btn.dataset.mode;
+      if (!AUTODJ.setGenreMode(mode)) { return; }
+      genreModeBtns.forEach((b) => {
+        b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
+      });
+    };
+  });
+
+  genreInpEl.oninput = () => { _renderGenreSuggest(); };
+  // Enter / comma commit; Esc closes the suggestions; Tab and blur are
+  // the browser's.
+  genreInpEl.onkeydown = (e) => {
+    if (e.key === 'Escape') {
+      genreSuggEl.setAttribute('hidden', '');
+      return;
+    }
+    if (e.key !== 'Enter' && e.key !== ',') { return; }
+    e.preventDefault();
+    if (AUTODJ.addGenre(genreInpEl.value)) {
+      genreInpEl.value = '';
+      _renderGenreTags();
+      _renderGenreSuggest();
+    }
+    // Silent no-op on dup / empty / cap-hit — same UX as Skip words.
+  };
+  // A suggestion: mousedown, not click, so the blur below doesn't hide the
+  // list before the click lands.
+  genreSuggEl.addEventListener('mousedown', (e) => {
+    const row = e.target.closest('.dj-genre-suggest-row');
+    if (!row) { return; }
+    e.preventDefault();
+    AUTODJ.addGenre(row.dataset.genre);
+    genreInpEl.value = '';
+    _renderGenreTags();
+    _renderGenreSuggest();
+    genreInpEl.focus();
+  }, { signal: _autoDjPanelSignal });
+  // Blur hides the list; the 150ms grace lets the mousedown above land.
+  genreInpEl.onblur = () => {
+    setTimeout(() => { genreSuggEl.setAttribute('hidden', ''); }, 150);
+  };
+  genreTagsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dj-filter-tag-rm');
+    if (!btn) { return; }
+    AUTODJ.removeGenre(btn.dataset.genre);
+    _renderGenreTags();
+  }, { signal: _autoDjPanelSignal });
+
+  // ── Length ─────────────────────────────────────────────────────
+  //
+  // The fields are MINUTES and AUTODJ stores SECONDS, so this layer
+  // converts and AUTODJ.setDurationBounds does the clamping and the
+  // backwards-window repair. The switch shows and hides the editor; the
+  // bounds survive it.
+  const durMinEl = document.getElementById('dj-duration-min');
+  const durMaxEl = document.getElementById('dj-duration-max');
+
+  // Minutes (as typed) → seconds. A blank field gives Number('') === 0,
+  // the "no bound on this side" sentinel; the guard also absorbs a typed
+  // '-' or 'e'.
+  function _minutesToSeconds(raw) {
+    const mins = Number(raw);
+    if (!Number.isFinite(mins) || mins <= 0) { return 0; }
+    return Math.round(mins * 60);
+  }
+
+  // `edited` names the side the user just changed — setDurationBounds
+  // keeps that one and pushes the other. The stored values are written
+  // back so the fields always show what the next request will send.
+  function _commitDuration(edited) {
+    const { min, max } = AUTODJ.setDurationBounds(
+      _minutesToSeconds(durMinEl.value),
+      _minutesToSeconds(durMaxEl.value),
+      edited === 'max' ? 'max' : 'min',
+    );
+    durMinEl.value = autoDjSecToMin(min);
+    durMaxEl.value = autoDjSecToMin(max);
+  }
+
+  document.getElementById('dj-duration-on').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djDurationEnabled: on });
+    document.getElementById('dj-duration-editor').hidden = !on;
+  };
+  // `change` (not `input`) so the commit fires on blur / Enter rather
+  // than mid-typing.
+  durMinEl.onchange = () => { _commitDuration('min'); };
+  durMaxEl.onchange = () => { _commitDuration('max'); };
+  document.getElementById('dj-duration-unknown').onchange = (e) => {
+    AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
+  };
+
+  // ── Skip words ─────────────────────────────────────────────────
+  //
+  // Re-renders ONLY the chips so a typed-but-unsubmitted word stays in the
+  // field. The switch shows and hides the editor; the words survive it.
+  const filterTagsEl = document.getElementById('dj-filter-tags');
+  const filterInpEl = document.getElementById('dj-filter-input');
+  const _renderFilterTags = () => { filterTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getFilterWords(), 'word'); };
+  document.getElementById('dj-filter-on').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djFilterEnabled: on });
+    document.getElementById('dj-filter-editor').hidden = !on;
+  };
+  // Enter OR comma commits the typed word (a pasted CSV-shaped list chip-
+  // ifies as it goes). On dup / empty / cap-hit the field is left alone.
+  filterInpEl.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ',') { return; }
+    e.preventDefault();
+    if (AUTODJ.addFilterWord(filterInpEl.value)) {
+      filterInpEl.value = '';
+      _renderFilterTags();
+    }
+  };
+  filterTagsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dj-filter-tag-rm');
+    if (!btn) { return; }
+    AUTODJ.removeFilterWord(btn.dataset.word);
+    _renderFilterTags();
+  }, { signal: _autoDjPanelSignal });
+
+  // ── Match ──────────────────────────────────────────────────────
+
+  // Sonic similarity: its amount line and its sub-items follow the switch
+  // in place. Off stops sending seeds but keeps both seed lists (and every
+  // sub-item's value) as they are.
+  const sonicOnEl = document.getElementById('dj-sonic-on');
+  if (!sonicOnEl.disabled) {
+    sonicOnEl.onchange = (e) => {
+      AUTODJ.setState({ sonicEnabled: !!e.target.checked });
+      autoDjApplySonicDim();
+    };
+  }
+  // The amount: the raw cosine floor, shown and announced as a percentage.
+  document.getElementById('dj-sonic-sim').oninput = (e) => {
+    const pct = Math.max(30, Math.min(90, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ sonicMinSimilarity: pct / 100 });
+    const text = t('autoDJ.sonicAmountValue', { pct });
+    document.getElementById('dj-sonic-sim-val').textContent = text;
+    e.target.setAttribute('aria-valuetext', text);
+  };
+
+  // Learn from skips (a disabled switch fires nothing while it can't work).
+  document.getElementById('dj-skips-on').onchange = (e) => {
+    AUTODJ.setState({ learnFromSkips: !!e.target.checked });
+  };
+
+  // Seeds: the drawer. Disabled (no press) while Sonic similarity is off.
+  const seedsBtn = document.getElementById('dj-seeds-btn');
+  seedsBtn.onclick = () => {
+    if (seedsBtn.disabled) { return; }
+    if (typeof autoDjSeedsOpen === 'function') { autoDjSeedsOpen({}); }
+  };
+
+  // Play from federated servers — only where the ping has
+  // federationBrowse. A pure preference: the player decides per pick
+  // whether a cross-server pick can run.
+  const fedOnEl = document.getElementById('dj-federated-on');
+  if (fedOnEl) {
+    fedOnEl.onchange = (e) => { AUTODJ.setState({ federatedEnabled: !!e.target.checked }); };
+  }
+
+  // Beat matching: its tolerance line follows the switch. Off clears the
+  // rolling BPM history, so turning it back on anchors on the song
+  // playing then, not on stale data.
+  document.getElementById('dj-bpm-cont').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ bpmContinuity: on });
+    if (!on) { AUTODJ.clearBpmHistory(); }
+    document.getElementById('dj-bpm-tol-row').hidden = !on;
+  };
+  document.getElementById('dj-bpm-tol').oninput = (e) => {
+    const n = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ bpmTolerance: n });
+    const text = t('autoDJ.bpmToleranceValue', { n });
+    document.getElementById('dj-bpm-tol-val').textContent = text;
+    e.target.setAttribute('aria-valuetext', text);
+  };
+
+  // Harmonic mixing. Off clears the locked Camelot anchor so the next
+  // on re-locks on the current song.
+  document.getElementById('dj-harmonic').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ harmonicMixing: on });
+    if (!on) { AUTODJ.clearCamelotAnchor(); }
+  };
+
+  // Similar artists (disabled, with no handler, without a Last.fm key).
+  const simEl = document.getElementById('dj-similar');
+  if (!simEl.disabled) {
+    simEl.onchange = (e) => { AUTODJ.setState({ similar: !!e.target.checked }); };
+  }
+
+  // ── Live: the Seeds covers and the Start/Stop label ─────────────
+  //
+  // The covers follow the seeds (a DJ pick joins, a row rotates out, a
+  // learned skip, an edit in the drawer, a lookup filling a cover) and the
+  // song; the label follows the DJ, the player bar's toggle included.
+  // Neither redraws the panel. Both listeners live as long as this draw:
+  // the next one aborts them, and each lets go by itself once another
+  // view took the column.
+  const offSeeds = AUTODJ.seeds.subscribe((view) => {
+    if (!autoDjRenderTiles(view)) { offSeeds(); }
+  });
+  _autoDjPanelSignal.addEventListener('abort', offSeeds);
+  if (typeof MSTREAMPLAYER.onAutoDj === 'function') {
+    const offPlayer = MSTREAMPLAYER.onAutoDj((reason) => {
+      if (!document.getElementById('autodj-main-btn')) { offPlayer(); return; }
+      if (reason === 'dj') { autoDjRenderToggle(); }
+      if (reason === 'song') { autoDjRenderTiles(); }
+    });
+    _autoDjPanelSignal.addEventListener('abort', offPlayer);
+  }
+  // Seed rows still waiting for their title and cover (the migrated seed
+  // song, a file-browser row) are looked up, once per page.
+  if (typeof MSTREAMPLAYER.fillBareSeeds === 'function') { MSTREAMPLAYER.fillBareSeeds(); }
+
+  // Keep the `ignoreVPaths` legacy global (still read by every browse /
+  // search panel) in lockstep with AUTODJ.state.djVpaths.
   _syncVpathsToLegacy();
+
+  // Back from the library pick: the drawer opens again on its lists.
+  if (o.seeds && typeof autoDjSeedsOpen === 'function'
+    && MSTREAMAPI.currentServer.discovery === true && AUTODJ.state.sonicEnabled === true) {
+    autoDjSeedsOpen({ list: o.seeds, focus: 'add' });
+  }
 }
 
 ////////////// Jukebox

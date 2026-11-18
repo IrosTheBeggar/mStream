@@ -60,6 +60,9 @@ const MSTREAMPLAYER = (() => {
   // reports to, and every server with this page has the Stats API. Server-
   // side playback (mstream.server-audio.js) keeps its own legacy scrobble.
   let playSession = null;
+  // The queue song object the open session is for (title, art, the
+  // `federation` marker): the Auto DJ's Skipped ring is fed from it.
+  let playSessionSong = null;
   let statsOutbox = null;
   let statsRetryTimer = null;
   let lastCheckpointAt = 0;
@@ -103,6 +106,7 @@ const MSTREAMPLAYER = (() => {
       console.warn('[stats] could not open a play session', err);
       return;
     }
+    playSessionSong = song;
     lastCheckpointAt = Date.now();
     statsOutboxFor().checkpoint(playSession);
     const notice = { filePath: playSession.filePath, sessionId: playSession.sessionId };
@@ -114,13 +118,27 @@ const MSTREAMPLAYER = (() => {
   function endPlaySession(outcome, flushOpts) {
     if (!playSession) { return; }
     const session = playSession;
+    const song = playSessionSong;
     playSession = null;
+    playSessionSong = null;
     const box = statsOutboxFor();
     box.clearCheckpoint();
     const play = MSTREAMPLAYSESSION.finish(session, outcome);
     if (!play) { return; }
+    _noteRingSkip(play, song);
     box.enqueue(play);
     box.flush(flushOpts || {}).catch(() => {});
+  }
+  // A play that ended as an early skip (heard a second or more, not long
+  // enough to count) joins the Auto DJ's Skipped ring, whatever queued it:
+  // Less like's Add song offers it. Then an open Add song step hears of it
+  // ('skip'): the session ends at the end of goToSong, after the 'song'
+  // event, and the ring is no part of the seeds view.
+  function _noteRingSkip(play, song) {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds || !play || !song) { return; }
+    if (play.outcome !== 'skipped' || !(play.playedMs >= 1000)) { return; }
+    if (AUTODJ.countsAsPlay(play.playedMs, play.durationMs)) { return; }
+    if (AUTODJ.seeds.noteSkip(AUTODJ.seeds.factsFromSong(song))) { _emitAutoDj('skip'); }
   }
   function tickPlaySession() {
     if (!playSession) { return; }
@@ -200,6 +218,108 @@ const MSTREAMPLAYER = (() => {
     const artists = Array.isArray(data?.artists) ? data.artists : [];
     _autoDjSimilarCache = { sourceArtist, artists };
     return artists;
+  }
+
+  // ── Auto DJ seeds: the player's half (AUTODJ.seeds, design E) ───────
+  //
+  // The queue's generation: bumped at every lane edge (Start, Stop, a
+  // clear) and by a learned quick skip. A pick built under an older one is
+  // discarded where it would queue, before any side effect, and asked
+  // again (autoDJ() runs it once more, at most twice per call).
+  let _djQueueGen = 0;
+  // A learned quick skip's re-roll, owed until a pick lands: { stale }, the
+  // DJ rows (by object identity) that were queued without its negative.
+  let _rerollOwed = null;
+  // Who hears of the Auto DJ: the panel and the Seeds drawer.
+  const _autoDjListeners = new Set();
+  // The seed rows whose metadata this page already looked up, by key.
+  const _bareAsked = new Set();
+
+  // Tell the listeners why the Auto DJ's picture changed: 'dj' (on/off),
+  // 'song' (another song is current), 'queue' (rows added, removed or
+  // cleared), 'skip' (the Skipped ring took a song). A throwing listener is
+  // caught.
+  function _emitAutoDj(reason) {
+    for (const fn of Array.from(_autoDjListeners)) {
+      try {
+        fn(reason);
+      } catch (err) {
+        console.warn('[autodj] a listener failed', err);
+      }
+    }
+  }
+  mstreamModule.onAutoDj = (fn) => {
+    if (typeof fn !== 'function') { return () => {}; }
+    _autoDjListeners.add(fn);
+    return () => { _autoDjListeners.delete(fn); };
+  };
+
+  // The current queue row: the row at the position, and only while it is
+  // the song playing. After a clear the old song plays on but is no row of
+  // the queue, so it is nobody's to blend, admit or skip.
+  function _currentRow() {
+    const pos = mstreamModule.positionCache ? mstreamModule.positionCache.val : -1;
+    if (!Array.isArray(mstreamModule.playlist)) { return { row: null, pos }; }
+    const row = mstreamModule.playlist[pos];
+    const playing = mstreamModule.getCurrentSong && mstreamModule.getCurrentSong();
+    return { row: row && row === playing ? row : null, pos };
+  }
+
+  // Sonic similarity in play for this server: switched on, discovery on,
+  // and the scan not reported unfinished (unknown readiness reads ready).
+  function _sonicOn() {
+    return AUTODJ.state.sonicEnabled === true
+      && MSTREAMAPI.currentServer.discovery === true
+      && MSTREAMAPI.currentServer.discoveryReady !== false;
+  }
+
+  // Whether this server's random-songs takes `lessLike` now: sonic in play
+  // and a picker generation of at least 1 (the ping's `autoDj`).
+  function _wireTakesNegatives() {
+    return _sonicOn() && Number(MSTREAMAPI.currentServer.autoDj) >= 1;
+  }
+
+  // The cross-server pick's gate (mStream #929).
+  function _fanOutRoute() {
+    return AUTODJ.state.sonicEnabled === true && AUTODJ.state.federatedEnabled === true
+      && MSTREAMAPI.currentServer.discovery === true
+      && MSTREAMAPI.currentServer.federationBrowse === true;
+  }
+
+  // Look up, once per page, the facts of the seed rows that still lack them
+  // (a file-browser row whose lookup had not landed, the migrated seed).
+  // This server's rows only; a failed lookup is left be.
+  function _fillBareSeeds() {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return; }
+    if (typeof MSTREAMAPI === 'undefined' || typeof MSTREAMAPI.lookupMetadata !== 'function') { return; }
+    for (const r of AUTODJ.seeds.bareRows()) {
+      if (r.owner !== null || _bareAsked.has(r.key)) { continue; }
+      _bareAsked.add(r.key);
+      Promise.resolve()
+        .then(() => MSTREAMAPI.lookupMetadata(r.path))
+        .then((res) => {
+          const facts = res && res.metadata ? AUTODJ.seeds.factsFromMeta(r.path, res.metadata) : null;
+          if (facts) { AUTODJ.seeds.fillFacts(r.key, facts); }
+        })
+        .catch(() => {});
+    }
+  }
+  mstreamModule.fillBareSeeds = () => { _fillBareSeeds(); };
+
+  // A pick starts: the seeds' lane bookkeeping before anything reads them
+  // (the held-aside rows join at the lane's first pick, Drift blends the
+  // current row in, Stay close admits its one song).
+  function _seedsBeginPick() {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return; }
+    const row = _currentRow().row;
+    const meta = (row && row.metadata) || {};
+    AUTODJ.seeds.beginPick({
+      current: AUTODJ.seeds.factsFromSong(row),
+      currentIsLanePick: meta._djPicked === true && meta._djLane === AUTODJ.seeds.laneId(),
+      route: _fanOutRoute() ? 'fanout' : 'local',
+      sonicOn: _sonicOn(),
+    });
+    _fillBareSeeds();
   }
 
   // Build the /api/v1/db/random-songs body from AUTODJ state + the
@@ -363,32 +483,28 @@ const MSTREAMPLAYER = (() => {
     }
 
     // Sonic similarity — constrain picks to the discovery-embedding
-    // neighborhood of the session anchor (PR #697 server API). Gated on
-    // the ping capability flag so feature-off servers never receive the
-    // params (they would 403). Which paths land in `similarTo` is the
-    // anchor policy (rolling history vs locked seed) — AUTODJ owns it.
-    if (autodjLoaded
-        && AUTODJ.state.sonicEnabled
-        && MSTREAMAPI.currentServer.discovery === true) {
-      const curSong = mstreamModule.getCurrentSong && mstreamModule.getCurrentSong();
-      const sonic = AUTODJ.buildSonicParams(curSong || null);
-      if (sonic) {
-        body.similarTo = sonic.similarTo;
-        body.minSimilarity = sonic.minSimilarity;
-      } else if (opts && opts.sonicOptional) {
-        // The federated pick: its anchors may all live on peers, and the
-        // vector it sends replaces `similarTo` anyway.
-      } else {
-        // No resolvable anchor: empty queue and no explicit seed. The
-        // pick can't honor the "within the similarity range" promise —
-        // fail loud with a pointer at the seed picker rather than
-        // silently picking out-of-range.
-        const err = new Error('sonic seed required');
-        err.djToast = {
-          title: t('autoDJ.sonicSeedNeededTitle'),
-          message: t('autoDJ.sonicSeedNeeded'),
-        };
-        throw err;
+    // neighborhood of the session's seeds (PR #697 server API; the seeds
+    // are AUTODJ.seeds, design E). Gated on the ping capability flag so
+    // feature-off servers never receive the params (they would 403), and
+    // on the scan: a server that reported `discoveryReady: false` would
+    // refuse every seed with a 400, so its picks go plain until a reload.
+    //   • similarTo + minSimilarity: this server's More like rows, at most
+    //     eight (pins first past eight), else in Drift the current queue
+    //     row. With none the pick goes without them (every other filter
+    //     still applies); `opts.sonicOptional` no longer changes that.
+    //   • lessLike: this server's Less like rows, the newest eight, beside
+    //     (never inside) the sonic fields, only to a server whose picker
+    //     takes them (`autoDj` >= 1). An empty list is an absent key.
+    if (autodjLoaded && AUTODJ.seeds && _sonicOn()) {
+      const current = AUTODJ.seeds.factsFromSong(_currentRow().row);
+      const positives = AUTODJ.seeds.positives({ route: 'local', current });
+      if (positives.length > 0) {
+        body.similarTo = positives.map((p) => p.path);
+        body.minSimilarity = AUTODJ.state.sonicMinSimilarity;
+      }
+      if (_wireTakesNegatives()) {
+        const negatives = AUTODJ.seeds.negatives();
+        if (negatives.length > 0) { body.lessLike = negatives; }
       }
     }
 
@@ -399,7 +515,13 @@ const MSTREAMPLAYER = (() => {
   // resetCurrentMetadata every time the playing song changes (or its
   // metadata is refreshed). Runs only when Auto-DJ is on.
   //
-  // Three branches:
+  // First the seeds (AUTODJ.seeds.onPlay), for EVERY song: a DJ pick of
+  // this lane joins More like as it starts playing, before goToSong's
+  // top-up builds the next body, once per playing row (a metadata refresh
+  // of the same row is no new play, and a pick played again after another
+  // song moves to the newest place). Whether sonic is on or off.
+  //
+  // Then continuity, in three branches:
   //   • DJ-picked && not-yet-counted → push BPM into rolling
   //     history, lock the Camelot anchor if absent, mark this
   //     filepath as counted so back-navigation to the same song
@@ -411,7 +533,8 @@ const MSTREAMPLAYER = (() => {
   //   • Not DJ-picked → song the user added manually (clicked a
   //     queue entry, started a fresh queue). Reset BPM history +
   //     Camelot anchor so the next DJ pick gates off this new lane,
-  //     not the old session's.
+  //     not the old session's. The seeds stay (resetAnchors is
+  //     continuity only).
   //
   // The first DJ-on song of any session always lands on the manual
   // branch (no _djPicked flag yet) which is fine — resetAnchors on
@@ -427,6 +550,12 @@ const MSTREAMPLAYER = (() => {
     const meta = curSong.metadata || {};
     const filepath = curSong.rawFilePath;
     const djPicked = meta._djPicked === true;
+    if (AUTODJ.seeds) {
+      AUTODJ.seeds.onPlay(AUTODJ.seeds.factsFromSong(curSong), {
+        lanePick: djPicked && meta._djLane === AUTODJ.seeds.laneId(),
+      });
+      _fillBareSeeds();
+    }
     if (djPicked) {
       if (AUTODJ.isFilepathCounted(filepath)) { return; }
       if (Number.isFinite(meta.bpm)) {
@@ -435,13 +564,6 @@ const MSTREAMPLAYER = (() => {
       // Lock anchor on the first DJ pick that has a key tag.
       if (!AUTODJ.getCamelotAnchor() && meta['musical-key']) {
         AUTODJ.setCamelotAnchor(meta['musical-key']);
-      }
-      // Rolling sonic anchor — each DJ pick joins the last-N window the
-      // next request's `similarTo` centroid averages over. A peer pick
-      // records its owner, so a federated session can read that anchor's
-      // vector back from the server that actually holds it.
-      if (AUTODJ.state.sonicEnabled) {
-        AUTODJ.pushSonicHistory(filepath, curSong.federation ? curSong.federation.peerId : null);
       }
       AUTODJ.markFilepathCounted(filepath);
     } else {
@@ -485,10 +607,13 @@ const MSTREAMPLAYER = (() => {
   //
   // With "play from federated servers" on, a pick is chosen across this
   // server and every paired peer that shares its discovery model. The
-  // anchor's vectors are read from the servers that OWN them (a path only
-  // names a row where it lives — AUTODJ.resolveSonicOwners), averaged
-  // client-side, and sent to each server as `similarToVector`; the best
-  // reported cosine wins. Peer picks are queued through the federation
+  // seeds' vectors (the More like rows of any server, each row knowing its
+  // owner) are read from the servers that OWN them (a path only names a
+  // row where it lives), averaged client-side, and sent to each server as
+  // `similarToVector`; the best reported cosine wins. Less like rides only
+  // the local ask (`lessLike` paths of this server's songs): no peer is
+  // sent negatives, and a local song its answer flags as like a skip ranks
+  // after every clean song. Peer picks are queued through the federation
   // wizard, so they stream through the proxy and carry the `federation`
   // marker every degrade guard keys on.
   //
@@ -544,13 +669,15 @@ const MSTREAMPLAYER = (() => {
     });
   }
 
-  async function _autoDjFederatedPick(signal) {
-    // The anchors and their owners in one synchronous read, before
-    // anything is awaited (see AUTODJ.sonicAnchors): a song change during
-    // the pick prunes the owners map, and a path read after that could
-    // land on the wrong server.
+  async function _autoDjFederatedPick(signal, ctx) {
+    // The queue generation and the lane this pick is built under (the moods
+    // test calls this bare).
+    const pickCtx = ctx || { gen: _djQueueGen, lane: AUTODJ.seeds.laneId() };
+    // The seeds with their owners in one synchronous read, before anything
+    // is awaited: More like's rows of any server (none set aside), else in
+    // Drift the current queue row, on whichever server it lives.
     const curSong = mstreamModule.getCurrentSong && mstreamModule.getCurrentSong();
-    const anchors = AUTODJ.sonicAnchors(curSong);
+    const anchors = AUTODJ.seeds.positives({ route: 'fanout', current: AUTODJ.seeds.factsFromSong(_currentRow().row) });
     if (anchors.length === 0) { return false; }
 
     const peers = (await _federatedPeers()).filter(p => p.modelId && !AUTODJ.isPeerExcluded(p.id));
@@ -601,9 +728,10 @@ const MSTREAMPLAYER = (() => {
 
     // The same body everywhere, minus what only means something on this
     // server: the filepath seed (the vector replaces it), ignoreVPaths (OUR
-    // library names) and minRating (OUR user's stars); each peer gets its
-    // own ignoreList. Every server is asked at once — a session that waited
-    // for each in turn would stall the queue on the slowest one.
+    // library names), minRating (OUR user's stars) and lessLike (paths of
+    // OUR songs, which the local ask alone carries back); each peer gets
+    // its own ignoreList. Every server is asked at once — a session that
+    // waited for each in turn would stall the queue on the slowest one.
     //
     // A server answers with random rows from its pool, so when every
     // answer is a repeat or blocked the ask is repeated a couple of times
@@ -617,17 +745,20 @@ const MSTREAMPLAYER = (() => {
     // for the whole batch (`limit` rides along in `shared`) and the best
     // `want` cosines overall are queued, so one server with the closest
     // matches can supply the entire batch.
-    const { similarTo, ignoreVPaths, minRating, ignoreList, ...shared } = body;
+    const { similarTo, ignoreVPaths, minRating, ignoreList, lessLike, ...shared } = body;
+    const localOnly = lessLike ? { lessLike } : {};
     const eligible = peers.filter(p => p.modelId === modelId);
     const retryLists = new Map([['local', ignoreList]]);
     for (const p of eligible) { retryLists.set(String(p.id), AUTODJ.getPeerIgnoreList(p.id)); }
-    const recentKeys = AUTODJ.federatedRecentKeys(anchors, curSong);
+    // The repeat guard also passes over the blended song the user
+    // quick-skipped this lane (no ignoreList holds it).
+    const recentKeys = AUTODJ.federatedRecentKeys(anchors, curSong, [AUTODJ.seeds.skippedBlendKey()]);
     const want = Number.isInteger(shared.limit) && shared.limit > 1 ? shared.limit : 1;
     const MAX_ASKS = 3;
     let chosen = [];
     for (let attempt = 0; attempt < MAX_ASKS && chosen.length === 0; attempt++) {
       const asks = [
-        MSTREAMAPI.getRandomSong({ ...shared, ignoreVPaths, minRating, ignoreList: retryLists.get('local'), ...vectorSeed }, { signal })
+        MSTREAMAPI.getRandomSong({ ...shared, ignoreVPaths, minRating, ignoreList: retryLists.get('local'), ...localOnly, ...vectorSeed }, { signal })
           .then(res => ({ peer: null, res }), err => ({ peer: null, err })),
         ...eligible.filter(p => !AUTODJ.isPeerExcluded(p.id)).map(p =>
           _askPeerRandomSongs(p, { ...shared, ignoreList: retryLists.get(String(p.id)), ...vectorSeed })
@@ -655,7 +786,10 @@ const MSTREAMPLAYER = (() => {
         if (Array.isArray(a.res.ignoreList)) { retryLists.set(a.peer ? String(a.peer.id) : 'local', a.res.ignoreList); }
         // One cosine per song (`sonic.similarities`, aligned with `songs`);
         // a peer from before batches reports only the first song's value.
+        // The local answer flags each song like a Less like row
+        // (`lessLike.avoided`, aligned with `songs` too): it ranks last.
         const sims = a.res.sonic && Array.isArray(a.res.sonic.similarities) ? a.res.sonic.similarities : [];
+        const avoided = a.peer === null && a.res.lessLike && Array.isArray(a.res.lessLike.avoided) ? a.res.lessLike.avoided : [];
         songs.forEach((song, i) => {
           let sim = -1;
           if (Number.isFinite(sims[i])) { sim = sims[i]; }
@@ -667,6 +801,7 @@ const MSTREAMPLAYER = (() => {
             res: a.res,
             similarity: sim,
             blocked: _autoDjSongBlocked(song.metadata, refBpm, refNeighbours),
+            avoided: avoided[i] === true,
           });
         });
       }
@@ -676,34 +811,37 @@ const MSTREAMPLAYER = (() => {
     }
     if (chosen.length === 0) { return false; }
 
-    // Only the cooldowns of servers whose songs are being queued advance —
-    // the others' answers were not played. A contributing server's list
-    // also carries the ids of its songs that lost to a better cosine
-    // elsewhere; the cooldown is soft variety and they cycle back out.
-    const advanced = new Set();
-    for (const pick of chosen) {
-      const key = pick.peerId === null ? 'local' : String(pick.peerId);
-      if (advanced.has(key)) { continue; }
-      advanced.add(key);
-      if (pick.peerId === null) {
-        AUTODJ.setIgnoreList(Array.isArray(pick.res.ignoreList) ? pick.res.ignoreList : []);
-        autoDjIgnoreArray = AUTODJ.getIgnoreList();
-      } else {
-        AUTODJ.setPeerIgnoreList(pick.peerId, pick.res.ignoreList);
+    // Only the ignoreLists of servers whose songs are being queued advance
+    // — the others' answers were not played, nor were the songs a re-roll
+    // left out ([landing]: the picks _landDjPicks is about to queue). A
+    // contributing server's list also carries the ids of its songs that
+    // lost to a better cosine elsewhere; the cooldown is soft variety and
+    // they cycle back out. Run as the picks land, never for a pick
+    // discarded as stale; each queued song's artist joins the cooldown as
+    // it is added (_landDjPicks).
+    const commit = (landing) => {
+      const landed = new Set(landing.map((p) => (p.peer ? String(p.peer.id) : 'local')));
+      const advanced = new Set();
+      for (const pick of chosen) {
+        const key = pick.peerId === null ? 'local' : String(pick.peerId);
+        if (!landed.has(key) || advanced.has(key)) { continue; }
+        advanced.add(key);
+        if (pick.peerId === null) {
+          AUTODJ.setIgnoreList(Array.isArray(pick.res.ignoreList) ? pick.res.ignoreList : []);
+          autoDjIgnoreArray = AUTODJ.getIgnoreList();
+        } else {
+          AUTODJ.setPeerIgnoreList(pick.peerId, pick.res.ignoreList);
+        }
       }
-    }
+    };
 
     // Queue best first so the playlist order is the ranking.
-    for (const pick of chosen) {
-      const meta = { ...(pick.song.metadata || {}), _djPicked: true };
-      if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
-      if (pick.peerId === null) {
-        await VUEPLAYERCORE.addSongWizard(pick.song.filepath, meta);
-      } else {
-        VUEPLAYERCORE.addFederationSongWizard(pick.peer, pick.song.filepath, meta, false);
-      }
-    }
-    return true;
+    const landed = await _landDjPicks(chosen.map((pick) => ({
+      filepath: pick.song.filepath,
+      meta: { ...(pick.song.metadata || {}) },
+      peer: pick.peerId === null ? null : pick.peer,
+    })), pickCtx, commit);
+    return landed === 'stale' ? 'stale' : true;
   }
 
   // Re-entrancy guard — multiple triggers (song-end, removeSong,
@@ -723,9 +861,16 @@ const MSTREAMPLAYER = (() => {
   async function autoDJ() {
     if (_autoDjInFlight) { return _autoDjInFlight; }
     _autoDjAbortController = new AbortController();
+    const signal = _autoDjAbortController.signal;
     _autoDjInFlight = (async () => {
       try {
-        await _autoDjRunOnce(_autoDjAbortController.signal);
+        // A pick discarded as stale (a lane edge or a learned quick skip
+        // moved the queue's generation while it was out) is asked again,
+        // at most twice per call, while the DJ is on.
+        for (let run = 0; run < 3; run++) {
+          const result = await _autoDjRunOnce(signal);
+          if (result !== 'stale' || signal.aborted || mstreamModule.playerStats.autoDJ !== true) { break; }
+        }
       } catch (err) {
         // AbortError surfaces here when toggleAutoDJ aborts mid-fetch;
         // suppress the toast in that case — it's an intended teardown,
@@ -755,6 +900,12 @@ const MSTREAMPLAYER = (() => {
     _autoDjSimilarCache = { sourceArtist: null, artists: null };
 
     const autodjLoaded = typeof AUTODJ !== 'undefined';
+    const seedsLoaded = autodjLoaded && !!AUTODJ.seeds;
+    // The queue generation and the lane this pick is built under, taken
+    // before it reads the seeds: where it lands, a pick of an older
+    // generation is discarded before any side effect and asked again.
+    const ctx = { gen: _djQueueGen, lane: seedsLoaded ? AUTODJ.seeds.laneId() : 0 };
+    _seedsBeginPick();
     let picked = null;
     let lastResponse = null;
     // ignoreList is FED BACK from the server across retries. Without
@@ -767,22 +918,41 @@ const MSTREAMPLAYER = (() => {
     // Cross-server session first (see _autoDjFederatedPick). It returns
     // false whenever it can't run this way, and the single-server loop
     // below then runs exactly as before.
-    if (autodjLoaded
-        && AUTODJ.state.sonicEnabled && AUTODJ.state.federatedEnabled
-        && MSTREAMAPI.currentServer.discovery === true
-        && MSTREAMAPI.currentServer.federationBrowse === true) {
-      if (await _autoDjFederatedPick(signal)) {
+    if (seedsLoaded && _fanOutRoute()) {
+      const fed = await _autoDjFederatedPick(signal, ctx);
+      if (fed === 'stale') { return 'stale'; }
+      if (fed) {
         _showSimilarArtistsInfoStrip();
-        return;
+        return 'queued';
       }
     }
 
+    // The blended song the user quick-skipped this lane: no ignoreList
+    // holds it and it is no seed, so the answers pass over it.
+    const skippedBlend = seedsLoaded ? AUTODJ.seeds.skippedBlendKey() : null;
+    let healed = false;
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       const { body, refBpm, refNeighbours } = await _buildAutoDjBody({ ignoreList });
       let res;
       try {
         res = await MSTREAMAPI.getRandomSong(body, { signal });
       } catch (err) {
+        // A seed the server can't use (not analysed yet, or gone) refuses
+        // the whole body and names no path. Once per pick, the rows at
+        // fault leave the lane's requests (_healSonicSeeds) and the same
+        // attempt goes again without them. Never for a pick a lane edge
+        // or a learned skip made stale: an old lane's refusal is not the
+        // new lane's rows' doing.
+        if (err?.name !== 'AbortError' && body.similarTo && !healed && _isSeedRefusal(err)) {
+          if (ctx.gen !== _djQueueGen) { return 'stale'; }
+          healed = true;
+          const changed = await _healSonicSeeds(body);
+          if (ctx.gen !== _djQueueGen) { return 'stale'; }
+          if (changed) {
+            attempt--;
+            continue;
+          }
+        }
         // Sonic-mode failures have specific, actionable stories — map
         // the server's distinct 400s onto them so the user knows
         // whether to loosen the slider or pick another seed. req()
@@ -824,17 +994,21 @@ const MSTREAMPLAYER = (() => {
       // can still be off-target. Retry-on-blocked closes the gap.
       // Songs with NULL bpm/key pass through (server already
       // exhausted the tagged options). A batch keeps whatever part
-      // of it passes; only an answer blocked in full is retried.
-      const accepted = songs.filter((s) => !_autoDjSongBlocked(s.metadata, refBpm, refNeighbours));
+      // of it passes, never the quick-skipped blend; only an answer
+      // blocked in full is retried.
+      const accepted = songs.filter((s) => !_autoDjSongBlocked(s.metadata, refBpm, refNeighbours)
+        && !_isSkippedBlend(s, skippedBlend));
       if (accepted.length > 0) { picked = accepted; break; }
     }
 
     // If every retry was blocked, fall through with whatever the
     // last response was so the session doesn't stall completely.
     // The server's fallback chain is already exhausting all viable
-    // alternatives; refusing here just means the DJ stops.
+    // alternatives; refusing here just means the DJ stops. Whole but
+    // for the quick-skipped blend, while anything else is left.
     if (!picked && Array.isArray(lastResponse?.songs) && lastResponse.songs.length > 0) {
-      picked = lastResponse.songs;
+      const rest = lastResponse.songs.filter((s) => !_isSkippedBlend(s, skippedBlend));
+      picked = rest.length > 0 ? rest : lastResponse.songs;
     }
     if (!picked) {
       throw new Error('no song in response');
@@ -845,22 +1019,30 @@ const MSTREAMPLAYER = (() => {
     // `_djPicked` is the only metadata flag a song carries; the
     // "have we counted this song's BPM yet" state lives in AUTODJ
     // proper (state.djCountedFilepaths), not on the metadata.
+    // _landDjPicks stamps this lane on each (`_djLane`).
     const queued = picked.map((song) => ({
       filepath: song.filepath,
       meta: { ...(song.metadata || {}), _djPicked: true },
+      peer: null,
     }));
 
-    // Persist updated ignoreList + push every picked artist to the
-    // cooldown — all of them are about to be queued.
-    if (autodjLoaded) {
-      AUTODJ.setIgnoreList(ignoreList);
-      for (const { meta } of queued) {
-        if (meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
-      }
-    }
-    // Legacy bridge — keep the old global in sync until everywhere
-    // else has migrated off it.
-    autoDjIgnoreArray = ignoreList;
+    // Persist the updated ignoreList as the pick lands, whatever part of it
+    // a re-roll queues (the phone takes the answer's list the same way);
+    // each queued song's artist joins the cooldown as it is added
+    // (_landDjPicks), so a song left out leaves no artist trace. A pick
+    // discarded as stale leaves no trace at all.
+    const commit = () => {
+      if (autodjLoaded) { AUTODJ.setIgnoreList(ignoreList); }
+      // Legacy bridge — keep the old global in sync until everywhere
+      // else has migrated off it.
+      autoDjIgnoreArray = ignoreList;
+    };
+
+    // Await each so async failures inside addSongWizard surface through
+    // the outer try/catch and trigger the iziToast warning instead of
+    // becoming a silent unhandled rejection — and so the queue keeps
+    // the server's order (best tier first).
+    const landed = await _landDjPicks(queued, ctx, commit);
 
     // Similar-artists info strip — surface WHY this pick was made
     // when the user has similar mode on. Velvet does this with a
@@ -871,15 +1053,122 @@ const MSTREAMPLAYER = (() => {
     // Truncated to first 5 candidates so the toast doesn't become a
     // wall of text — the rest are still in the cache for debugging
     // via the dev console but the user gets the gist.
-    _showSimilarArtistsInfoStrip();
+    if (landed === 'queued') { _showSimilarArtistsInfoStrip(); }
+    return landed;
+  }
 
-    // Await each so async failures inside addSongWizard surface through
-    // the outer try/catch and trigger the iziToast warning instead of
-    // becoming a silent unhandled rejection — and so the queue keeps
-    // the server's order (best tier first).
-    for (const { filepath, meta } of queued) {
-      await VUEPLAYERCORE.addSongWizard(filepath, meta);
+  // Where every pick lands: [picks] ([{ filepath, meta, peer | null }], best
+  // first) under [ctx] ({ gen, lane }, taken as the pick began). A pick of
+  // an older queue generation is discarded before any side effect
+  // ('stale'; autoDJ() asks again). Otherwise a re-roll still owed drops
+  // the stale DJ rows ahead (nearest first, at most as many as the pick
+  // brought) and the pick queues one song per row dropped (the whole batch
+  // when the playing row is now the last; nothing when nothing could go
+  // and rows remain); [commit](the picks about to be queued) runs the
+  // pick's ignoreList bookkeeping; then each song is queued, stamped with
+  // the lane, and its artist joins the cooldown. A generation that moves
+  // during an awaited add ends the batch (the rest were chosen for the old
+  // queue) and makes the landing 'stale' too, so autoDJ() runs the pick
+  // again for the new queue: a re-roll the move owes, or the lookahead a
+  // Next onto the song just added needs. 'queued' or 'none'.
+  async function _landDjPicks(picks, ctx, commit) {
+    if (ctx.gen !== _djQueueGen) { return 'stale'; }
+    let toQueue = picks;
+    if (_rerollOwed) {
+      const owed = _rerollOwed;
+      _rerollOwed = null;
+      const dropped = _dropRerolled(owed.stale, picks.length);
+      const atEnd = mstreamModule.positionCache.val >= mstreamModule.playlist.length - 1;
+      toQueue = atEnd ? picks : picks.slice(0, Math.min(dropped, picks.length));
     }
+    if (typeof commit === 'function') { commit(toQueue); }
+    let queued = 0;
+    for (const pick of toQueue) {
+      if (queued > 0 && ctx.gen !== _djQueueGen) { break; }
+      const meta = { ...(pick.meta || {}), _djPicked: true, _djLane: ctx.lane };
+      if (pick.peer) {
+        VUEPLAYERCORE.addFederationSongWizard(pick.peer, pick.filepath, meta, false);
+      } else {
+        await VUEPLAYERCORE.addSongWizard(pick.filepath, meta);
+      }
+      queued++;
+      if (typeof AUTODJ !== 'undefined' && meta.artist) { AUTODJ.pushArtistHistory(meta.artist); }
+    }
+    if (queued > 0 && ctx.gen !== _djQueueGen) { return 'stale'; }
+    return queued > 0 ? 'queued' : 'none';
+  }
+
+  // The re-roll's drop: the rows of [stale] (by identity) still after the
+  // playing row that are DJ picks, nearest first, at most [max]. A live
+  // playlist is saved again after a drop. Returns how many went.
+  function _dropRerolled(stale, max) {
+    const named = Array.isArray(stale) ? stale : [];
+    let dropped = 0;
+    while (dropped < max) {
+      let at = -1;
+      for (let i = Math.max(0, mstreamModule.positionCache.val + 1); i < mstreamModule.playlist.length; i++) {
+        const row = mstreamModule.playlist[i];
+        if (named.includes(row) && row.metadata && row.metadata._djPicked === true) { at = i; break; }
+      }
+      if (at < 0) { break; }
+      mstreamModule.removeSongAtPosition(at);
+      dropped++;
+    }
+    if (dropped > 0 && typeof VUEPLAYERCORE !== 'undefined' && typeof VUEPLAYERCORE.saveLiveQueue === 'function') {
+      VUEPLAYERCORE.saveLiveQueue();
+    }
+    return dropped;
+  }
+
+  // Whether [song], an answer of this server, is the blended song the user
+  // quick-skipped this lane ([skippedKey], AUTODJ.seeds.skippedBlendKey()).
+  function _isSkippedBlend(song, skippedKey) {
+    if (!skippedKey || !song || typeof song.filepath !== 'string') { return false; }
+    return AUTODJ.seeds.keyOf(null, song.filepath) === skippedKey;
+  }
+
+  // A single-server body refused for a seed it can't use: 400 "Sonic seed
+  // track has not been analyzed yet", or the uniform 404 "Track not found".
+  function _isSeedRefusal(err) {
+    const msg = (err && err.body && err.body.error) || '';
+    return (err && err.status === 400 && /seed track has not been analyzed/i.test(msg))
+      || (err && err.status === 404 && /track not found/i.test(msg));
+  }
+
+  // Which of the More like paths a refused body carried ([body.similarTo])
+  // made the server refuse it: the one path, when one was sent; else those
+  // the embeddings route reports `notAnalyzed`; when that call fails (one
+  // gone path costs the whole batch), each path probed alone, a path whose
+  // probe fails or is `notAnalyzed` being at fault, but only when at least
+  // one probe answered. The culprits leave the lane's requests
+  // (AUTODJ.seeds.heal: an unpinned row is removed, and every culprit is
+  // set aside, so neither a pinned row, nor the Drift fallback to the song
+  // playing, sends it again). True when that changed anything.
+  async function _healSonicSeeds(body) {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return false; }
+    const sent = Array.isArray(body && body.similarTo) ? body.similarTo : [];
+    if (sent.length === 0) { return false; }
+    let culprits = [];
+    if (sent.length === 1) {
+      culprits = sent.slice();
+    } else {
+      const read = async (paths) => {
+        try { return await MSTREAMAPI.discoveryEmbeddings(paths); } catch (_e) { return null; }
+      };
+      const answered = (r) => !!r && !r.disabled && Array.isArray(r.tracks);
+      const all = await read(sent);
+      if (answered(all)) {
+        culprits = sent.filter((_p, i) => !!all.tracks[i] && all.tracks[i].notAnalyzed === true);
+      } else {
+        const probes = await Promise.all(sent.map((p) => read([p])));
+        if (probes.some(answered)) {
+          culprits = sent.filter((_p, i) => !answered(probes[i])
+            || (!!probes[i].tracks[0] && probes[i].tracks[0].notAnalyzed === true));
+        }
+      }
+    }
+    if (culprits.length === 0) { return false; }
+    return AUTODJ.seeds.heal(culprits.map((p) => AUTODJ.seeds.keyOf(null, p)));
   }
 
   // Info strip helper — fires an iziToast.info if similar-mode is on
@@ -913,7 +1202,9 @@ const MSTREAMPLAYER = (() => {
     // If this the first song in the list
     if (mstreamModule.playlist.length === 1) {
       mstreamModule.positionCache.val = 0;
-      return goToSong(mstreamModule.positionCache.val, forceAutoPlayOff);
+      const started = goToSong(mstreamModule.positionCache.val, forceAutoPlayOff);
+      _emitAutoDj('queue');
+      return started;
     }
 
     // TODO: Check if we are at the end of the playlist and nothing is playing.
@@ -927,6 +1218,7 @@ const MSTREAMPLAYER = (() => {
       }, cacheTimeout);
     }
 
+    _emitAutoDj('queue');
     return true;
   }
 
@@ -944,6 +1236,7 @@ const MSTREAMPLAYER = (() => {
       goToSong(mstreamModule.positionCache.val);
     }
 
+    _emitAutoDj('queue');
     // TODO: Check cache. Since we use this for play now only, the cache is usually preserved
   }
 
@@ -953,7 +1246,12 @@ const MSTREAMPLAYER = (() => {
     return addSong(song);
   }
 
-  mstreamModule.clearPlaylist = function () {
+  // `opts.userClear === false` marks a clear that is not the user's: the
+  // live playlist's load at boot. Every other clear is the user's (Clear
+  // Playlist, a play that replaces the queue, turning on a live playlist).
+  mstreamModule.clearPlaylist = function (opts) {
+    const userClear = !(opts && opts.userClear === false);
+    const hadRows = mstreamModule.playlist.length > 0;
     while (mstreamModule.playlist.length > 0) { mstreamModule.playlist.pop(); }
     mstreamModule.positionCache.val = -1;
 
@@ -965,20 +1263,111 @@ const MSTREAMPLAYER = (() => {
       while (shuffleCache.length > 0) { shuffleCache.pop(); }
     }
 
-    // clearPlaylist also drops the cascade — re-bootstrap with two
-    // songs so the post-clear playback has the same lookahead as a
-    // fresh Auto-DJ start. (Without this, the same one-song stall
-    // hits whenever the user clears their playlist mid-session.)
-    if (mstreamModule.playerStats.autoDJ === true) {
-      _autoDjQueueN(2);
-    }
+    _seedsOnClear(userClear, hadRows);
 
     return true;
   }
 
+  // A clear is a new queue for the seeds: a lane edge (with "Clear pins when
+  // the queue is cleared" ticked, a user's clear of a queue that held a row
+  // takes the pins too), a new queue generation (a pick out is discarded
+  // where it lands and asked again in the new lane), no re-roll owed.
+  //
+  // clearPlaylist also drops the cascade — re-bootstrap with two songs so
+  // the post-clear playback has the same lookahead as a fresh Auto-DJ start
+  // (without this, the same one-song stall hits whenever the user clears
+  // their playlist mid-session). After the caller is done, and only while
+  // the queue is still empty: a play that replaces the queue adds its rows
+  // right after the clear, and those start the new lane (its first row is
+  // the blend), where an immediate bootstrap would pick from the song
+  // being thrown away.
+  function _seedsOnClear(userClear, hadRows) {
+    if (typeof AUTODJ !== 'undefined' && AUTODJ.seeds) {
+      AUTODJ.seeds.laneEdge({
+        clearPins: AUTODJ.clearsPinsOnClear({
+          userClear,
+          queueHadRows: hadRows,
+          setting: AUTODJ.state.clearPinsOnQueueClear === true,
+        }),
+      });
+    }
+    _djQueueGen++;
+    _rerollOwed = null;
+    _emitAutoDj('queue');
+    if (mstreamModule.playerStats.autoDJ === true) {
+      setTimeout(() => {
+        if (mstreamModule.playerStats.autoDJ === true && mstreamModule.playlist.length === 0) {
+          _autoDjQueueN(2);
+        }
+      }, 0);
+    }
+  }
+
+  // The user's Next (the player bar, hotkeys, the jukebox, the media keys).
+  // A quick skip of a DJ pick is judged before the move; a learned one owes
+  // a re-roll of the DJ rows queued ahead without its negative.
   mstreamModule.nextSong = function () {
-    // Stop the current song
-    return goToNextSong();
+    const owed = _judgeQuickSkip();
+    const r = goToNextSong();
+    if (owed) {
+      _rerollOwed = owed;
+      autoDJ();
+    }
+    return r;
+  }
+
+  // The Next about to happen, judged before the move: a quick skip (heard
+  // at least a second, short of a play, with a row to go to) of a DJ pick,
+  // or of the lane's blended song while More like holds it unpinned, with
+  // the DJ on in Drift. The song leaves More like unless the user pinned it
+  // there; it is learned (joins Less like) with Learn from skips, sonic on,
+  // a server that takes negatives, and only for this server's DJ pick. A
+  // learned skip that changed what this server would be sent moves the
+  // queue's generation; it owes a re-roll ({ stale }: the DJ rows strictly
+  // after the row the Next lands on) when such rows exist, else null.
+  //
+  // Heard time is the open play session's (which leaves seeks and pauses
+  // out) when it is this row's, else the player's position; the length is
+  // the session's, else the player's, else the row's.
+  function _judgeQuickSkip() {
+    if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return null; }
+    if (mstreamModule.playerStats.autoDJ !== true || AUTODJ.state.sonicAnchorMode === 'locked') { return null; }
+    const { row, pos } = _currentRow();
+    const facts = AUTODJ.seeds.factsFromSong(row);
+    if (!row || !facts) { return null; }
+    const meta = row.metadata || {};
+    const djPick = meta._djPicked === true;
+    const key = AUTODJ.seeds.keyOf(facts.owner, facts.path);
+    const blendable = !djPick && AUTODJ.seeds.blendSkippable(key);
+    const ms = (sec) => {
+      const n = Number(sec);
+      return Number.isFinite(n) && n > 0 ? Math.round(n * 1000) : null;
+    };
+    const session = playSession && playSession.filePath === row.rawFilePath ? playSession : null;
+    const heardMs = session ? session.playedMs : Math.round((Number(mstreamModule.playerStats.currentTime) || 0) * 1000);
+    const durationMs = (session && session.durationMs) || ms(mstreamModule.playerStats.duration) || ms(meta.duration);
+    const hasNext = !!mstreamModule.playlist[pos + 1];
+    if (!AUTODJ.isQuickSkip({ djPick: djPick || blendable, heardMs, durationMs, hasNext })) { return null; }
+    const server = typeof MSTREAMAPI !== 'undefined' ? MSTREAMAPI.currentServer : null;
+    const learn = djPick && AUTODJ.state.learnFromSkips === true && AUTODJ.state.sonicEnabled === true
+      && AUTODJ.seeds.takesNegatives(server) && facts.owner === null;
+    // A Less like row whose time just ran out goes first, so its going is
+    // not taken for this skip's doing.
+    AUTODJ.seeds.prune();
+    const sentBefore = _negativesSent();
+    AUTODJ.seeds.quickSkip(facts, { djPick, learn });
+    if (_negativesSent() === sentBefore) { return null; }
+    _djQueueGen++;
+    const stale = mstreamModule.playlist.slice(pos + 2)
+      .filter((r) => r && r.metadata && r.metadata._djPicked === true);
+    return stale.length > 0 ? { stale } : null;
+  }
+
+  // The negatives this server would be sent now, as one comparable value
+  // (order left out; '' while it takes none).
+  function _negativesSent() {
+    if (!_wireTakesNegatives()) { return ''; }
+    return JSON.stringify(AUTODJ.seeds.negatives().slice().sort());
   }
 
   mstreamModule.previousSong = function () {
@@ -1084,6 +1473,7 @@ const MSTREAMPLAYER = (() => {
   
       }, cacheTimeout);
     }
+    _emitAutoDj('queue');
   }
 
   mstreamModule.getCurrentSong = () => {
@@ -1247,10 +1637,6 @@ const MSTREAMPLAYER = (() => {
       return false;
     }
 
-    if (mstreamModule.playerStats.autoDJ === true && position === mstreamModule.playlist.length - 1) {
-      autoDJ();
-    }
-
     // Reset Duration
     mstreamModule.playerStats.duration = 0;
     mstreamModule.playerStats.currentTime = 0;
@@ -1269,7 +1655,10 @@ const MSTREAMPLAYER = (() => {
       setMedia(mstreamModule.playlist[position], getCurrentPlayer(), typeof forceAutoPlayOff !== 'undefined' ? !forceAutoPlayOff : true);
     }
 
+    // The starting song's side effects first (a DJ pick joins More like as
+    // it starts playing), then the top-up, whose body reads them.
     mstreamModule.resetCurrentMetadata();
+    _topUpIfLast(position);
     
     // connect to visualizer
     if (typeof VIZ !== 'undefined') {
@@ -1319,6 +1708,14 @@ const MSTREAMPLAYER = (() => {
     beginPlaySession(mstreamModule.playlist[position]);
   }
 
+  // The queue-end top-up: the song that just started at [position] is the
+  // last row, so the DJ fetches the next one now.
+  function _topUpIfLast(position) {
+    if (mstreamModule.playerStats.autoDJ === true && position === mstreamModule.playlist.length - 1) {
+      autoDJ();
+    }
+  }
+
   // Should be called whenever the "metadata" field of the current song is changed, or
   // the current song is changed.
   mstreamModule.resetCurrentMetadata = () => {
@@ -1366,6 +1763,7 @@ const MSTREAMPLAYER = (() => {
     document.title = pageTitle; // set page title when song is playing
     
     mstreamModule.updateReplayGainFromSong(curSong);
+    _emitAutoDj('song');
   }
 
   // Update ReplayGain state from given song, if required.
@@ -1826,6 +2224,8 @@ const MSTREAMPLAYER = (() => {
       mstreamModule.playerStats.shouldLoop = false;
       mstreamModule.playerStats.shouldLoopOne = false;
 
+      _seedsOnToggle(true);
+
       // Bootstrap two songs when the playlist is empty OR we're
       // already sitting on the last track (the user toggled Auto-DJ
       // ON mid-playback at the queue tail). Without two on start
@@ -1834,6 +2234,7 @@ const MSTREAMPLAYER = (() => {
         _autoDjQueueN(2);
       }
     } else {
+      _seedsOnToggle(false);
       // Cancel an in-flight pick so its response doesn't land back
       // into AUTODJ.state after the user turned the feature off.
       _autoDjAbortController?.abort();
@@ -1842,11 +2243,26 @@ const MSTREAMPLAYER = (() => {
     return mstreamModule.playerStats.autoDJ;
   }
 
-  // Nudge a stalled Auto-DJ session into picking. Used by the DJ
-  // panel's sonic seed picker: when the user enabled Auto-DJ on an
-  // empty queue with sonic mode on but no seed, the bootstrap pick
-  // fails (with a "pick a seed" toast) and nothing re-triggers it —
-  // so the panel calls this right after a seed is chosen.
+  // Start and Stop are lane edges for the seeds: the DJ's unpinned picks
+  // start over (the user's pins stay; Stay close keeps every row), a pick
+  // out is discarded where it lands, and a re-roll still owed is settled.
+  // Rows the user adds while the DJ is off are held aside until the lane's
+  // first pick. The panel hears of it ('dj').
+  function _seedsOnToggle(on) {
+    if (typeof AUTODJ !== 'undefined' && AUTODJ.seeds) {
+      AUTODJ.seeds.setArmed(on === true);
+      AUTODJ.seeds.laneEdge({});
+    }
+    _djQueueGen++;
+    _rerollOwed = null;
+    _emitAutoDj('dj');
+  }
+
+  // Nudge a stalled Auto-DJ session into picking. Used by the Seeds
+  // drawer after a song joins More like: when the user enabled Auto-DJ
+  // on an empty queue and the bootstrap pick failed (a filter nothing
+  // matched, a server hiccup), nothing re-triggers it — so the drawer
+  // calls this right after a seed is added.
   mstreamModule.autoDjKick = () => {
     if (mstreamModule.playerStats.autoDJ !== true) { return; }
     if (mstreamModule.playlist.length > 0) { return; }
@@ -1964,7 +2380,8 @@ const MSTREAMPLAYER = (() => {
     // navigator.mediaSession.setActionHandler('seekforward', function() { /* Code excerpted. */ });
     // navigator.mediaSession.setActionHandler('seekto', function() { /* Code excerpted. */ });
     navigator.mediaSession.setActionHandler('previoustrack', function() { goToPreviousSong(); });
-    navigator.mediaSession.setActionHandler('nexttrack', function() { goToNextSong() });
+    // The media key is the user's Next: a quick skip is judged on it too.
+    navigator.mediaSession.setActionHandler('nexttrack', function() { mstreamModule.nextSong(); });
   }
 
   // Return an object that is assigned to Module
