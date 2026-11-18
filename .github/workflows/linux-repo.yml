@@ -1,0 +1,258 @@
+name: Linux Package Repository
+
+# Publishes the signed apt + dnf repositories (docs/install.md: "Linux
+# package repositories") so a deb/rpm install updates through its package
+# manager instead of being re-downloaded by hand.
+#
+# The deb/rpm files are NOT built here: they are the assets the tag build
+# (build-bun.yml) attached to each release. Every run rebuilds the whole
+# repository from the newest KEEP_RELEASES published stable releases, so it
+# is stateless and safe to re-run, and the repository never holds a package
+# a GitHub release does not.
+#
+#   release published   -> rebuild + publish (drafts never reach the
+#                          repository: publishing is the trigger)
+#   workflow_dispatch   -> the same, on demand - the way to republish after a
+#                          failed run or a script fix. From any branch but
+#                          the default one, or with dry_run, it changes
+#                          nothing: it builds, gates, and prints what the
+#                          upload WOULD do (which also proves the zone name,
+#                          region host and password).
+#   pull_request        -> rehearsal: the same build and gate with a
+#                          throwaway key and no upload. Needs no secrets, so
+#                          it runs for forks too.
+#
+# One sequence for all three (scripts/linux-repo/): collect -> build + sign
+# -> gate -> [key check -> upload -> live check]. The gate has real apt and
+# dnf clients install from the built tree - and refuse an altered copy -
+# BEFORE anything is uploaded, so a repository that clients cannot use, or
+# an upgrade that breaks, stops here and the live repository stays on the
+# previous release.
+#
+# Configuration (docs/deploy.md has the setup walk-through):
+#   variables  LINUX_REPO_URL                      public base URL, e.g. https://repo.mstream.io
+#              LINUX_REPO_BUNNY_STORAGE_ZONE       the storage zone's name
+#              LINUX_REPO_BUNNY_STORAGE_HOST       its region endpoint (optional; default storage.bunnycdn.com)
+#   secrets    LINUX_REPO_GPG_PRIVATE_KEY          the armored signing key
+#              LINUX_REPO_GPG_PASSPHRASE           its passphrase (leave unset if it has none)
+#              LINUX_REPO_BUNNY_STORAGE_PASSWORD   the storage zone's password
+#              LINUX_REPO_BUNNY_API_KEY            account API key (optional): purges the CDN's
+#                                                  copy of the files a publish replaces
+# With none of the four required ones set (the URL, the zone, the key, the
+# storage password), a release runs the rehearsal and says so: a repository
+# that was never set up is not an error. With only SOME set it fails: that
+# is a mistake, not a choice.
+on:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - 'scripts/linux-repo/**'
+      - 'test/unit/linux-repo-sync.test.mjs'
+      - '.github/workflows/linux-repo.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build, gate and print the upload plan - change nothing'
+        type: boolean
+        default: false
+      allow_key_change:
+        description: 'Publish although the signing key differs from the live one (every install must then re-fetch mstream.asc)'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# A publish is a sequence of ordered writes: never two at once, never cut
+# short. Rehearsals are per-PR and a newer push supersedes them.
+concurrency:
+  group: linux-repo-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  repo:
+    name: ${{ github.event_name == 'pull_request' && 'rehearsal' || 'publish' }}
+    # Stable server releases only - the same channel rule as the website
+    # stamp. The repo's other release channels (sidecars, models, the legacy
+    # desktop player) and prereleases must not start a publish. What gets
+    # served is decided by collect.sh, not by the tag that fired.
+    if: >-
+      github.event_name != 'release' ||
+      (startsWith(github.event.release.tag_name, 'v') &&
+       !endsWith(github.event.release.tag_name, '-DESKTOP_PLAYER') &&
+       github.event.release.prerelease == false)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      KEEP_RELEASES: '3'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      # The upload cannot be rehearsed against the real zone, so its ordering
+      # and its behaviour on failure are pinned by a test against a fake one
+      # - run here too, because the main suite only runs on a labelled PR.
+      - name: Test the upload logic
+        run: node --test test/unit/linux-repo-sync.test.mjs
+
+      - name: Publish, dry run, or rehearsal
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          ON_DEFAULT_BRANCH: ${{ github.ref_name == github.event.repository.default_branch }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          REPO_URL: ${{ vars.LINUX_REPO_URL }}
+          STORAGE_ZONE: ${{ vars.LINUX_REPO_BUNNY_STORAGE_ZONE }}
+          # Presence only - the values themselves stay out of this step.
+          HAVE_KEY: ${{ secrets.LINUX_REPO_GPG_PRIVATE_KEY != '' }}
+          HAVE_STORAGE_PASSWORD: ${{ secrets.LINUX_REPO_BUNNY_STORAGE_PASSWORD != '' }}
+        run: |
+          set -euo pipefail
+          url="${REPO_URL%/}"
+          if [ "$EVENT" = pull_request ]; then
+            mode=rehearsal
+          else
+            have=0
+            [ -n "$REPO_URL" ] && have=$((have + 1))
+            [ -n "$STORAGE_ZONE" ] && have=$((have + 1))
+            [ "$HAVE_KEY" = true ] && have=$((have + 1))
+            [ "$HAVE_STORAGE_PASSWORD" = true ] && have=$((have + 1))
+            if [ "$have" -eq 0 ]; then
+              echo "::warning::The Linux package repository is not configured (see docs/deploy.md) - ran the rehearsal only; nothing was published."
+              mode=rehearsal
+            elif [ "$have" -lt 4 ]; then
+              echo "::error::The Linux package repository is half configured: it needs the variables LINUX_REPO_URL and LINUX_REPO_BUNNY_STORAGE_ZONE and the secrets LINUX_REPO_GPG_PRIVATE_KEY and LINUX_REPO_BUNNY_STORAGE_PASSWORD (docs/deploy.md)."
+              exit 1
+            elif [ "$DRY_RUN" = true ]; then
+              mode=dry-run
+            elif [ "$EVENT" = workflow_dispatch ] && [ "$ON_DEFAULT_BRANCH" != true ]; then
+              echo "::notice::Dispatched from a branch other than the default one: this is a dry run."
+              mode=dry-run
+            else
+              mode=publish
+            fi
+          fi
+          # A rehearsal tree is never served; its URL only has to be one.
+          [ "$mode" != rehearsal ] || url=https://rehearsal.invalid
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "repo_url=$url" >> "$GITHUB_OUTPUT"
+          echo "mode: $mode"
+
+      - name: Install the repository tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends apt-utils createrepo-c rpm gnupg xz-utils
+
+      - name: Collect the packages to serve
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash scripts/linux-repo/collect.sh packages "$KEEP_RELEASES"
+
+      - name: Build and sign the repositories
+        env:
+          MODE: ${{ steps.mode.outputs.mode }}
+          REPO_URL: ${{ steps.mode.outputs.repo_url }}
+          # Never handed to a rehearsal - a pull request runs the PR's own
+          # copy of these scripts.
+          LINUX_REPO_GPG_PRIVATE_KEY: ${{ steps.mode.outputs.mode != 'rehearsal' && secrets.LINUX_REPO_GPG_PRIVATE_KEY || '' }}
+          LINUX_REPO_GPG_PASSPHRASE: ${{ steps.mode.outputs.mode != 'rehearsal' && secrets.LINUX_REPO_GPG_PASSPHRASE || '' }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = rehearsal ]; then
+            # A throwaway key of the real one's shape, through the same
+            # import and passphrase path build.sh uses for the real one.
+            export LINUX_REPO_GPG_PASSPHRASE=rehearsal-passphrase
+            LINUX_REPO_GPG_PRIVATE_KEY=$(bash scripts/linux-repo/throwaway-key.sh "$LINUX_REPO_GPG_PASSPHRASE")
+            export LINUX_REPO_GPG_PRIVATE_KEY
+          fi
+          bash scripts/linux-repo/build.sh packages out
+
+      - name: Gate - real apt and dnf clients install from it and refuse an altered copy
+        run: |
+          set -euo pipefail
+          new=$(head -n 1 packages/VERSIONS)
+          old=$(tail -n 1 packages/VERSIONS)
+          # With the oldest served version as the starting point, every
+          # client also proves the upgrade the repository exists for.
+          [ "$old" != "$new" ] || old=""
+          bash scripts/linux-repo/gate.sh out "$new" "$old"
+
+      # Installs trust the key they downloaded once. Signing with any other
+      # key - a wrong secret, a regenerated key, a rotated subkey - breaks
+      # `apt update` and `dnf upgrade` on every one of them until its owner
+      # fetches mstream.asc again. That must be a decision (allow_key_change
+      # on a manual run), never the side effect of editing a secret.
+      - name: The signing key is the one installs already trust
+        if: steps.mode.outputs.mode != 'rehearsal'
+        env:
+          REPO_URL: ${{ steps.mode.outputs.repo_url }}
+          ALLOW_KEY_CHANGE: ${{ inputs.allow_key_change }}
+        run: |
+          set -euo pipefail
+          fingerprints() { gpg --show-keys --with-colons "$1" | awk -F: '$1 == "fpr" { print $10 }' | sort; }
+          code=$(curl -sS --max-time 60 -o live.asc -w '%{http_code}' "$REPO_URL/mstream.asc") \
+            || { echo "::error::could not reach $REPO_URL - is the host set up?"; exit 1; }
+          case "$code" in
+            200) ;;
+            404) echo "no key is published at $REPO_URL yet: this is the first publish"; exit 0 ;;
+            *) echo "::error::$REPO_URL/mstream.asc answered HTTP $code - cannot tell which key installs trust"; exit 1 ;;
+          esac
+          if [ "$(fingerprints live.asc)" = "$(fingerprints out/mstream.asc)" ]; then
+            echo "signing key unchanged"
+            exit 0
+          fi
+          echo "live key:"; gpg --show-keys live.asc
+          echo "this build's key:"; gpg --show-keys out/mstream.asc
+          if [ "$ALLOW_KEY_CHANGE" = true ]; then
+            echo "::warning::Publishing with a CHANGED signing key: every existing install must re-download $REPO_URL/mstream.asc before its next update."
+            exit 0
+          fi
+          echo "::error::The signing key differs from the one published at $REPO_URL/mstream.asc. Publishing would break updates on every existing install. Restore the previous key, or re-run this workflow by hand with allow_key_change if the change is intended (docs/deploy.md)."
+          exit 1
+
+      - name: Upload to Bunny storage
+        if: steps.mode.outputs.mode != 'rehearsal'
+        env:
+          BUNNY_STORAGE_ZONE: ${{ vars.LINUX_REPO_BUNNY_STORAGE_ZONE }}
+          BUNNY_STORAGE_HOST: ${{ vars.LINUX_REPO_BUNNY_STORAGE_HOST }}
+          BUNNY_STORAGE_PASSWORD: ${{ secrets.LINUX_REPO_BUNNY_STORAGE_PASSWORD }}
+          BUNNY_API_KEY: ${{ secrets.LINUX_REPO_BUNNY_API_KEY }}
+          REPO_URL: ${{ steps.mode.outputs.repo_url }}
+          DRY_RUN_FLAG: ${{ steps.mode.outputs.mode == 'dry-run' && '--dry-run' || '' }}
+        run: node scripts/linux-repo/sync-bunny.mjs out ${DRY_RUN_FLAG:+"$DRY_RUN_FLAG"}
+
+      # The upload reaching storage is not the repository being live: the
+      # CDN in front of it may still hand out the previous pointers. Wait
+      # until it serves exactly the bytes uploaded, then use it the way a
+      # user does.
+      - name: The live repository serves this publish
+        if: steps.mode.outputs.mode == 'publish'
+        env:
+          REPO_URL: ${{ steps.mode.outputs.repo_url }}
+        run: |
+          set -euo pipefail
+          live() { curl -fsS --max-time 30 "$REPO_URL/$1" 2>/dev/null | cmp -s - "out/$1"; }
+          ok=0
+          for _ in $(seq 1 30); do
+            if live mstream.asc && live apt/dists/stable/InRelease \
+              && live rpm/repodata/repomd.xml && live rpm/repodata/repomd.xml.asc; then
+              ok=1
+              break
+            fi
+            sleep 10
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::$REPO_URL still does not serve this publish after 5 minutes. The files are in storage; the CDN is handing out older copies. Set LINUX_REPO_BUNNY_API_KEY so a publish purges them, or stop the pull zone caching the fixed-name files (docs/deploy.md), then re-run."
+            exit 1
+          fi
+          new=$(head -n 1 packages/VERSIONS)
+          APT_IMAGES=debian:13 DNF_IMAGES=fedora:44 REQUIRE_PUBLIC_URLS=1 \
+            bash scripts/linux-repo/test-install.sh "$REPO_URL" "$new"
+          {
+            echo "### Linux package repository"
+            echo "$REPO_URL now serves mStream $(tr '\n' ' ' < packages/VERSIONS)"
+          } >> "$GITHUB_STEP_SUMMARY"
