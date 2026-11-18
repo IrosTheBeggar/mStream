@@ -171,7 +171,10 @@ export function probeJournalModeContract(binPath) {
 
 // Why a candidate binary could not start at all, by path: the spawn error
 // or the dynamic loader's complaint, so the gate below reports that instead
-// of reading the silence as a pre-probe build. Exported for the tests.
+// of reading the silence as a pre-probe build. It is the LATEST probe's
+// answer: each probe clears the path's entry first, so a binary that has
+// since started (replaced on disk, or slow once and timed out) is not
+// reported by a failure it no longer has. Exported for the tests.
 const execFailures = new Map();
 export function execFailure(binPath) { return execFailures.get(binPath) ?? null; }
 
@@ -187,6 +190,7 @@ export function loaderFailure(stderr, host = hostGlibc) {
 }
 
 function probeIntFlag(binPath, flag) {
+  execFailures.delete(binPath);
   try {
     const probe = child.spawnSync(binPath, [flag],
       { stdio: ['ignore', 'pipe', 'pipe'], timeout: 5000 });
@@ -252,6 +256,12 @@ export function findRustParser() {
     return true;
   };
 
+  // Set when a candidate could not start at all; if no later candidate is
+  // accepted either, the fall to the JS scanner is said once, at the end
+  // (the gate's refusal lines say it themselves; a binary that cannot run
+  // does not know whether another candidate follows it).
+  let cannotRun = false;
+
   // Generation gate, applied to EVERY candidate binary (local build and
   // prebuilt): a scanner that stamps a different hashing generation than
   // this server must not scan at all. Behind the server it loops the V60
@@ -266,8 +276,9 @@ export function findRustParser() {
     const gen = probes.hashGeneration(binPath);
     if (gen !== HASH_GENERATION) {
       const why = execFailure(binPath);
+      if (why) { cannotRun = true; }
       winston.warn(why
-        ? `${label} rust-parser at ${binPath} cannot run on this host (${why}) — trying the next candidate`
+        ? `${label} rust-parser at ${binPath} cannot run on this host (${why})`
         : `${label} rust-parser at ${binPath} stamps hash generation `
           + `${gen ?? 'unknown (pre-probe build)'} but this server is on generation ${HASH_GENERATION} — `
           + `refusing it to protect track identities; scans use the JS scanner until the binary updates.`);
@@ -331,6 +342,9 @@ export function findRustParser() {
   if (fs.existsSync(prebuiltBin) || fs.existsSync(localBuildBin)) {
     // Binaries exist but none passed the gate — fall straight to the JS
     // scanner rather than attempting a from-source build on every scan.
+    if (cannotRun) {
+      winston.warn('No rust-parser binary can run on this host — scans use the JS scanner.');
+    }
     generationGateFailed = true;
     return false;
   }
@@ -361,6 +375,7 @@ export function _resetRustParserForTests({ probes: overrides = null } = {}) {
   rustParserDisabled = false;
   rustParserBin = null;
   verdictWalMode = null;
+  execFailures.clear();
   Object.assign(probes, defaultProbes, overrides || {});
 }
 

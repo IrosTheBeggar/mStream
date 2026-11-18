@@ -323,8 +323,8 @@ enabling Quick Connect yourself later always sticks, flag or no flag.
   to the portable static build the bundle also ships (so scanning stays
   fast) and Quick Connect stays off; the log names the glibc version each
   needed. The tray app needs 2.31, and the optional discovery-network
-  sidecar (`discoveryP2p`, off by default) currently 2.34. Releases before
-  6.33 needed 2.34 for the scanner and Quick Connect.
+  sidecar (`discoveryP2p`, off by default) currently 2.34. Releases up to
+  6.33.1 needed 2.34 for the scanner and Quick Connect.
 * ffmpeg (transcoding/waveforms) is auto-downloaded on first use — unpacking
   it needs the `xz` tool (`apt install xz-utils` on a minimal Debian) — or
   install it via your package manager.

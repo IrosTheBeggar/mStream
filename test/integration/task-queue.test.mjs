@@ -673,6 +673,29 @@ describe('task-queue: probeHashGeneration', () => {
     assert.equal(taskQueue.loaderFailure("error: unexpected argument '--hash-generation'", '2.31'), null);
   });
 
+  // execFailure is the LATEST probe's answer. A path that could not start
+  // once and has since been given a binary that does must stop reporting the
+  // old failure — otherwise the gate logs "cannot run on this host" for a
+  // binary it is in fact judging on its generation.
+  test('a failure recorded for a path is cleared once a binary there runs', async (t) => {
+    const { findRustParser } = await import('../helpers/scanner-runner.mjs');
+    const bin = findRustParser();
+    if (!bin) { t.skip('no rust binary available'); return; }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rp-probe-'));
+    const spot = path.join(dir, path.basename(bin));
+    try {
+      assert.equal(taskQueue.probeHashGeneration(spot), null);
+      assert.match(taskQueue.execFailure(spot), /ENOENT/, 'nothing there yet: the spawn error is recorded');
+      fs.copyFileSync(bin, spot);
+      fs.chmodSync(spot, 0o755);
+      if (taskQueue.probeHashGeneration(spot) === null) { t.skip('the binary did not answer the probe on this host'); return; }
+      assert.equal(taskQueue.execFailure(spot), null);
+    } finally {
+      // A just-run .exe can stay locked for a moment on Windows.
+      try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch (_) { /* cleanup */ }
+    }
+  });
+
   test('the real binary answers with the current generation', async (t) => {
     const { findRustParser } = await import('../helpers/scanner-runner.mjs');
     const { HASH_GENERATION } = await import('../../src/db/audio-hash.js');

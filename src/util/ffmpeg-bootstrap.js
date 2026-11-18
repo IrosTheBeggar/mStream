@@ -380,8 +380,12 @@ export function computeFileChecksum(filePath) {
 
 // tar hands a .tar.xz to the xz tool, which minimal images lack (Debian 11
 // slim: "xz: Cannot exec"): name the fix instead of the symptom. Pure.
+// "xz" has to stand alone as a program name: every tar complaint about the
+// archive carries its ".tar.xz" name too ("…-gpl.tar.xz: Cannot open: No
+// such file or directory" is a missing archive, not a missing tool).
+const XZ_TOOL_MISSING = /(?:^|[\s'"`(:/])xz(?=[\s'"`:]|$)[^\n]*(?:Cannot exec|not found|No such file)/im;
 export function tarFailureHint(stderr) {
-  return /\bxz\b[^\n]*(Cannot exec|not found|No such file)/i.test(String(stderr))
+  return XZ_TOOL_MISSING.test(String(stderr))
     ? ' — unpacking .tar.xz needs the xz tool (debian/ubuntu: apt install xz-utils; fedora/rhel: dnf install xz; alpine: apk add xz)'
     : '';
 }

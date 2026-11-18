@@ -265,7 +265,7 @@ case "$key" in
         have=$(glibc_version)
         if [ -n "$have" ] && version_below "$have" "$GLIBC_FLOOR"; then
             if [ -n "${MSTREAM_KEY:-}" ] || [ -e "$ROOT/current" ]; then
-                echo "warning: this machine's glibc is $have, but the $key bundle needs glibc $GLIBC_FLOOR or newer - its library scanner and Quick Connect will not run here" >&2
+                echo "warning: this machine's glibc is $have, but the $key bundle needs glibc $GLIBC_FLOOR or newer - Quick Connect will not run here, and library scans use the bundle's static scanner instead" >&2
             else
                 echo "this machine's glibc is $have, but the $key bundle needs glibc $GLIBC_FLOOR or newer" >&2
                 echo "  (Debian 10, Ubuntu 20.04, RHEL/Rocky/Alma 8 or later). On an older OS run mStream from source with" >&2
