@@ -881,8 +881,9 @@ describe('the Auto DJ panel: the Genres row', () => {
 describe('the Auto DJ panel: facts on the server object', () => {
   const applySandbox = () => {
     const MSTREAMAPI = { currentServer: {} };
-    const fn = new Function('MSTREAMAPI', 'discoveryView', 'discoverySetEntry', 'DISCOVERYPAGE',
-      `${sliceFn('applyDiscoveryPing')}\nreturn applyDiscoveryPing;`)(MSTREAMAPI, {}, () => {}, { pageAvailable: () => false });
+    // (the Peer Recommendations nav row: no row here)
+    const fn = new Function('MSTREAMAPI', 'discoveryView', 'discoverySetEntry', 'DISCOVERYPAGE', 'peerRecsSetEntry', 'peerRecsEntryNow',
+      `${sliceFn('applyDiscoveryPing')}\nreturn applyDiscoveryPing;`)(MSTREAMAPI, {}, () => {}, { pageAvailable: () => false, peerRecsAvailable: () => false }, () => {}, () => null);
     return { MSTREAMAPI, applyDiscoveryPing: fn };
   };
 
@@ -898,11 +899,17 @@ describe('the Auto DJ panel: facts on the server object', () => {
     assert.ok(AUTODJ.seeds.takesNegatives({ autoDj: 1, discovery: true }));
   });
 
+  // init hands GET /api's answer to applyServerInfo, and a failed call
+  // null: the same reads, nothing known.
+  const serverInfoWiring = () => {
+    assert.match(sliceFn('init'), /MSTREAMAPI\.serverInfo\(\)\n\s*\.then\(applyServerInfo\)\n\s*\.catch\(\(\) => applyServerInfo\(null\)\);/);
+    return sliceFn('applyServerInfo');
+  };
+
   test('init reads discoveryReady from /api/ features', () => {
-    const init = sliceFn('init');
-    const then = init.slice(init.indexOf('MSTREAMAPI.serverInfo()'), init.indexOf('.catch(() => {'));
-    const m = then.match(/\.then\(\(info\) => \{\n(?:\s*\/\/[^\n]*\n)*\s*const feats = ([^\n]+);\n\s*MSTREAMAPI\.currentServer\.discoveryReady = ([^\n]+);\n\s*const admin = /);
-    assert.ok(m, 'the first statements of serverInfo().then: before the admin and username lines, which a throw would skip');
+    const then = serverInfoWiring();
+    const m = then.match(/^function applyServerInfo\(info\) \{\n\s*const feats = ([^\n]+);\n\s*MSTREAMAPI\.currentServer\.discoveryReady = ([^\n]+);\n\s*const admin = /);
+    assert.ok(m, 'the first statements of applyServerInfo: before the admin and username lines, which a throw would skip');
     const read = new Function('info', `const feats = ${m[1]}; return ${m[2]};`);
     assert.equal(read({ features: { discoveryReady: true } }), true);
     assert.equal(read({ features: { discoveryReady: false } }), false);
@@ -910,15 +917,13 @@ describe('the Auto DJ panel: facts on the server object', () => {
     for (const info of [{ features: {} }, {}, null, undefined, { features: null }, { features: 'x' }, { features: 7 }]) {
       assert.equal(read(info), undefined, `unknown for ${JSON.stringify(info)}`);
     }
-    const fail = init.slice(init.indexOf('.catch(() => {'), init.indexOf('MSTREAMAPI.currentServer.discoveryPath'));
-    assert.match(fail, /^\.catch\(\(\) => \{\n\s*MSTREAMAPI\.currentServer\.discoveryReady = undefined;\n/, 'a failed /api/ leaves it unknown');
+    // null is what a failed /api/ hands it: unknown
   });
 
   test('init reads the server\'s version from /api/ (the Genres drawer\'s kind and its wire)', () => {
-    const init = sliceFn('init');
-    const then = init.slice(init.indexOf('MSTREAMAPI.serverInfo()'), init.indexOf('.catch(() => {'));
+    const then = serverInfoWiring();
     const m = then.match(/\n\s*MSTREAMAPI\.currentServer\.version = ([^\n]+);\n/);
-    assert.ok(m, 'serverInfo().then sets currentServer.version');
+    assert.ok(m, 'applyServerInfo sets currentServer.version');
     assert.ok(then.indexOf(m[0]) > then.indexOf('const admin = '), 'after the statements a throw must not skip (the admin line)');
     const read = new Function('info', `return ${m[1]};`);
     assert.equal(read({ server: '6.33.1' }), '6.33.1');
@@ -926,8 +931,7 @@ describe('the Auto DJ panel: facts on the server object', () => {
     for (const info of [{}, { server: 6 }, { server: null }, null, undefined]) {
       assert.equal(read(info), undefined, `unknown for ${JSON.stringify(info)}`);
     }
-    const fail = init.slice(init.indexOf('.catch(() => {'), init.indexOf('MSTREAMAPI.currentServer.discoveryPath'));
-    assert.match(fail, /^\.catch\(\(\) => \{\n\s*MSTREAMAPI\.currentServer\.discoveryReady = undefined;\n\s*MSTREAMAPI\.currentServer\.version = undefined;\n/, 'a failed /api/ leaves it unknown');
+    // null is what a failed /api/ hands it: unknown
     // the gate it feeds
     assert.equal(AUTODJ.takesGenreSource({ version: read({ server: '6.33.1' }) }), true);
     assert.equal(AUTODJ.takesGenreSource({ version: read({}) }), false);

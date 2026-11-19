@@ -24,14 +24,14 @@ What changes on the server: a member-readable peers route; an async admin Add th
 Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator before planning. **[review]** = a review fix taken here. **[flag]** = a default the user should confirm (§7).
 
 1. **[user] Layout "B + C"** (DECISIONS-v2 §1). The peer strip is the peer list: there is no Peers button, popover or window. There are two song columns. A row tap opens the plug-in modal, and only the play icon plays. Nothing else plays: not a row tap, and not the modal opening.
-2. **[orch] Gate**: `discovery === true && discoveryP2p === true && discoveryTaste >= 3 && discoveryP2pPeers >= 1` (ping flat keys, or `/api` `features`). An older server shows **no entry point at all**, and there is no reduced page. The strict taste schema answers 400 to the new keys (`src/api/discovery-taste.js:84-94`), and a client-side filter of a global top-N can leave a peer nearly empty. The now-playing panel's Network tab keeps serving older servers unchanged.
+2. **[orch] Gate**: `discovery === true && discoveryP2p === true && discoveryTaste >= 3 && discoveryP2pPeers >= 1` (ping flat keys, or `/api` `features`). **[user] The admin exception (web, §4.1 W7)**: while p2p is off, an admin who can turn the network on gets the entry too, and the page is a form that turns it on. "Can turn on" = `user.admin`, the `/api` `admin` object present (lockAdmin off), `discoveryTaste >= 3` and `discoveryP2pPeers >= 1`. `discovery` is not required: the enable forces collection on. Members get no entry while p2p is off. An older server shows **no entry point at all**, and there is no reduced page. The strict taste schema answers 400 to the new keys (`src/api/discovery-taste.js:84-94`), and a client-side filter of a global top-N can leave a peer nearly empty. The now-playing panel's Network tab keeps serving older servers unchanged.
 3. **[orch] Narrowing is server-side.** A peer tab re-asks taste with `networkPeers:[id]`, pinned to the seed batch on screen (§3.5), so each peer gets its own top-N.
 4. **[orch] Users with no finished songs still get leads (S6)**: `networkOnRandomSeed: true` walks the network on the single random pick.
 5. **[orch] Add is admin-only and async** (202 plus a per-peer state). A page Add **does not pin**. A full shelf swaps out unpinned snapshots in rotation's eviction order, but only as many as the bytes that landed need (the plan runs on the announced size, which the peer controls). **No room** appears only when the incoming snapshot cannot fit even after evicting every unpinned one. Member pull is deferred.
 6. **[review] "No room" is inert on all three clients**, and the server clears every stored `failed` state (no-room included) on any shelf or pin change. So "No room" disappears by itself as soon as an admin unpins something (§3.3). A stored `no-room` is also re-planned on every read, so raising the storage cap (or a smaller announcement) clears it at the next poll. Only `planRoom` may store `no-room`; the admin panel's synchronous fetch never does.
 7. **[orch] Members get a read-only peers route** (online state and shelf peers). Blocked and incompatible-model peers are hidden from everyone. Unheld catalog peers are admin-only.
 8. **[review] The server stamps the generated tile and the peer monogram.** Every network lead carries `tile: {key, hue, letter}` and every peer row carries `monogram`, built with the server's own `nameKey` (`src/db/name-key.js`). Clients draw them verbatim and spread earned art by `tile.key`. This replaces three client implementations that the reviews found disagreeing (key fold, title fallback, letter casing, monogram base). The vectors live in one server fixture (§5.1).
-9. **[flag] Computed hues replace the boards' fixed sample hues.** `hue = FNV-1a-32(tile.key) % 360` moves Undertow 170→4, Daylight Savings 50→352 and Porchlight 100→353, so three of the nine sample albums sit in reds. The user sees a frame-1 stage screenshot at Gate W (§6) before the webapp PR merges. If they want a curated palette instead, only the server's `leadTile` and the fixture change; clients are untouched.
+9. **[user] Computed hues replace the boards' fixed sample hues.** `hue = FNV-1a-32(tile.key) % 360` moves Undertow 170→4, Daylight Savings 50→352 and Porchlight 100→353, so three of the nine sample albums sit in reds. **Decided at Gate W, 2026-10-27**, after the frame-1 stage screenshot: "Keep the computed tile hues as they are, reds included." No palette change; the server's `leadTile` and the fixture stay as they are.
 10. **[review] One earned-art rule**: after a preview resolves, `preview.artwork` (https only) replaces the tile of every row with the same `tile.key`, **only when** both `nameKey(preview.album) == nameKey(lead.album)` (lead album non-empty) and `nameKey(preview.artist) == nameKey(lead.artist)`. Otherwise nothing changes anywhere, with no per-lead fallback. It lasts for the visit and is held in memory only. Terminal: no artwork ever. Phone cards (175 px) take only Deezer art (~250 px); the band and sheet take any (a logged phone deviation).
 11. **[review] Attribution is drawn verbatim** from `preview.attribution` ("Preview from Deezer" / "Provided courtesy of iTunes"), linked to `preview.link` when it is https. It shows wherever a clip plays, never before a resolve, and is never a translated key on any client (Apple's wording, `src/discovery-plugins/plugins/itunes.js:5-8`).
 12. **[orch] Preview provider** = the first plug-in in `GET /api/v1/discovery/plugins` order whose capabilities include `preview`. There is no fall-through to a second provider: a miss shows "No preview". Pacing and 429 rules are in §5.5.
@@ -45,12 +45,10 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
     - web: the page is left;
     - phone: the frame is covered or popped, or the app is backgrounded;
     - terminal: the room is not drawn (another room, a server switch, quit, or the mini player).
-15. **[review] The modal shows only what the board draws**: header (tile or earned art, title, "Artist · Album", "● label"), then Preview, Get it…, Find elsewhere, Copy.
-    - Get it… is one chip or row per acquire plug-in (title only). A press starts the server's best-match job. There is no destination bar, description, YouTube lookup card or candidate picker.
-    - The web window hides its admin "Invite <peer> to federate" row **[flag]**, the "Opens in a new tab" hint and the "Search" lead label.
-    - Copy has its own row, whatever plug-ins are on.
-    - With plug-ins off and a member user, a web row click **still opens the window** (today it copies, `webapp/alpha/vp.js:1370`).
-16. **[review] Rows carry no job state** (no badge, no thin bar, no swatch mark). The job shows inside the modal or sheet only, with a one-row `lookup/batch` when it opens. So the page never batch-looks-up jobs.
+15. **[user] One window for every network lead** (2026-11-19, replacing the page's own trimmed window): a lead opens the window the now-playing panel's "From the network" rows open — its header and cover, a preview tile per provider, Get it with the admin's invite row, Find elsewhere with Copy title — through `openDiscoverModal(raw, 'p2p', { opener })`; with no plug-ins and no admin a lead is copied, as those rows are. Any later surface that lists recommendations reuses the same window. (The board's version — tile header, "● label", one Preview control, Get it… chips, a Copy row — is gone from the web; the phone and terminal plans below still describe their own sheets.)
+    - Phone and terminal sheets: Get it… is one chip or row per acquire plug-in (title only). A press starts the server's best-match job. There is no destination bar, description, YouTube lookup card or candidate picker.
+    - Phone and terminal sheets: Copy has its own row, whatever plug-ins are on.
+16. **[review] Rows carry no job state** (no badge, no thin bar, no swatch mark). The job shows inside the window or sheet only: the web window's own lookup when it opens (§2 item 15); the phone and terminal sheets' one-row `lookup/batch`. So the page never batch-looks-up jobs.
 17. **[review] No "Show more".**
     - Web: draws all leads (≤ 32) as `DISCOVERYPAGE.columnBlocks` blocks of 16, each 8 | 8, so leads read best-first per block.
     - Terminal: blocks of 2 × the visible rows.
@@ -60,7 +58,7 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
     - "Nothing new" plus New seeds.
     - Scan pending: Discover's scan-pending card. This is a logged deviation, kept because it names the reason.
     - Error or failed call: "Try again" alone.
-    - Switched off (a peers 403, a taste 403, or taste `network: null` on an unfiltered, non-random answer): one re-ping, then the entry hides and the client leaves the page (web: file explorer; phone: pop the frame; terminal: Files). There is no off card.
+    - Switched off (a peers 403, a taste 403, or taste `network: null` on an unfiltered, non-random answer): one re-ping, then the entry hides and the client leaves the page (web: file explorer; phone: pop the frame; terminal: Files). There is no off card. On the web, an admin who can turn the network on gets W7's form instead (R7).
 19. **[review] Copy text** = `Artist - Title`, or just `Title` when the artist is empty, on every client. This includes the webapp's existing `copyDiscoverP2p` (`vp.js:4236`), which today gives "- Title". Copy list = the current tab's leads in list order, joined by `\n` with no trailing newline. The toast is "Copied".
 20. **[flag] i18n.** The page's keys go into every locale file of each client: web 12 (EN + de es fr it ja ko nl pl pt ru zh), phone 10 ARBs, terminal 10 yml. The webapp also translates the Discover config-bar keys the page reuses (`nav.discover`, `panel.discover`, `dpage.basedOnLast`, `dpage.bar.*`, `dpage.window.*`, `dpage.verb.newSeeds`): the 11 locale files carry no `dpage.*` key today, so the bar would otherwise stay English beside translated page text.
 21. **Terminal specifics.**
@@ -217,9 +215,10 @@ networkOnRandomSeed: Joi.boolean().default(false),
 - **R2 Tab tap** (a peer, or All): `pin` = every `seeds[].filepath` of the batch's first answer (≤ 12, deduped, the random pick included), `limit.seeds` = their count, plus `networkPeers`. A client MAY answer from a per-tab cache for the current batch: a pinned walk over an unchanged shelf gives the same rows.
 - **R3 New seeds, window change, seed edits** start a new batch and keep the selected tab's `networkPeers`. On a random answer, the shown pick goes into `exclude` (Discover's "Another pick").
 - **R4 Add landed**: an id **this client POSTed** is now `onShelf` (or `add.state == 'done'`), or `shelf.searchable` went 0 → > 0 while "No peers yet" shows. Then re-ask the current tab pinned to the batch, deferred while a clip is live. Adds by other clients or by rotation only update the strip.
+  - **The shelf emptied** (`shelf.searchable` > 0 → 0 between two polls; found in the W6 live walk): drop every tab's kept answer and re-ask the same way, so the walk's `empty-shelf` draws "No peers yet" (§2 item 18) instead of leads from peers that left.
 - **R5 `reason: 'not-on-shelf'`, or the selected peer gone from the shelf in a poll**: select All and re-ask pinned (or use the cached All).
 - **R6 Poll**: `GET /p2p/peers` on open, then every 15 s, or every 3 s while any row shows `adding` or an own POST is out. Paused while hidden or covered (one poll on return). Stopped on leave.
-- **R7 Off**: a peers 403, a taste 403, or `network: null` on an unfiltered, non-random 200 → one re-ping. If the gate is now false, hide the entry and leave the page.
+- **R7 Off**: a peers 403, a taste 403, or `network: null` on an unfiltered, non-random 200 → one re-ping. If the gate is now false, hide the entry and leave the page. The admin exception (web, §2 item 2): when the user can turn the network on, the page shows W7's form instead of leaving.
 - **R8**: the terminal debounces keyboard tab stepping (←/→) by 250 ms; clicks and taps ask at once. The last ask wins everywhere (seq fence).
 
 ### 3.6 Existing routes the clients use (no server change)
@@ -233,7 +232,7 @@ networkOnRandomSeed: Joi.boolean().default(false),
   - `GET /api/v1/discovery/collection/destination` returns a non-null `destination` (null when uploads are off, `src/discovery-plugins/destination.js:50-53`).
 
   Start a job with `POST /api/v1/discovery/plugins/:name/jobs {recommendation, destination: <shown>}`. A 409 `destination_changed` (`discovery-plugin-jobs.js:153-196`) → re-read the destination and return the chip to idle. YouTube is off by default.
-- **Job state in a modal**: `POST /api/v1/discovery/plugin-jobs/lookup/batch {recommendations:[lead]}` when it opens, then `GET …/plugin-jobs/:id` every 1.5 s while it is open and the job is live.
+- **Job state in a modal** (the phone and terminal sheets; the web window keeps its own lookup, §2 item 15): `POST /api/v1/discovery/plugin-jobs/lookup/batch {recommendations:[lead]}` when it opens, then `GET …/plugin-jobs/:id` every 1.5 s while it is open and the job is live.
 - **Find elsewhere**: the `links` plug-in's resolve (`plugins/links.js:44-75`, no network call).
 
 ### 3.7 Server pieces and file ownership (one PR; about 6 dev-days)
@@ -345,7 +344,9 @@ Run: `node test/stage/peer-recs-stage.mjs [port=3995]`.
   - `restart`: same state dir and port;
   - `pin-all` / `unpin <name>`;
   - `empty-shelf`;
-  - `reset`.
+  - `p2p-off`: the admin route's disable, live. The route persists it, so a restart keeps p2p off;
+  - `p2p-on`: `discoveryP2p.enabled` true in the config, and a restart. It stands in for a successful enable: under NO_SIDECAR the real one answers 500 "failed to start the discovery network: p2p-sidecar switched off for this run (MSTREAM_TEST_P2P_NO_SIDECAR)", which is W7's error path;
+  - `reset` (p2p on again).
 
   It prints the URL and the LAN URL. Kill only the PIDs it prints.
 
@@ -370,32 +371,33 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 - `applyDiscoveryPing` (M:4021-4033) reads `discoveryP2pPeers` into `discoveryView.flags` (literal M:3973) and calls `peerRecsSetEntry(...)`, which toggles `super-hide` on `#nav-peer-recs`.
 - The nav row goes in IX after `:615`, inside Music under Discover: `data-panel="peerRecs"`, globe + lens icon, `data-i18n="nav.peerRecs"`, `local-only`.
 - Route state `{state:'peerRecs'}`; `PANELS_BY_STATE.peerRecs` (M:7226-7239). It is needed because `discoveryPanel` routes through `switchServer(null)` when `peerContext` is set (M:4115-4117 → M:7290-7308).
-- Off handling (§2 item 18 / R7): a taste 403, a peers 403, or `network:null` on a non-random answer → re-ping. If still off: `peerRecsSetEntry(false)` and `changeView` to the file explorer. No off card. A peers 404 → the strip shows All only.
+- Off handling (§2 item 18 / R7): a taste 403, a peers 403, or `network:null` on a non-random answer → re-ping. If still off: `peerRecsSetEntry(false)` and `changeView` to the file explorer, unless the user can turn the network on (W7's form). No off card. A peers 404 → the strip shows All only.
 
-**Pieces** (order W1 ∥ W2 ∥ W5 → W3 → W4 → W6; about 6.25 dev-days; one PR; W4 alone owns MT; W3 alone owns `WINDOW_METHODS` / `makeWindow` in PT).
+**Pieces** (order W1 ∥ W2 ∥ W5 → W3 → W4 → W6, then the follow-up W7; about 6.25 dev-days before W7; one PR; W4 alone owns MT; W3 alone owns `WINDOW_METHODS` / `makeWindow` in PT).
 
 | # | piece | owns | effort |
 |---|---|---|---|
 | W1 | Pure page model | DP: `PAGES`; `peerRecsAvailable`; `PEER_LIMITS {seeds:12, network:32}`; `buildRequests` (DP:252-291) page body per R1 (`networkPeers` kept only as `/^[0-9a-f]{64}$/`, deduped, ≤ 50, the key omitted when empty); NEW `batchRequest(body, batch, peerId)` after `peersRequest` (DP:303-317), per R2 (pins the random pick too); `networkRows` (DP:597-619) gains `peerId`, `peerLabel`, `tile` (from `raw.tile`), subtitle `Artist · Album`, and drops `onLabel` / `newArtist*` / `line`; `sourceState('network')` (DP:1220-1249) reads `network.reason` (drop the `searched.peers === 0` guess); `stateOf` (DP:1276-1299): `scan-pending` → scanPending, random + leads → ready; delete `pluginChips` (DP:465-476); exports (DP:1301-1312). EN: delete `dpage.network.*`, `dpage.plugins.*`. PT describes at `:136, :181, :571, :2362, :2468, :2487`. | 0.75 d |
-| W2 | Pure helpers | NEW `webapp/alpha/peer-recs.js` (UMD, global `PEERRECS`): `tileColours(hue)`, `stripItems(answer,{selected,local})`, `pollDelay`, `addOutcome(status,body)`, `landed(prev,next,posted,showingNoPeers)` (R4), `previewProvider(list)`, `retryDelayMs(name)`, `artMatches(raw,preview)`, `leadKey` (§5.3), `nextIndex`, `copyListText`, `copyText`, `peerLine(raw, peersAnswer)`; NEW `test/unit/webapp-peer-recs.test.mjs` | 0.5 d |
-| W3 | API + aside audio + window | API: NEW private `statusReq`; `discoveryP2pPeers` (throws), `discoveryP2pAdd` and `discoveryPreview` (→ `{status, body}`). VP: module aside player replacing `discoverPreviewAudio` (VP:349-350): `asideEl / asidePlay / asidePause / asideResume / asideStop / asideMainPlaying`, one reused `HTMLAudioElement` and owner tokens; `playDiscoverPreview` / `stopDiscoverPreview` (VP:1966-1992) become owner `'window'`; `discoverState.clip` (beside VP:164-175) and the `clip*` methods (`clipToggle / Start / Prefetch / Pause / Resume / Stop / Reset`) with exports and `watchClip`; the `playerStats.playing` watcher (VP:4556) calls `asideMainPlaying` first. Window, behind `modal.from === 'peerRecs'`: `openDiscoverModal` (VP:1369) skips the copy fallback (VP:1370) for this source; header `dmArt` (VP:1210) = `clip.art[tile.key]`, NEW `dmTile`; subtitle (VP:1187) `[artist, album]`; meta (VP:1232) = the peer line only (dot when online); a NEW Preview section (one control bound to `discover.clip`, attribution once resolved); Get it… as one chip per acquire plug-in starting the job directly (the existing rows, destination bar, sub lines and lookup card are not drawn); a NEW own Copy row; the invite row, `findHint` and the "Search" lead hidden. IX modal (`:1136-1462`, find section `:1449-1461`). `copyDiscoverP2p` (VP:4236) drops the leading "- ". CSS `.dmodal-tile`, `.dm-clip*`, `.dmodal-dot-none`. NEW `test/unit/webapp-peer-recs-clip.test.mjs`; PT `WINDOW_METHODS` (`:726-746`), `makeWindow` (`:819`) + one describe. | 1.5 d |
+| W2 | Pure helpers | NEW `webapp/alpha/peer-recs.js` (UMD, global `PEERRECS`): `hueOf(hue)`, `stripItems(answer,{selected,local})`, `pollDelay`, `addOutcome(status,body)`, `landed(prev,next,posted,showingNoPeers)` (R4), `previewProvider(list)`, `retryDelayMs(name)`, `artMatches(raw,preview)`, `leadKey` (§5.3), `nextIndex`, `copyListText`, `copyText`; NEW `test/unit/webapp-peer-recs.test.mjs` | 0.5 d |
+| W3 | API + aside audio + window | API: NEW private `statusReq`; `discoveryP2pPeers` (throws), `discoveryP2pAdd` and `discoveryPreview` (→ `{status, body}`). VP: module aside player replacing `discoverPreviewAudio` (VP:349-350): `asideEl / asidePlay / asidePause / asideResume / asideStop / asideMainPlaying`, one reused `HTMLAudioElement` and owner tokens; `playDiscoverPreview` / `stopDiscoverPreview` (VP:1966-1992) become owner `'window'`; `discoverState.clip` (beside VP:164-175) and the `clip*` methods (`clipToggle / Start / Prefetch / Pause / Resume / Stop / Reset`) with exports and `watchClip`; the `playerStats.playing` watcher (VP:4556) calls `asideMainPlaying` first. **Superseded 2026-11-19 (§2 item 15), the page now opens the now-playing window:** window, behind `modal.from === 'peerRecs'`: `openDiscoverModal` (VP:1369) skips the copy fallback (VP:1370) for this source; header `dmArt` (VP:1210) = `clip.art[tile.key]`, NEW `dmTile`; subtitle (VP:1187) `[artist, album]`; meta (VP:1232) = the peer line only (dot when online); a NEW Preview section (one control bound to `discover.clip`, attribution once resolved); Get it… as one chip per acquire plug-in starting the job directly (the existing rows, destination bar, sub lines and lookup card are not drawn); a NEW own Copy row; the invite row, `findHint` and the "Search" lead hidden. IX modal (`:1136-1462`, find section `:1449-1461`). `copyDiscoverP2p` (VP:4236) drops the leading "- ". CSS `.dmodal-tile`, `.dm-clip*`, `.dmodal-dot-none`. NEW `test/unit/webapp-peer-recs-clip.test.mjs`; PT `WINDOW_METHODS` (`:726-746`), `makeWindow` (`:819`) + one describe. | 1.5 d |
 | W4 | The page | M: `discoveryPanel` (M:4109-4158) title, programState and highlight per page; `discoveryOnScreen` (M:4055-4057); `discoveryWatchJobs` (M:4369) → `!discoveryOnScreen()`; `discoveryPick` back (M:5229-5241); `setBrowserRootPanel` (M:411-424) calls `peerRecsLeave()`; `redoDiscovery({batch})` (M:4166-4241); every `v.page === 'explore'` site (M:3961, 3997, 4107, 4318, 4352, 4448, 4497, 4556, 4876); New seeds passes the pick (M:5117-5122); delete the explore draw code (`discoveryExploreHtml`, `discoverySectionHtml`, `discoveryEmptyHtml`, `discoveryLeadTag`, `discoveryNetworkHtml`, `discoveryCheckHtml`, `discoveryProgressHtml`, the `lead`/`newArtists` actions, `discoveryView.newArtistsOnly`). NEW top-level `peerRecs*` section (column-0 closing braces, MT's slicer): view const, open/leave, poll (R6, `visibilitychange`), Add, strip + in-place patch, rows (`D.columnBlocks` blocks of 16, markup as M:4829-4830, no Show more), band, Preview-all sequence, Copy list, Get-it gate. No job badges on rows (`discoveryLoadBadges` is not called for this page). IX: nav row, `#dpage-band` host after `#filelist` (`:861`), `<script src="alpha/peer-recs.js">` before `vp.js` (`:1497`). CSS `.prec-*`, `#dpage-band`, `@media (pointer:coarse)` 44 px hit areas on `.prec-play` and the band buttons. MT: FNS (`:100-114`), auto-list `PEER_FNS`, `KNOWN_IDS` (`:123`) += `nav-peer-recs`, `dpage-band`; delete the explore describe (`:2001-2071`) and rewrite or remove the badges describe (`:2120`). | 2 d |
 | W5 | Strings | EN + 11 locale files (flat dotted keys, e.g. `"peerRecs.all"`) | 0.5 d |
 | W6 | Live walk + fixes | – | 1 d |
+| W7 | Turn on the network | DP: `peerRecsCanTurnOn(flags, who)`, `peerRecsEntry(flags, who)`, `turnOnValid`. M: the serverInfo callback (M:815-821) stores `currentServer.adminApi`; the page's turnOn mode in the `peerRecs*` section; R7's admin branch (`peerRecsOff`, M:5569). API: the admin p2p status, enabled, name and description calls. CSS `.prec-*` for the form. `peerRecs.turnOn.*` in the 12 locale files. The stage's `p2p-off` / `p2p-on` (§3.9). PT, MT, the strings test. | 1 d |
 
 **Drawing (summary of the frames).**
 - **Strip**: All (neutral circle, network glyph), then shelf peers in server order (64 px circle `hsl(hue,55%,74%)`, the server's `monogram`, a 12 px green dot when online, offline dimmed with no dot; selected = 2 px teal ring), then for `canAdd` the addable items (dashed "+", "Adding…" spinner inert, failed "Try again", noRoom "No room" inert). Item rules: §5.6. Patched in place, keeping `scrollLeft` and focus by `data-v` = endpointId.
 - **Acts line**: "Preview all · Copy list", only in ready with rows; Preview all only with a provider.
 - **Row**: an open button (40 px tile from `raw.tile` or earned art; title 13 px; "Artist · Album" 12 px), then an always-visible 28 px teal play circle with states idle / live / resolving / waiting / none (muted, `aria-disabled`). No play circle when there is no provider.
 - **Band**: sticky at the bottom of the browser column, 56 px: 44 px art or tile, title, artist, attribution link (`rel="noopener noreferrer"`), ⏸ ⏭, Get it… (only with the gate; opens the window), ✕.
-- **Window from the page**: §2 item 15. Focus starts on Close and returns to the row's open button.
+- **Window from the page**: §2 item 15 — the now-playing panel's window. Focus starts on Close and returns to the row's open button.
 - **States**: §2 item 18. Loading = 8 skeleton rows × 2 columns; a re-ask dims the old rows (`.6`).
 
 **Strings (complete; EN values; every file).**
 - Visible:
   - `nav.peerRecs` / `panel.peerRecs` "Peer Recommendations";
   - `peerRecs.all` "All", `.adding` "Adding…", `.tryAgain` "Try again", `.noRoom` "No room", `.noPeers` "No peers yet", `.nothingNew` "Nothing new";
-  - `.preview` "Preview", `.previewAll` "Preview all", `.copyList` "Copy list", `.copied` "Copied", `.getIt` "Get it…", `.copy` "Copy", `.noPreview` "No preview".
+  - `.preview` "Preview", `.previewAll` "Preview all", `.copyList` "Copy list", `.copied` "Copied", `.getIt` "Get it…", `.noPreview` "No preview".
 - a11y:
   - `peerRecs.a11y.peers` "Peers", `.add` "Add {{name}}", `.adding` "{{name}}: Adding…", `.failed` "{{name}}: Try again", `.noRoom` "{{name}}: No room";
   - `.previewSong` "Preview {{title}}", `.pauseSong` "Pause preview of {{title}}";
@@ -414,7 +416,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
   - `landed` (R4: an own POST lands, 0 → > 0 only on No peers, a rotation swap → none);
   - `previewProvider` (no fall-through), `retryDelayMs` (deezer 5000, itunes 60000, other 5000);
   - `artMatches` (album + artist; empty lead album; non-https);
-  - `nextIndex`, `copyListText` / `copyText` (empty artist → title), `peerLine`, `leadKey`;
+  - `nextIndex`, `copyListText` / `copyText` (empty artist → title), `leadKey`;
   - every new key in all 12 files with matching `{{params}}`.
 - **PT (W1)**:
   - `PAGES`;
@@ -424,11 +426,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
   - `stateOf` for every reason; random + leads = ready;
   - `pluginChips` tests deleted.
 - **PT (W3)**:
-  - `WINDOW_METHODS` += `dmTile`, `dmClip*`;
-  - the window from peerRecs: meta = the peer line (dot ok / none, no ISRC, no %); subtitle without year / length; `dmArt` = earned art for `tile.key` only; tile fallback; Preview follows `discover.clip` only for its lead; Get it chips start a job directly; its own Copy row;
-  - the trim list: none of `discover.modal.getItLiveHint`, `getItSub`, `inviteTitle`, `findHint`, `search`; no destination bar, no lookup card;
-  - plug-ins off + member → the window opens and `copyDiscoverP2p` is not called;
-  - Discover and now-playing windows unchanged.
+  - the window from the page is the now-playing window (§2 item 15): a lead's window is a network row's (header, previews, Get it with the admin's invite, Find elsewhere with Copy title); plug-ins off + member → the lead is copied; nothing of the old page variant left in `index.html`, `vp.js` or `spa.css`;
 - **`webapp-peer-recs-clip.test.mjs`**:
   - one `Audio` element reused;
   - main paused once and resumed once across 3 hand-offs, never touched when not playing;
@@ -457,14 +455,45 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 1. The nav row under Discover; `/api` flags.
 2. Frame 1: strip states, two columns 6 | 6, shared album tiles. **Screenshot to the user for the palette decision (§2 item 9).**
 3. Frame 2: queue a fixture song; Signal Fires' play pauses main; the band and attribution show; Night Ferry art lands on both Night Ferry rows; ✕ resumes main.
-4. Frame 3: the Long Exposure row opens the window with nothing playing: tile M, "Marlowe Fields · Daylight Savings", "● Kitchen Radio", Preview / Get it… (noop) / Find elsewhere / Copy only.
+4. Frame 3: the Long Exposure row opens the now-playing window with nothing playing: "Marlowe Fields · Daylight Savings · <length>", the ISRC and the match line naming its seed, a Deezer preview tile, Get it (the noop row; an admin's invite row where federation applies), Find elsewhere with Copy title.
 5. Frame 4: the Kitchen Radio tab (network panel: one call with `networkPeers` + 12 pins; leads 3 | 2; All → no call); `+ Static Garden` Adding… with 3 s polls; Rooftop Try again; `+ Lighthouse` lands → Attic Tapes leaves the strip and a pinned re-ask follows.
 6. Preview all pacing (≤ 2 resolves per clip; Arcade Rain skipped; Quiet Engine's 429 then a retry).
 7. stage-member (no "+"), stage-new (leads).
-8. Stage controls: `offline "Kitchen Radio"` with its tab selected (dot gone, leads stay); `restart` during Adding… (the "+" returns, 3 s polling stops); `pin-all` then "+ Lighthouse" → No room (inert), `unpin "Basement Hi-Fi"` → "+" back; `empty-shelf` → "No peers yet"; p2p off → nav row gone, page left.
+8. Stage controls: `offline "Kitchen Radio"` with its tab selected (dot gone, leads stay); `restart` during Adding… (the "+" returns, 3 s polling stops); `pin-all` then "+ Lighthouse" → No room (inert), `unpin "Basement Hi-Fi"` → "+" back; `empty-shelf` → "No peers yet"; `p2p-off` as stage-member → nav row gone, page left (stage-admin: W7's live check).
 9. 390 px: one column per container rule, the strip scrolls, 44 px targets.
 10. Safari: the chain advances (one element).
 11. Keyboard: strip → acts → each row's open then play button; Esc returns focus.
+
+**W7: Turn on the network** (follow-up; **[user]** 2026-10-27: "If the user does not have p2p enabled, and the user is an admin, then the webapp should show a form to enable the p2p network.")
+- **Entry rule**:
+  - `DP.peerRecsCanTurnOn(flags, who)` = `who.admin && who.adminApi && discoveryTaste >= 3 && discoveryP2pPeers >= 1 && discoveryP2p !== true`. `who.adminApi` = the `/api` `admin` object is present, i.e. lockAdmin is off (`src/api/server-info.js:224-227`). `discovery` is not required: the enable forces collection on.
+  - `DP.peerRecsEntry(flags, who)` → `'page'` | `'turnOn'` | `null`. The nav row shows for both.
+  - The serverInfo callback (M:815-821) also stores `currentServer.adminApi = !!info.admin` and re-evaluates the row (it resolves after the ping).
+  - Members: unchanged (no row while p2p is off).
+- **Page in turnOn mode**: no heading (the header names the page), no config bar, strip, columns or band. One centred block in the browser column, Discover's empty-state look. On open, `GET /api/v1/admin/discovery/p2p/status`:
+  - 403 / 405 → `adminApi = false`, the row hides and the page is left (as R7);
+  - 200 `enabled: true` → re-ping, then the page;
+  - 200 `enabled: false` with `!binaryFound && !binaryFetchable` → one line, unavailable;
+  - otherwise → the form.
+- **Form**: the shares line; the collection line only when the ping says `discovery === false`; Server name (prefilled from `status.serverName`, maxlength 64); Description (prefilled from `status.serverDescription`, maxlength 180, optional); Turn on.
+  - `DP.turnOnValid({name, description})` is the server's Joi: name trimmed 1–64, description ≤ 180, neither with `|` or a control character. Turn on is disabled while invalid. No hint text.
+  - No federation-requests checkbox: it stays in the admin panel's flow (`webapp/admin/index.js` `enableP2p`).
+- **Submit order**: Turn on, or Enter in a field (not the Enter that confirms an IME conversion: `isComposing` / keyCode 229). The button reads "Turning on…" and keeps the keyboard (`aria-disabled`, not `disabled`), the block is `aria-busy`, and the fields disable.
+  1. `POST /api/v1/admin/discovery/p2p/enabled {enabled:true}`, with no client timeout shorter than the sidecar download. An error → the server's `error` string, escaped, on one line under the button (outside the slot typing rewrites, so its `role="alert"` is read once), and the form re-enables.
+  2. On ok: the name if changed (trimmed, non-blank) → `POST …/p2p/name`; the description if changed → `POST …/p2p/description`. Either failing → an iziToast warning (the network is on, the value is not saved).
+  3. Re-ping → flags → the page opens in page mode (the first R1 ask). The re-ping also sets the rest of the app's discovery flags (`applyDiscoverySurfaces`, shared with init()): the now-playing Discover panel and its "From the network", Auto-DJ's similarity, Sonic Path's row.
+- **R7**: for an admin who can turn the network on, the off re-ping shows the form instead of leaving.
+- **Strings** (`peerRecs.turnOn.*`, EN, every file): `shares` "Shares your library's metadata, never its audio, on the public discovery network, with this server's name and description.", `collection` "Also turns on discovery data collection.", `name` "Server name", `description` "Description", `button` "Turn on", `busy` "Turning on…", `unavailable` "The discovery network isn't available on this platform.", `nameNotSaved` "The network is on, but the server name wasn't saved.", `descriptionNotSaved` "The network is on, but the description wasn't saved."
+- **Tests**:
+  - PT: `peerRecsCanTurnOn` / `peerRecsEntry` per flag and `who` combination; `turnOnValid`;
+  - MT: status → form / unavailable / 403 leaves / `enabled: true` re-pings; submit ok → name and description only when changed → re-ping → page; submit 500 → the error line; R7 for an admin → the form;
+  - the strings test covers the new keys in every locale.
+- **Live check** (the stage, §3.9):
+  1. `p2p-off`, then as stage-admin a reload: the nav row shows and the page is the form, name and description prefilled.
+  2. As stage-member: no row.
+  3. As stage-admin, Turn on: "Turning on…", then the error line "failed to start the discovery network: p2p-sidecar switched off for this run (MSTREAM_TEST_P2P_NO_SIDECAR)", and the form re-enables.
+  4. `p2p-on`, then a reload: the page opens in page mode.
+- Phone and terminal: out of scope for this follow-up (not asked).
 
 ### 4.2 Phone (`mstream_music`, Flutter)
 **Entry and gating.**
@@ -838,11 +867,11 @@ House rules for every phase:
 ### 6.2 Phase 2: webapp (mStream)
 - Branch `claude/peer-recs-webapp` (PR #1088), stacked on Phase 1's branch; retarget it to master once Phase 1 merges.
 - PR "feat(webapp): Peer Recommendations page".
-- Waves: W1 ∥ W2 ∥ W5 → W3 → W4 → W6.
+- Waves: W1 ∥ W2 ∥ W5 → W3 → W4 → W6, then the follow-up W7.
 - **Gate W**:
   - `npm run test:unit` + the three discovery files green;
   - the §4.1 live walk done;
-  - **the frame-1 screenshot with computed hues shown to the user, and their palette answer recorded in DECISIONS** (a curated palette would be a small server follow-up before the release);
+  - **the frame-1 screenshot with computed hues shown to the user, and their palette answer recorded in DECISIONS** (a curated palette would be a small server follow-up before the release). Done 2026-10-27: computed hues kept (§2 item 9);
   - #1044 was closed unmerged (2026-10-29), so there is no rebase to check.
 - Merge.
 
@@ -882,8 +911,8 @@ House rules for every phase:
 5. Clients merged before the server release stay hidden (the gate), so steps 1–2 may slip without harm. Only step 3 must wait for step 2.
 
 ## 7. Open questions (each with the default this plan builds)
-1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. Decided at Gate W; server-only either way.
-2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins.
+1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. **Decided at Gate W, 2026-10-27: computed hues, reds included.**
+2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins. **Superseded 2026-11-19 (§2 item 15):** the page opens the now-playing window, so admins keep the invite row.
 3. **Coordinated release** (§2 item 22): hold the mStream bump for the player pin (default), vs ship server + web first and let the terminal room arrive with the next mStream release.
 4. **Admin panel sync `peer-dbs/fetch` keeps pinning** (default yes, back-compat), while page Adds never pin. An admin who wants a page-added peer kept presses Pin in the panel.
 5. **Addable rows**: online peers only (default, the design), vs also offline peers that seeders still hold.
@@ -912,7 +941,7 @@ House rules for every phase:
 - **Translations** in all three clients are not native-reviewed.
 - **CI has no audio device on Linux runners**: the terminal's band and clip path are covered by unit tests, and the e2e leg asserts absence when no device opened.
 - **The rust-i18n wasm release memory** (the v0.8.0 OOM): measure trunk before tagging.
-- **Hues differ from the approved boards** until the user answers Q1.
+- **Hues differ from the approved boards**: accepted by the user at Gate W (Q1, 2026-10-27).
 
 ## Appendix A — review findings
 
