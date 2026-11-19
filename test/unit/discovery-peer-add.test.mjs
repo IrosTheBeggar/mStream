@@ -486,6 +486,39 @@ describe('the re-plan after a no-room download', () => {
   });
 });
 
+describe('No room is re-planned on read', () => {
+  test('it stands while nothing fits and goes the read after room appears, with no shelf change', () => {
+    const t = harness();
+    t.announce('a');
+    t.plans.set(id('a'), { fits: false });
+    assert.equal(t.add('a').body.code, 'no-room');
+    assert.equal(t.state('a').code, 'no-room');
+    // a raised storage cap, or a smaller announcement: the plan fits now
+    t.plans.set(id('a'), { fits: true, evictIds: [] });
+    assert.equal(t.state('a'), null);
+    assert.equal(t.add('a').status, 202, 'the "+" works again');
+  });
+
+  test('only No room: Try again keeps its 30 minutes whatever the plan says', async () => {
+    const t = harness();
+    t.announce('a');
+    t.add('a');
+    await t.fail('a', coded('offline'));
+    const calls = t.planCalls.length;
+    assert.equal(t.state('a').code, 'offline');
+    assert.equal(t.planCalls.length, calls, 'nothing re-planned for it');
+  });
+
+  test('a peer gone from the catalog keeps its No room until it expires', () => {
+    const t = harness();
+    t.announce('a');
+    t.plans.set(id('a'), { fits: false });
+    t.add('a');
+    t.catalog.delete(id('a'));
+    assert.equal(t.state('a').code, 'no-room');
+  });
+});
+
 describe('clearing on a shelf change', () => {
   test('every failed state goes, no-room included; adding and done stay', async () => {
     const t = harness();
@@ -790,6 +823,25 @@ describe('wired: the default instance on the real shelf', () => {
     assert.equal(peerAdder.add(id('c'), { by: 'admin' }).status, 202);
     await peerAdder.whenIdle();
     assert.deepEqual(registryIds(), [id('b'), id('c')]);
+  });
+
+  test('No room clears at the next read once the admin raises the storage cap, and the Add then lands', async () => {
+    await shelve('a', 300_000, { pinned: true });
+    await shelve('b', 300_000, { pinned: true });
+    announce('c', 450_000);
+    assert.equal(peerAdder.add(id('c'), { by: 'admin' }).body.code, 'no-room');
+    const cap = config.program.discoveryP2p.maxPeerDbStorageMb;
+    try {
+      // what POST /api/v1/admin/discovery/p2p/max-storage does: no shelf change
+      config.program.discoveryP2p.maxPeerDbStorageMb = 10;
+      assert.equal(peerAdder.stateOf(id('c')), null);
+      assert.equal(peerAdder.add(id('c'), { by: 'admin' }).status, 202);
+      await peerAdder.whenIdle();
+      assert.equal(peerAdder.stateOf(id('c')).state, 'done');
+      assert.deepEqual(registryIds(), [id('a'), id('b'), id('c')], 'nothing swapped out: it fits');
+    } finally {
+      config.program.discoveryP2p.maxPeerDbStorageMb = cap;
+    }
   });
 
   test('a No room decided while another Add held the room clears when that Add fails', async () => {

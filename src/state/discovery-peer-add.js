@@ -22,7 +22,9 @@
 // leaving the shelf, or an unpin, may be exactly the room a "No room" was
 // waiting for, and a fresh try costs one press. A download that ends
 // without landing changes no shelf but frees the room it held from every
-// plan made meanwhile, so it drops the "No room"s (and only those). A done
+// plan made meanwhile, so it drops the "No room"s (and only those). A "No
+// room" is also re-planned whenever it is read, so a raised storage cap or
+// a smaller announcement clears it at the next poll. A done
 // state goes as soon as its snapshot leaves the shelf: the row is addable
 // again, and done would leave it with no "+".
 //
@@ -30,8 +32,9 @@
 // An Add plans its room when it starts (planRoom, through peer-dbs
 // planRoomFor; a queued Add re-plans then, since the shelf has moved) and
 // always fetches first: the planned evictees ride into fetchPeer as its
-// `discount` and leave the shelf in the same registry write that shelves
-// the newcomer, so a failed or slow download costs no peer its place. A
+// `discount`, and as many of them as the landed bytes need leave the shelf
+// in the same registry write that shelves the newcomer, so a failed or slow
+// download costs no peer its place. A
 // page Add never pins.
 //
 // The admin panel's synchronous fetch (POST …/peer-dbs/fetch) reports into
@@ -113,12 +116,20 @@ export function createPeerAdder({
   let generation = 0;
 
   // A peer's state, or null once its lifetime ran out (deleted on the way).
+  // A "No room" also goes the moment the room is there: it is re-planned on
+  // every read, since a raised storage cap or a smaller announcement frees
+  // room without any shelf change to clear it, and No room is inert on
+  // every client (no press could retry it).
   function read(endpointId) {
     const entry = states.get(endpointId);
     if (!entry) { return null; }
     const ttl = entry.state === 'done' ? DONE_TTL_MS
       : entry.state === 'failed' ? FAILED_TTL_MS : Infinity;
     if (now() - entry.at >= ttl) {
+      states.delete(endpointId);
+      return null;
+    }
+    if (entry.state === 'failed' && entry.code === 'no-room' && planRoomFor(endpointId)?.fits === true) {
       states.delete(endpointId);
       return null;
     }
