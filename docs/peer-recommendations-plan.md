@@ -69,7 +69,7 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
     - **[review]** With the queue open (47 cells) there are still two columns: ▌, title, play slot, about 21 cells each, with ARTIST dropped (the modal carries it).
     - Labels are drawn verbatim (`mStream · 3f9a`, not the board's `mStream·3f9a`).
     - The verbs line is lower-case as on the board.
-22. **[flag] One coordinated release.** The mStream version bump waits for the player v0.15.0 pin PR, so the web page and the bundled terminal room ship together. The phone store build follows the mStream tag (§6.5).
+22. **[flag] One coordinated release.** The mStream version bump waits for the pin PR of the first player release with the Peer recs room, so the web page and the bundled terminal room ship together. Master is at mStream v6.34.0 and pins player v0.16.0, so these are player v0.17.0 and mStream v6.35.0 unless another release ships first. The phone store build follows the mStream tag (§6.5).
 23. **[orch] Privacy.**
     - No Cover Art Archive and no batch art lookups.
     - A third party is reached only on a press: the server searches Deezer/Apple; the client loads the clip and, after it, the earned art from the provider CDN.
@@ -255,7 +255,7 @@ Notes for builders:
   - under it, the Add pre-check reads `isRunning()` as true.
 - Verify that `pushHolds()` (`peer-dbs.js:397`) and `discoveryP2p.forget()` are inert when the stack is down.
 - Production comment block: the three `MSTREAM_TEST_*` switches (`P2P_FAKE_FETCH_DIR`, `P2P_NO_SIDECAR`, `DISCOVERY_ONLINE_WINDOW_MS`) do nothing unless set. They follow the existing precedent (`peer-dbs.js:42-75`).
-- Conflict watch: mStream #1072 (open) edits `buildFeatures`, the ping, `api-server-info.test.mjs` and `openapi.yaml`. The overlap is textual only.
+- mStream #1072 also edited `buildFeatures`, the ping, `api-server-info.test.mjs` and `openapi.yaml`. It merged on 2026-11-07, and this branch is rebased on top of it.
 
 ### 3.8 Server tests
 - **Unit `discovery-peer-rotation`**, `planRoom`:
@@ -478,7 +478,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 - Admin = the peers route's `canAdd` (no P2pController probe).
 - Plug-ins off → leads, the strip and Copy / Copy list only.
 
-**Pieces** (one PR; about 7 dev-days; worktree `~/code/mstream_music/.claude/worktrees/peer-recs`, branch `claude/peer-recs` from **master** at phase start, whether or not #210 has merged; PH0 and PH8 run last to keep the #210 rebase mechanical; enter the worktree before launching agents; never read the stale checkout HEAD).
+**Pieces** (one PR; about 7 dev-days; worktree `~/code/mstream_music/.claude/worktrees/peer-recs`, branch `claude/peer-recs` from **master** at phase start; enter the worktree before launching agents; never read the stale checkout HEAD). Every phone anchor in this section, the entry list above as well as this table, was taken at `fee17e09`. Master has since merged #209, #210 (2026-11-16) and later PRs, so re-check them first.
 
 | # | piece | owns | depends | effort |
 |---|---|---|---|---|
@@ -489,7 +489,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 | PH4 | Preview engine | NEW `lib/media/preview_player.dart` (`PreviewPlayer`, `MainPlayerPort` over `MediaManager().audioHandler`, so `_playIntent` is respected, `audio_stuff.dart:2545-2598`; `ClipAudio`); http(s) only; never registered with audio_service; no play events. NEW `test/media/preview_player_test.dart` | PH1 | 1 d |
 | PH5 | Controller + interface | NEW `lib/screens/discovery/taste_seeds_host.dart` (`TasteSeedsHost`, `TasteRefreshable`), NEW `peer_recs_controller.dart`; `discovery_page_controller.dart` implements the interface (`now()`), with `discovery_widgets.dart:90-101, :209-322` and `discovery_seeds_sheet.dart:24-60` retyped. Tests: NEW `test/screens/peer_recs_controller_test.dart`, `peer_recs_fakes.dart`; Discover's tests unchanged and green | PH1, PH2, PH4 | 1 d |
 | PH6 | Listing + view | NEW `peer_recs_listing.dart` (copy of `discovery_listing.dart:218-296` in shape; lead items in an `Expando` like `_leadOfRow`, `discovery_page_controller.dart:613-614`); NEW `peer_recs_view.dart` (bar, strip, grid, footer, band, states); `browser.dart:1469-1474` dispatch; `browser_toolbar.dart:511` + `_newSeedsButton` via `TasteRefreshable`. Tests: NEW `peer_recs_listing_test`, `peer_recs_view_test` | PH0, PH3, PH5 | 1.25 d |
-| PH7 | Lead sheet | NEW `peer_recs_sheet.dart` (private sheet bits duplicated from `peer_sheets.dart:154-436`, which #210 rewrites); `elsewhere_sheet.dart:34-51, :97` (optional `fetch`, `jobs` nullable). Tests: NEW `peer_recs_sheet_test`; `discovery_destination_elsewhere_test` green | PH0, PH3, PH5 | 0.75 d |
+| PH7 | Lead sheet | NEW `peer_recs_sheet.dart` (private sheet bits duplicated from the shared-pieces block of `peer_sheets.dart`, now `:165-478` on master; it was `:154-436` before #210 added about 700 lines to the file); `elsewhere_sheet.dart:34-51, :97` (optional `fetch`, `jobs` nullable). Tests: NEW `peer_recs_sheet_test`; `discovery_destination_elsewhere_test` green | PH0, PH3, PH5 | 0.75 d |
 | PH8 | Home + browser wiring | `browser_list.dart`, `browser.dart` (`handleTap`, `flush()`), `enum_labels.dart`, NEW `home_card_rows.dart`. Tests: `federated_nav_test`, NEW `home_card_rows_test` | PH1, PH6 | 0.5 d |
 | PH9 | Integration + live walk | NEW `integration_test/peer_recs_test.dart` (MockServer serving a WAV clip) | all | 0.75 d |
 
@@ -586,7 +586,7 @@ Order: PH1 ∥ PH3 → PH2 ∥ PH4 → PH5 → PH6 ∥ PH7 → PH0 → PH8 → P
   - `draw_nav` (`:1938-1980`): LIBRARY `put` 5→4, TOOLS 13→12, rooms `1..=5 => 4+i`, LAST_PLAYED 10, MOST_PLAYED 11, DJ 13, SONIC 14, DISCOVER 15, PEER_RECS 16;
   - `R` beside `:2801` (no existing `Char('R')`).
 
-**Pieces** (waves: T0 ∥ T1 ∥ T2 ∥ T4 ∥ T8-fake → T3 → T5 ∥ T6 ∥ T7 → T8 legs → T9; about 12.5 agent-days). Worktree from **origin/main** (local `main` is stale), `cargo +1.98.1` only, **one shared `CARGO_TARGET_DIR`** for every agent with serialized builds (a `target/` reaches 60–70 GB). Enter the worktree before launching.
+**Pieces** (waves: T0 ∥ T1 ∥ T2 ∥ T4 ∥ T8-fake → T3 → T5 ∥ T6 ∥ T7 → T8 legs → T9; about 12.5 agent-days). Worktree from **origin/main** (local `main` is stale), `cargo +1.98.1` only, **one shared `CARGO_TARGET_DIR`** for every agent with serialized builds (a `target/` reaches 60–70 GB). Enter the worktree before launching. This section's anchors, the nav rows included, were taken at `12ee9a8`. Main is 300 commits past it (v0.15.0 to v0.16.0, #56, the Rated, Add torrent and Add YouTube rooms, and an engine without `rebuild_output`), so re-check them and re-place the Peer recs row first.
 
 | # | piece | owns | effort |
 |---|---|---|---|
@@ -728,7 +728,7 @@ At the 100×24 floor (hints on) the blank rows drop: tabs on 3, verbs on 4, head
 6. Stage `offline` and `restart` mid-Add.
 7. Terminal.app clicks by hand.
 8. **Server-audio**: the GUI with `--serve-port` as mStream's server-audio engine, a clip in Peer recs, then `/server-remote` play → the main track plays, the clip ends, no double audio.
-9. mStream's server-audio smoke with the v0.15.0 binary.
+9. mStream's server-audio smoke with the release binary (§6.5 step 2).
 
 ## 5. Shared spec (every client)
 
@@ -826,7 +826,7 @@ House rules for every phase:
 - Watch disk space (`disk-space-hogs` memory).
 
 ### 6.1 Phase 1: server (mStream)
-- Worktree `.claude/worktrees/peer-recs-server`, branch `claude/peer-recs-server`, fresh from `master`. Copy ffmpeg and ffprobe into the worktree.
+- Branch `claude/peer-recommendations-discovery-9872be` (PR #1086), from `master`. Copy ffmpeg and ffprobe into the worktree.
 - PR "feat(discovery): Peer Recommendations server — peers route, async Add, taste generation 3".
 - Workflow waves: P1 ∥ P2 → P3 → P3b → P4 → P5 ∥ P6.
 - **Gate S**:
@@ -836,26 +836,25 @@ House rules for every phase:
 - Merge to master. **No mStream version bump yet** (§2 item 22).
 
 ### 6.2 Phase 2: webapp (mStream)
-- Worktree `.claude/worktrees/peer-recs-webapp`, branch `claude/peer-recs-webapp`, fresh from master **after Phase 1 merges**.
+- Branch `claude/peer-recs-webapp` (PR #1088), stacked on Phase 1's branch; retarget it to master once Phase 1 merges.
 - PR "feat(webapp): Peer Recommendations page".
 - Waves: W1 ∥ W2 ∥ W5 → W3 → W4 → W6.
 - **Gate W**:
   - `npm run test:unit` + the three discovery files green;
   - the §4.1 live walk done;
   - **the frame-1 screenshot with computed hues shown to the user, and their palette answer recorded in DECISIONS** (a curated palette would be a small server follow-up before the release);
-  - #1044 rebase checked.
+  - #1044 was closed unmerged (2026-10-29), so there is no rebase to check.
 - Merge.
 
 ### 6.3 Phase 3: phone (mstream_music)
-- Worktree `.claude/worktrees/peer-recs`, branch `claude/peer-recs`, fresh from `master` (currently `fee17e09`).
+- Worktree `.claude/worktrees/peer-recs`, branch `claude/peer-recs`, fresh from `master` (`fee17e09` when this plan was written; #209 and #210 have merged since).
 - PR "feat(discovery): Peer Recommendations".
-- Waves: PH1 ∥ PH3 → PH2 ∥ PH4 → PH5 → PH6 ∥ PH7 → PH0 → PH8 → PH9. If #210 (93 files, unreviewed) lands first, rebase before PH0 / PH8 and re-run gen-l10n; never edit `lib/util/discover_badges.dart` (#210 touches it; the tile is server-stamped, so nothing here needs `nameKey` changes).
+- Waves: PH1 ∥ PH3 → PH2 ∥ PH4 → PH5 → PH6 ∥ PH7 → PH0 → PH8 → PH9. Never edit `lib/util/discover_badges.dart`: the tile is server-stamped, so nothing here needs `nameKey` changes.
 - **Gate P**:
   - `flutter test` green;
   - `flutter gen-l10n` clean (`l10n_untranslated.txt` lists no `peerRecs*`);
   - `integration_test/peer_recs_test.dart` on the iPhone 17 Pro simulator;
-  - the §4.2 walk with one build;
-  - re-run `test/media/*` if #209 landed.
+  - the §4.2 walk with one build.
 - Merge. The card stays hidden until a generation-3 server.
 
 ### 6.4 Phase 4: terminal (mstream-terminal-player)
@@ -866,18 +865,18 @@ House rules for every phase:
   - the full CI matrix (§4.3);
   - e2e P / P2 and every existing scenario;
   - the §4.3 live check, including the server-audio steps 8–9;
-  - rebase over #56 / #28 if either moved.
+  - rebase over #28 if it merged first (#56 merged on 2026-11-11).
 - Merge.
 
 ### 6.5 Release (one coordinated sequence)
-1. Player: the release commit `release: v0.15.0` (`Cargo.toml :3` + `Cargo.lock`) on `main`, plus an annotated tag `v0.15.0`.
-   - The release notes cover Peer recs, the aside engine and the **99 unreleased perf-audit commits** since v0.14.0 (e.g. `84a3dea perf(serve): drop --prefetch`).
-   - `release.yml` publishes; its `notify` job opens mStream's pin PR (`auto/mstream-player-manifest-update`). Fallbacks: `notify-mstream.yml`, or `gh workflow run update-mstream-player-manifest.yml --repo IrosTheBeggar/mStream -f tag=v0.15.0`.
+1. Player: the release commit `release: v0.17.0` (`Cargo.toml :3` + `Cargo.lock`) on `main`, plus an annotated tag `v0.17.0` (the next minor after v0.16.0; take the next free one if another release ships first).
+   - The release notes cover Peer recs and the aside engine. The perf-audit commits once listed here shipped in v0.15.0.
+   - `release.yml` publishes; its `notify` job opens mStream's pin PR (`auto/mstream-player-manifest-update`). Fallbacks: `notify-mstream.yml`, or `gh workflow run update-mstream-player-manifest.yml --repo IrosTheBeggar/mStream -f tag=v0.17.0`.
    - Measure the trunk web bundle first.
-2. mStream: the server-audio smoke with the v0.15.0 binary, then merge the pin PR (`bin/mstream-player/manifest.json` `tag` → `v0.15.0`).
-3. mStream version bump (v6.33.0). Wait for CI's `ci: update pre-built mstream-launcher binaries` commit and **tag that commit**, not the bump (the provenance guard; `release-ritual-ordering` memory). Dispatch on the tag ref if the tag event is eaten.
+2. mStream: the server-audio smoke with the v0.17.0 binary, then merge the pin PR (`bin/mstream-player/manifest.json` `tag` → `v0.17.0`).
+3. mStream version bump (v6.35.0, the next minor after v6.34.0). Wait for CI's `ci: update pre-built mstream-launcher binaries` commit and **tag that commit**, not the bump (the provenance guard; `release-ritual-ordering` memory). Dispatch on the tag ref if the tag event is eaten.
 4. Phone, after the mStream tag:
-   - bump `pubspec.yaml` `version` (0.39.0+58 → 0.40.0+59) and push tag `v0.40.0`;
+   - bump `pubspec.yaml` `version` (0.40.0+59 → 0.41.0+60; v0.40.0 shipped on 2026-11-01) and push tag `v0.41.0`;
    - `.github/workflows/release.yml` builds the APK, the AAB (Play internal track once the secret is set) and the unsigned IPA;
    - TestFlight stays a local step (`flutter build ipa` + Transporter), done by the user.
 5. Clients merged before the server release stay hidden (the gate), so steps 1–2 may slip without harm. Only step 3 must wait for step 2.
@@ -885,7 +884,7 @@ House rules for every phase:
 ## 7. Open questions (each with the default this plan builds)
 1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. Decided at Gate W; server-only either way.
 2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins.
-3. **Coordinated release** (§2 item 22): hold the mStream bump for the v0.15.0 pin (default), vs ship server + web first and let the terminal room arrive with the next mStream release.
+3. **Coordinated release** (§2 item 22): hold the mStream bump for the player pin (default), vs ship server + web first and let the terminal room arrive with the next mStream release.
 4. **Admin panel sync `peer-dbs/fetch` keeps pinning** (default yes, back-compat), while page Adds never pin. An admin who wants a page-added peer kept presses Pin in the panel.
 5. **Addable rows**: online peers only (default, the design), vs also offline peers that seeders still hold.
 6. **`limit.network`**: 32 (default; two blocks of 16) vs 48.
@@ -909,11 +908,7 @@ House rules for every phase:
 - **Rate limits are server-wide**. Several users on Preview all can exhaust Deezer's 40 / 5 s. This is bounded by one-in-flight plus one prefetch and the transient 429 rule.
 - **Restart**: every peer reads offline for about 15 s, and in-flight Add states vanish (the row shows "+" again). A soft reboot (any reboot-requiring admin save) does the same to Add states and abandons running downloads.
 - **`discoveryP2p` true while the stack is down** (no sidecar for the platform, or the recovery ladder): admins get "Try again" (`offline`) and members "No peers yet". `shelf.running:false` and the activity log tell an admin why.
-- **Merge conflicts** (textual):
-  - mStream #1072 (flags, ping, openapi);
-  - mStream #1044 (m.js, vp.js, index.html, spa.css, en.json, api.js);
-  - phone #210 (browser.dart, browser_list.dart, browser_toolbar.dart, discovery_plugins*, ARBs) and #209 (behavioural, `test/media/*`);
-  - player #56 (`types.rs` `LayeredFeatures`, `gui/mod.rs`, locales, `fake_mstream.py`, `run.sh`) and #28 (`engine/mod.rs`).
+- **Merge conflicts** (textual): player #28 (`engine/mod.rs`), still open. The others this plan listed are settled: mStream #1072, phone #209 and #210, and player #56 merged, and mStream #1044 was closed unmerged.
 - **Translations** in all three clients are not native-reviewed.
 - **CI has no audio device on Linux runners**: the terminal's band and clip path are covered by unit tests, and the e2e leg asserts absence when no device opened.
 - **The rust-i18n wasm release memory** (the v0.8.0 OOM): measure trunk before tagging.
