@@ -5777,10 +5777,10 @@ function discoveryPick() {
 //     /api/v1/discovery/p2p/peers, polled — R6). A peer narrows the leads
 //     to it, asked again on the batch on screen (R2); each tab's answer is
 //     kept for the batch, so going back to one asks nothing;
-//   - the leads in two columns: a row's open button opens its window, and
+//   - the leads in two columns: a row's open button opens the
+//     recommendation window the now-playing panel's network rows open, and
 //     only its play icon plays — a 30 s preview through the preview
-//     plug-in (VUEPLAYERCORE.clip*: one clip for the rows, the band and
-//     the window);
+//     plug-in (VUEPLAYERCORE.clip*: one clip for the rows and the band);
 //   - the band (#dpage-band, under the scroller): the clip, its
 //     attribution, ⏸ ⏭, Get it… and ✕;
 //   - Preview all (the tab's leads one after another) and Copy list.
@@ -6052,7 +6052,8 @@ function peerRecsTakePeers(answer, n) {
     } else {
       redoDiscovery({ batch: true });
     }
-  } else if (reask) {
+  } else if (reask || (p.pending && !peerRecsHolding())) {
+    p.pending = false;
     peerRecsReask();
   }
 }
@@ -6067,12 +6068,20 @@ function peerRecsSearchable(answer) {
 // never changes under a preview).
 function peerRecsReask() {
   const p = peerRecsView;
-  if (VUEPLAYERCORE.clipState().live) {
+  if (peerRecsHolding()) {
     p.pending = true;
     return;
   }
   p.answers = new Map();
   if (peerRecsOnScreen()) { redoDiscovery({ batch: true }); }
+}
+
+// The list holds still while a clip plays and while the recommendation
+// window is up (a preview tile there may be playing, and the keyboard goes
+// back to a row by its place): a re-ask then waits (p.pending) for the
+// clip's end, or for the first poll after the window closed.
+function peerRecsHolding() {
+  return VUEPLAYERCORE.clipState().live || VUEPLAYERCORE.discoverWindowOpen();
 }
 
 // What an empty network section says (§2 item 18): "No peers yet" where
@@ -6400,8 +6409,10 @@ function peerRecsAction(act, el) {
   } else if (act === 'precAdd') {
     if (PEERRECS.isEndpointId(id)) { peerRecsAdd(id); }
   } else if (act === 'precOpen' && r) {
-    // the window: nothing plays; the keyboard comes back here on close
-    VUEPLAYERCORE.openDiscoverModal(r.raw, 'p2p', { from: 'peerRecs', opener: el, peer: PEERRECS.peerLine(r.raw, p.peers), tile: r.tile });
+    // the same window as the now-playing panel's network rows, its match
+    // line naming the seed as Discover's does: nothing plays until one of
+    // its previews is pressed; the keyboard comes back here on close
+    VUEPLAYERCORE.openDiscoverModal(r.raw, 'p2p', Object.assign({}, discoveryMatchOpts(r), { opener: el }));
   } else if (act === 'precPlay' && r) {
     peerRecsPlay(i);
   } else if (act === 'precAll') {
@@ -6465,12 +6476,11 @@ function peerRecsAdvance() {
 // The clip's events (VUEPLAYERCORE.watchClip, while the page is up): the
 // band and the play icons follow it; Preview all moves on when a clip
 // ends or has no preview, asks the next one ahead once (20 s in), and
-// ends on a failed one rather than run into the provider's limiter. A
-// clip the window started is no lead of the page's list: the list goes
-// (Preview all with it; ⏭ takes the tab's leads after that clip's).
+// ends on a failed one rather than run into the provider's limiter. Every
+// clip is the page's own (a row's play icon, Preview all, ⏭), so its list
+// is always set when it starts.
 function peerRecsOnClip(ev) {
   const p = peerRecsView;
-  if (ev.type === 'resolving' && p.seq && PEERRECS.leadKey(p.seq.list[p.seq.index]) !== ev.key) { p.seq = null; }
   const seq = p.seq;
   const all = !!seq && seq.mode === 'all';
   const s = ev.state;
@@ -6492,7 +6502,7 @@ function peerRecsOnClip(ev) {
     // none: no preview for the visit; failed: for this press only
     if (ev.type === 'none') { p.noPreview.add(ev.key); }
     if (all && ev.type === 'none' && peerRecsAdvance()) { return; }
-    // a play icon's press says so (the window's Preview says it itself)
+    // a play icon's press says so (Preview all moves on quietly)
     if (seq && !all) { iziToast.info({ title: escapeHtml(t('peerRecs.noPreview')), position: 'topCenter', timeout: 1800 }); }
     peerRecsEnd();
   } else if (ev.type === 'stopped') {
@@ -6647,12 +6657,15 @@ function peerRecsActsHtml() {
   return `<div class="dpage-acts prec-acts"><button type="button" class="prec-act prec-act-all" data-dp="precAll" aria-pressed="${on}">${PREC_ICONS.play}${escapeHtml(t('peerRecs.previewAll'))}</button><span class="dpage-sep" aria-hidden="true">·</span>${copy}</div>`;
 }
 
-// A lead: its open button (the tile, title and "Artist · Album") opens its
-// recommendation window; its play icon, always shown, plays its preview.
-// No job state on the row: the window shows it.
+// A lead: its open button (the tile, title and "Artist · Album") opens the
+// recommendation window — or, with no plug-ins and no admin, copies
+// "Artist - Title" as the now-playing panel's network rows do, and then
+// says no dialog; its play icon, always shown, plays its preview. No job
+// state on the row: the window shows it.
 function peerRecsRowHtml(r, i) {
+  const popup = VUEPLAYERCORE.leadOpensWindow() ? ' aria-haspopup="dialog"' : '';
   return `<div class="discover-row dpage-row prec-row">
-    <button type="button" class="prec-open" data-dp="precOpen" data-i="${i}" aria-haspopup="dialog"><span class="dpage-slot" data-tslot="${i}">${peerRecsTileHtml(r)}</span><span class="discover-row-info"><span class="discover-row-title">${escapeHtml(r.title)}</span><span class="discover-row-sub">${escapeHtml(r.subtitle || '')}</span></span></button>
+    <button type="button" class="prec-open" data-dp="precOpen" data-i="${i}"${popup}><span class="dpage-slot" data-tslot="${i}">${peerRecsTileHtml(r)}</span><span class="discover-row-info"><span class="discover-row-title">${escapeHtml(r.title)}</span><span class="discover-row-sub">${escapeHtml(r.subtitle || '')}</span></span></button>
     <span class="dpage-slot" data-cslot="${i}">${peerRecsView.cells[i] || ''}</span>
   </div>`;
 }
@@ -6839,14 +6852,10 @@ function peerRecsBandClick(ev) {
   if (act === 'bandToggle') {
     VUEPLAYERCORE.clipToggle(s.raw);
   } else if (act === 'bandNext') {
-    // a clip the window started: the tab's leads after it
-    if (!p.seq) {
-      const list = discoveryView.shown.network.map((r) => r.raw);
-      p.seq = { mode: 'one', list, index: list.findIndex((raw) => PEERRECS.leadKey(raw) === s.key), prefetched: -1 };
-    }
     if (!peerRecsAdvance()) { VUEPLAYERCORE.clipStop('user'); }
   } else if (act === 'bandGetIt' && p.getIt) {
-    VUEPLAYERCORE.openDiscoverModal(s.raw, 'p2p', { from: 'peerRecs', opener: el, peer: PEERRECS.peerLine(s.raw, p.peers), tile: s.tile });
+    const row = discoveryView.shown.network.find((x) => PEERRECS.leadKey(x.raw) === s.key) || null;
+    VUEPLAYERCORE.openDiscoverModal(s.raw, 'p2p', Object.assign({}, discoveryMatchOpts(row), { opener: el }));
   } else if (act === 'bandClose') {
     VUEPLAYERCORE.clipStop('user');
   }

@@ -241,7 +241,10 @@ function locatePath(html, path) {
 //   setEnabled(enabled), setName(name), setDescription(description)
 //                 the POSTs' answers, the same way. Without them: ok
 //   tr            t() (default: the key echoed)
-function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false, peerArtUrl = null, compressArt = false, peers = null, add = null, destination = null, admin = false, clipboard = true, adminApi = false, adminStatus = null, setEnabled = null, setName = null, setDescription = null, tr = tStub } = {}) {
+function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = FLAGS_ALL, lookup = null, plugins = null, jobs = [], albumSongs = null, noHead = false, peerArtUrl = null, compressArt = false, peers = null, add = null, destination = null, admin = false, clipboard = true, adminApi = false, adminStatus = null, setEnabled = null, setName = null, setDescription = null, tr = tStub, opensWindow = true } = {}) {
+  // the recommendation window as vp.js reports it: whether a lead's press
+  // opens it (else copies), and whether it is up now
+  const win = { opens: opensWindow, open: false };
   const els = new Map();
   // the delegated handlers, by the root ('filelist' | 'dpage-head' |
   // 'dpage-band') whose drawn .dpage (the band's .prec-band) took them: a
@@ -489,6 +492,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       addFederationSongWizard: (...args) => { fedQueued.push(['play', ...args]); },
       queueDiscoverFed: (raw) => { fedQueued.push(['queue', raw]); },
       openDiscoverModal: (raw, source, opts) => { opened.push({ raw, source, opts }); return Promise.resolve(); },
+      leadOpensWindow: () => win.opens,
+      discoverWindowOpen: () => win.open,
       ensureDiscoverPlugins: () => Promise.resolve(plugins || { available: false, list: [], jobsAllowed: false }),
       discoverJobs: () => currentJobs.slice(),
       watchDiscoverJobs: (fn) => {
@@ -666,7 +671,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     off: () => { clipStop('reset'); clipEmit('reset'); clipEmit('off'); },
     main: () => { clipStop('main'); },
   };
-  return { S, dispatch, locate, adminSet, surfaces, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer };
+  return { S, dispatch, locate, adminSet, surfaces, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer, win };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -3202,7 +3207,10 @@ describe('Peer Recommendations: the leads', () => {
     assert.equal(raw, PR_LEADS[2], 'the route\'s own lead');
     assert.equal(source, 'p2p');
     const { opener, ...rest } = opts;
-    assert.deepEqual(rest, { from: 'peerRecs', peer: { endpointId: KITCHEN, label: 'Kitchen Radio', online: true }, tile: PR_LEADS[2].tile });
+    // the now-playing panel's window, its match line named as Discover's
+    // (discoveryMatchOpts): the row's seed, else "your recent listening"
+    const row = DISCOVERYPAGE.networkRows(prAnswer()).rows[2];
+    assert.deepEqual(rest, row.matchSeed ? { seedTitle: row.matchSeed } : { seedPlain: 'dpage.match.recent' });
     assert.equal(opener.getAttribute('data-dp'), 'precOpen', 'the keyboard comes back to the row');
     assert.equal(clip.calls.filter((c) => c[0] !== 'reset').length, 0, 'opening plays nothing');
     click({ 'data-dp': 'precPlay', 'data-i': 1 });
@@ -3390,10 +3398,10 @@ describe('Peer Recommendations: the band', () => {
     assert.equal(playOf(S.html(), 0).attrs.class, 'prec-play');
   });
 
-  test('the clip\'s list follows the clip: its lead pressed again once it ended or failed; a clip the window started (⏭ goes on from it, its no-preview is the window\'s to say)', async () => {
+  test('the clip\'s list follows the clip: its lead pressed again once it ended or failed (⏭ goes on from it)', async () => {
     const box = prBox();
     await openPage(box);
-    const { click, bandClick, clip, toasts, vpc } = box;
+    const { click, bandClick, clip, toasts } = box;
     const said = () => toasts.filter((o) => o.title === 'peerRecs.noPreview').length;
     click({ 'data-dp': 'precPlay', 'data-i': 0 });
     clip.fail();
@@ -3407,26 +3415,6 @@ describe('Peer Recommendations: the band', () => {
     clip.play(PREVIEW);
     bandClick({ 'data-dp': 'bandNext' });
     assert.deepEqual(clip.calls.at(-1), ['start', PR_LEADS[2]], 'played out, then again: ⏭ goes on from it');
-    // a row's clip, then the window's Preview on another lead (dmClipToggle)
-    click({ 'data-dp': 'precPlay', 'data-i': 0 });
-    clip.play(PREVIEW);
-    vpc.clipToggle(PR_LEADS[2]);
-    clip.play(PREVIEW);
-    bandClick({ 'data-dp': 'bandNext' });
-    assert.deepEqual(clip.calls.at(-1), ['start', PR_LEADS[3]], 'the lead after the window\'s');
-    clip.play(PREVIEW);
-    vpc.clipToggle(PR_LEADS[4]);
-    clip.fail();
-    assert.equal(said(), 2, 'the window says it');
-    // Preview all, then the window's Preview: the chain ends with the window's clip
-    click({ 'data-dp': 'precAll' });
-    clip.play(PREVIEW);
-    vpc.clipToggle(PR_LEADS[3]);
-    clip.play(PREVIEW);
-    const starts = clip.calls.filter((c) => c[0] === 'start').length;
-    clip.end();
-    assert.equal(clip.calls.filter((c) => c[0] === 'start').length, starts, 'no next');
-    assert.equal(findDrawn(box.S.html(), { 'data-dp': 'precAll' }).attrs['aria-pressed'], 'false');
   });
 
   test('Get it… only with the gate — an acquire plug-in (not the connected servers\' copy), jobs allowed, a destination — and it opens the window', async () => {
@@ -3447,8 +3435,9 @@ describe('Peer Recommendations: the band', () => {
       const { raw, source, opts } = box.opened.at(-1);
       assert.equal(raw, PR_LEADS[0]);
       assert.equal(source, 'p2p');
-      assert.equal(opts.from, 'peerRecs');
-      assert.deepEqual(opts.peer, { endpointId: KITCHEN, label: 'Kitchen Radio', online: true });
+      const first = DISCOVERYPAGE.networkRows(prAnswer()).rows[0];
+      const { opener: _o, ...match } = opts;
+      assert.deepEqual(match, first.matchSeed ? { seedTitle: first.matchSeed } : { seedPlain: 'dpage.match.recent' }, 'the same window a row opens');
       assert.equal(opts.opener.getAttribute('data-dp'), 'bandGetIt');
     }
   });
@@ -3545,6 +3534,39 @@ describe('Peer Recommendations: Add', () => {
     const asked = tasteCalls(calls);
     assert.equal(asked.length, n + 1, 'asked once the clip ended');
     assert.deepEqual(asked.at(-1).pin, SEEDS.map((s) => s.filepath), 'on the batch');
+  });
+
+  test('a lead\'s open button says it opens a dialog only when it does: no plug-ins and no admin, a press copies', async () => {
+    const opens = prBox();
+    await openPage(opens);
+    const rows = drawnRows(opens.S.html());
+    assert.ok(rows.length > 0);
+    assert.ok(rows.every((r) => r.attrs['aria-haspopup'] === 'dialog'));
+    const copies = prBox({ opensWindow: false });
+    await openPage(copies);
+    assert.ok(drawnRows(copies.S.html()).every((r) => !('aria-haspopup' in r.attrs)), 'the now-playing rows\' copy, and no dialog to announce');
+  });
+
+  test('the list holds still under the open window: a re-ask waits for the first poll after it closed', async () => {
+    let shelf = [];
+    const box = prBox({ peers: () => peersOf({ shelf }), taste: () => prAnswer([], { network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'empty-shelf' } }) });
+    await openPage(box);
+    assert.ok(box.S.html().includes('peerRecs.noPeers'));
+    const n = tasteCalls(box.calls).length;
+    box.win.open = true;
+    shelf = [prHeld(KITCHEN, 'Kitchen Radio')];
+    box.runTimers();
+    await flush(); await flush();
+    assert.equal(tasteCalls(box.calls).length, n, 'R4 says ask again, but not under the window');
+    assert.equal(box.S.prec.pending, true);
+    box.runTimers();
+    await flush(); await flush();
+    assert.equal(tasteCalls(box.calls).length, n, 'still up: still held');
+    box.win.open = false;
+    box.runTimers();
+    await flush(); await flush();
+    assert.equal(tasteCalls(box.calls).length, n + 1, 'closed: the next poll asks');
+    assert.equal(box.S.prec.pending, false);
   });
 
   test('a peer someone else added only moves the strip; the shelf filling under "No peers yet" asks again', async () => {

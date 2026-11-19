@@ -4,7 +4,7 @@
  *
  *   - nameKey is src/db/name-key.js's on fixed and generated inputs, so a
  *     preview's album and artist fold the way the server built the tiles;
- *   - the tile and strip-circle colours from a server-stamped hue;
+ *   - a server-stamped hue, made safe for a style;
  *   - the peer strip from answers the server's own buildPeerView builds:
  *     member vs admin, every Add state, a local "Adding…" standing until a
  *     poll sent after it and then yielding, the selected peer leaving the
@@ -14,9 +14,8 @@
  *     over a hand-steered shelf) — and R4's "landed";
  *   - the preview provider from the plug-in registry's own listing (the
  *     first previewing plug-in, no second), the 429 waits, the earned-art
- *     rule, the lead key, Preview all's next lead, the Copy texts and the
- *     window's peer line, on leads the taste route's own stampNetworkRows
- *     stamped;
+ *     rule, the lead key, Preview all's next lead and the Copy texts, on
+ *     leads the taste route's own stampNetworkRows stamped;
  *   - every key the strip emits has an English value with its params (the
  *     other 11 locale files are test/unit/webapp-peer-recs-strings.test.mjs's).
  */
@@ -148,27 +147,14 @@ describe('nameKey is src/db/name-key.js\'s, byte for byte', () => {
   });
 });
 
-// ── colours ────────────────────────────────────────────────────────────
+// ── the hue ────────────────────────────────────────────────────────────
 
-describe('tileColours: the tile and strip colours from a server-stamped hue', () => {
-  test('the web field and ink (§5.1), the strip circle and its dimmed and adding forms (the board)', () => {
-    assert.deepEqual(P.tileColours(210), {
-      hue: 210,
-      field: 'hsl(210, 22%, 24%)',
-      ink: 'hsl(210, 30%, 72%)',
-      circle: 'hsl(210, 55%, 74%)',
-      circleDim: 'hsl(210, 18%, 30%)',
-      inkDim: 'hsl(210, 25%, 82%)',
-      circleAdding: 'hsla(210, 55%, 74%, .35)',
-    });
-  });
-
-  test('a lead\'s colours come from the hue the server stamped on its tile', () => {
+describe('hueOf: a server-stamped hue, safe for a style', () => {
+  test('a lead\'s hue is the one the server stamped on its tile', () => {
     for (const raw of LEADS) {
       const { hue } = leadTile(raw);
       assert.equal(raw.tile.hue, hue);
-      assert.equal(P.tileColours(raw.tile.hue).field, `hsl(${hue}, 22%, 24%)`);
-      assert.equal(P.tileColours(raw.tile.hue).ink, `hsl(${hue}, 30%, 72%)`);
+      assert.equal(P.hueOf(raw.tile.hue), hue);
     }
   });
 
@@ -176,7 +162,6 @@ describe('tileColours: the tile and strip colours from a server-stamped hue', ()
     assert.deepEqual([360, 361, -30, 210.4, 359.6, 0].map(P.hueOf), [0, 1, 330, 210, 0, 0]);
     for (const bad of [NaN, Infinity, '210', null, undefined, {}, '1;background:url(x)']) {
       assert.equal(P.hueOf(bad), 0, JSON.stringify(String(bad)));
-      assert.equal(P.tileColours(bad).field, 'hsl(0, 22%, 24%)');
     }
   });
 });
@@ -642,30 +627,6 @@ describe('copyText / copyListText (§5.7)', () => {
     assert.equal(P.copyListText([ARCADE]), 'Juniper Static - Arcade Rain');
     assert.equal(P.copyListText([]), '');
     assert.equal(P.copyListText(null), '');
-  });
-});
-
-describe('peerLine: the window\'s "● label" line', () => {
-  test('the stamped label, verbatim; the dot only when that endpointId is online in the last peers answer', () => {
-    const answer = peersAnswer();
-    assert.deepEqual(P.peerLine(LONG, answer), { endpointId: KITCHEN, label: 'Kitchen Radio', online: true });
-    assert.deepEqual(P.peerLine(ARCADE, answer), { endpointId: MSTREAM, label: 'mStream · 3f9a', online: false }, 'offline: no dot');
-    assert.deepEqual(P.peerLine({ raw: LONG }, answer), P.peerLine(LONG, answer), 'a view row');
-    assert.deepEqual(P.peerLine(LONG, null), { endpointId: KITCHEN, label: 'Kitchen Radio', online: false }, 'no peers answer yet');
-    // the lead's peer left the shelf since: its label stays, the dot goes
-    const gone = peersAnswer({ shelf: SHELF.filter((e) => e.endpointId !== KITCHEN) });
-    assert.deepEqual(P.peerLine(LONG, gone), { endpointId: KITCHEN, label: 'Kitchen Radio', online: false });
-  });
-
-  test('a lead stamped with no label reads the strip\'s, then the peer\'s name; nothing to name → null', () => {
-    const answer = peersAnswer();
-    assert.deepEqual(P.peerLine({ ...ARCADE, peer: { endpointId: MSTREAM, name: null, label: '' } }, answer),
-      { endpointId: MSTREAM, label: 'mStream · 3f9a', online: false });
-    assert.deepEqual(P.peerLine({ ...LONG, peer: { endpointId: id('0d0d'), name: ' Far Away ' } }, answer),
-      { endpointId: id('0d0d'), label: 'Far Away', online: false });
-    assert.equal(P.peerLine({ ...LONG, peer: { endpointId: id('0d0d'), name: null, label: '  ' } }, answer), null);
-    assert.equal(P.peerLine({ ...LONG, peer: null }, answer), null);
-    assert.equal(P.peerLine(null, answer), null);
   });
 });
 

@@ -700,7 +700,6 @@
   "peerRecs.copyList": "목록 복사",
   "peerRecs.copied": "복사됨",
   "peerRecs.getIt": "가져오기…",
-  "peerRecs.copy": "복사",
   "peerRecs.noPreview": "미리 듣기 없음",
   "peerRecs.turnOn.shares": "오디오는 제외하고 라이브러리의 메타데이터만 이 서버의 이름 및 설명과 함께 공개 디스커버리 네트워크에 공유합니다.",
   "peerRecs.turnOn.collection": "디스커버리 데이터 수집도 켜집니다.",

@@ -562,9 +562,9 @@ describe('the clip: pacing, 429s and the visit\'s answers (§5.5)', () => {
 
   test('its position in quarter seconds while it plays; the end is idle; every event carries the clip\'s snapshot', async () => {
     const h = makeClip({ answers: [ok(SIGNAL, { seconds: 29 })] });
-    await h.vm.clipStart(SIGNAL, { tile: { key: 'other', hue: 5, letter: 'O' } });
+    await h.vm.clipStart(SIGNAL);
     await h.step();
-    assert.deepEqual(h.c.tile, { key: 'other', hue: 5, letter: 'O' }, 'the page\'s tile when it hands one');
+    assert.deepEqual(h.c.tile, { key: SIGNAL.tile.key, hue: SIGNAL.tile.hue, letter: SIGNAL.tile.letter }, 'the lead\'s own tile');
     h.el().currentTime = 12.3;
     h.el().fire('timeupdate');
     h.el().currentTime = 12.32;
@@ -576,7 +576,7 @@ describe('the clip: pacing, 429s and the visit\'s answers (§5.5)', () => {
     h.el().fire('ended');
     assert.deepEqual([h.c.status, h.c.at, h.vm.clipState().live], ['idle', 0, false]);
     assert.deepEqual(h.types(), ['resolving', 'art', 'playing', 'time', 'ended']);
-    assert.deepEqual(h.c.art, { other: 'https://cdn.example/k1.jpg' }, 'earned for the tile the clip was started with');
+    assert.deepEqual(h.c.art, { [SIGNAL.tile.key]: 'https://cdn.example/k1.jpg' }, 'earned for the lead\'s tile');
     // no preview plug-in: none, and nothing asked
     const bare = makeClip({ plugins: [] });
     await bare.vm.clipStart(SIGNAL);

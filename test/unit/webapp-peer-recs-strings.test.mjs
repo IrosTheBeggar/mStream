@@ -34,7 +34,6 @@ const NEW = {
   'peerRecs.copyList': 'Copy list',
   'peerRecs.copied': 'Copied',
   'peerRecs.getIt': 'Get it…',
-  'peerRecs.copy': 'Copy',
   'peerRecs.noPreview': 'No preview',
   'peerRecs.a11y.peers': 'Peers',
   'peerRecs.a11y.add': 'Add {{name}}',

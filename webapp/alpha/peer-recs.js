@@ -4,10 +4,9 @@
 // polls GET /api/v1/discovery/p2p/peers, what an Add's answer means for the
 // strip, when an Add has landed (the re-ask rule R4), which plug-in previews
 // and how long a 429 waits, when a preview's artwork may stand in for a
-// lead's tile, the lead key, the next lead Preview all plays, the Copy and
-// Copy list text, the window's peer line, and the tile and circle colours.
-// No DOM, no Vue, no fetch, no storage — m.js (the page) and vp.js (the
-// clip, the window) wire it to the app; the unit test
+// lead's tile, the lead key, the next lead Preview all plays, and the Copy
+// and Copy list text. No DOM, no Vue, no fetch, no storage — m.js (the
+// page) and vp.js (the clip) wire it to the app; the unit test
 // (test/unit/webapp-peer-recs.test.mjs) drives it on node and holds it to
 // the server's own answers. Same UMD shape as alpha/discovery-page.js.
 //
@@ -81,25 +80,6 @@
   function hueOf(v) {
     if (typeof v !== 'number' || !Number.isFinite(v)) { return 0; }
     return ((Math.round(v) % 360) + 360) % 360;
-  }
-
-  // The colours drawn from one hue (§5.1, the web board):
-  //   field / ink       a generated tile's background and letter
-  //   circle            a shelf peer's strip circle while online (its
-  //                     monogram is drawn dark on it)
-  //   circleDim / inkDim  the same peer offline, dimmed
-  //   circleAdding      an addable peer's circle while it is being added
-  function tileColours(hue) {
-    const h = hueOf(hue);
-    return {
-      hue: h,
-      field: `hsl(${h}, 22%, 24%)`,
-      ink: `hsl(${h}, 30%, 72%)`,
-      circle: `hsl(${h}, 55%, 74%)`,
-      circleDim: `hsl(${h}, 18%, 30%)`,
-      inkDim: `hsl(${h}, 25%, 82%)`,
-      circleAdding: `hsla(${h}, 55%, 74%, .35)`,
-    };
   }
 
   // ── the peer strip ─────────────────────────────────────────────────────
@@ -396,28 +376,11 @@
     return arr(list).map(copyText).filter((line) => line !== '').join('\n');
   }
 
-  // ── the window's peer line ─────────────────────────────────────────────
-  // "● label" under a lead's title: the label the server stamped on the
-  // lead (else the strip's for that endpointId, else the peer's name), and
-  // the dot only when the last peers answer has that endpointId online.
-  // → { endpointId, label, online }, or null when there is nothing to name.
-  function peerLine(raw, peersAnswer) {
-    const lead = leadOf(raw);
-    const peer = isObj(lead) && isObj(lead.peer) ? lead.peer : null;
-    if (!peer) { return null; }
-    const id = str(peer.endpointId);
-    const row = id ? rowsById(peersAnswer).get(id) : undefined;
-    const label = hasText(peer.label) ? peer.label
-      : (isObj(row) && hasText(row.label) ? row.label : str(peer.name).trim());
-    if (!label) { return null; }
-    return { endpointId: id, label, online: isObj(row) && row.online === true };
-  }
-
   return {
     POLL_MS, POLL_FAST_MS, RETRY_MS, RETRY_DEFAULT_MS, PREVIEW_CAPABILITY,
-    nameKey, hueOf, tileColours, isEndpointId,
+    nameKey, hueOf, isEndpointId,
     stripItems, pollDelay, addOutcome, landed, emptied,
     previewProvider, retryDelayMs, artMatches, leadKey, nextIndex,
-    copyText, copyListText, peerLine,
+    copyText, copyListText,
   };
 }));

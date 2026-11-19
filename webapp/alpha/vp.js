@@ -169,8 +169,8 @@ const VUEPLAYERCORE = (() => {
       newArtistsOnly: (() => { try { return localStorage.getItem('discoverNewArtistsOnly') === 'true'; } catch (_) { return false; } })(),
     },
     // Peer Recommendations' clip (m.js, the page): the one lead's 30-second
-    // preview the page's rows and band and the window's Preview section all
-    // read (clipStart and the rest of the clip* methods, blankDiscoverClip).
+    // preview the page's rows and band read (clipStart and the rest of the
+    // clip* methods, blankDiscoverClip).
     clip: blankDiscoverClip(),
     // "From your peers" (discovery over federation): live similarity answers
     // from the servers this one is PAIRED with. Same reveal contract — the
@@ -256,16 +256,9 @@ const VUEPLAYERCORE = (() => {
       focus: null,
       // Where the window was opened from: 'browse' = a connected server's
       // own pages (m.js), whose songs may come without tags or an album
-      // credit (dmLoadPeerFacts reads them); 'peerRecs' = a lead of the
-      // Peer Recommendations page (its tile, its peer line, one Preview
-      // control, Get it… chips, its own Copy row: dmPeerRecs); null =
-      // Discover, the now-playing panel, the strip.
+      // credit (dmLoadPeerFacts reads them); null = Discover, the
+      // now-playing panel, the strip, Peer Recommendations.
       from: null,
-      // From Peer Recommendations: the lead's tile as the server stamped it
-      // ({ key, hue, letter }: dmTileOf) — the header until a preview earns
-      // the album's art — and its peer line ({ label, online }: the dot).
-      tile: null,
-      peerLine: null,
       // The fact links the page behind the window already is ('viewAlbum',
       // 'viewArtist'): hidden (dmHidden).
       hide: [],
@@ -525,14 +518,6 @@ const VUEPLAYERCORE = (() => {
     if (!v || typeof v !== 'object' || typeof v.hue !== 'number' || !Number.isFinite(v.hue)) { return null; }
     return { key: typeof v.key === 'string' ? v.key : '', hue: v.hue, letter: typeof v.letter === 'string' ? v.letter : '' };
   }
-  // The window's peer line from the page's (PEERRECS.peerLine: { label,
-  // online }), else the label the lead carries, with no dot.
-  function dmPeerLineOf(line, track) {
-    if (line && typeof line.label === 'string' && line.label.trim() !== '') { return { label: line.label, online: line.online === true }; }
-    const p = track && track.peer;
-    const label = p && typeof p.label === 'string' && p.label.trim() !== '' ? p.label : (p && typeof p.name === 'string' ? p.name.trim() : '');
-    return label ? { label, online: false } : null;
-  }
   // Recommendation modal bookkeeping: a generation counter that fences
   // async answers, the control the keyboard goes back to on close
   // (dmOpenerOf), and the key handler installed only while a window is open.
@@ -686,9 +671,6 @@ const VUEPLAYERCORE = (() => {
   let discoverJobsTimer = null;
   let discoverJobsVisibilityHooked = false;
   let discoverJobsFailures = 0;   // consecutive failed polls — the beat slows while the server is away
-  // Peer Recommendations' window follows its own live jobs by id
-  // (dmPeerJobsPoll); the strip's list keeps its slower beat meanwhile.
-  let discoverPeerJobsTimer = null;
 
   // Icons the job rows and the downloads strip share (24-unit box).
   const DM_ICONS = {
@@ -699,7 +681,6 @@ const VUEPLAYERCORE = (() => {
     warn: 'M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z',
     close: 'M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z',
     play: 'M8 5v14l11-7z',
-    pause: 'M6 19h4V5H6v14zm8-14v14h4V5h-4z',
     plus: 'M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z',
     copy: 'M16 1H4c-1.1 0-2 .9-2 2v14h2V3h12V1zm3 4H8c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h11c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm0 16H8V7h11v14z',
     info: 'M11 7h2v2h-2zm0 4h2v6h-2zm1-9C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8z',
@@ -1363,12 +1344,10 @@ const VUEPLAYERCORE = (() => {
       // on a compilation, whose Album copies it whole), else the artist;
       // for an artist, how many albums the peer lists them on ("Artist · 4
       // albums on Stage Peer B"); for a folder, where it is on the peer
-      // ("Folder · music › Boukmanflow › Borrowed Tapes"). From Peer
-      // Recommendations: "Artist · Album" alone.
+      // ("Folder · music › Boukmanflow › Borrowed Tapes").
       dmSubtitle: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
-        if (this.dmPeerRecs()) { return [tr.artist, tr.album].filter(Boolean).join(' · '); }
         if (this.dmAlbumFocus()) {
           const a = m.album;
           return [DISCOVERYPAGE.albumCreditOf(tr), tr.year, a && a.count !== null ? this.tt('discover.modal.songCount', { count: a.count }) : ''].filter(Boolean).join(' · ');
@@ -1403,13 +1382,10 @@ const VUEPLAYERCORE = (() => {
       // Header artwork: the peer's own art file for a peer row (its
       // metadata read's, else the row's own albumArt — drawn before that
       // read answers), else the first preview provider that answered
-      // with artwork. From Peer Recommendations: only the art a preview
-      // earned for the lead's tile key this visit (clip.art, plan §2
-      // item 10) — drawn as an <img> without a referrer — else its tile.
+      // with artwork.
       dmArt: function () {
         const m = this.discover.modal;
         if (!m.open) { return null; }
-        if (this.dmPeerRecs()) { return (m.tile && m.tile.key && this.discover.clip.art[m.tile.key]) || null; }
         const peerArt = m.source === 'federation' && m.track && m.track.peer
           ? ((m.file && m.file.art) || DISCOVERYPAGE.fedQueueMeta(m.track)['album-art'] || null)
           : null;
@@ -1422,43 +1398,16 @@ const VUEPLAYERCORE = (() => {
         }
         return null;
       },
-      // Opened from the Peer Recommendations page.
-      dmPeerRecs: function () {
-        return this.discover.modal.from === 'peerRecs';
-      },
-      // The page's header without earned art: the server's tile, its
-      // letter on its hue's colours (PEERRECS.tileColours). → { letter,
-      // field, ink } or null.
-      dmTile: function () {
-        const m = this.discover.modal;
-        if (!m.open || !this.dmPeerRecs() || !m.tile || this.dmArt()) { return null; }
-        const c = PEERRECS.tileColours(m.tile.hue);
-        return { letter: m.tile.letter, field: c.field, ink: c.ink };
-      },
-      // The header's inline style: a cover as its background, or a tile's
-      // colours (the page's earned art is an <img>, never a background).
-      dmArtStyle: function () {
-        const art = this.dmArt();
-        if (art && !this.dmPeerRecs()) { return { backgroundImage: 'url(' + art + ')' }; }
-        const tile = this.dmTile();
-        return tile ? { background: tile.field, color: tile.ink } : null;
-      },
       // The header's one meta line, its parts joined by "·": a connected
       // server's status, the song's format (an album has many: none), and
       // how close the match is — "93% match to your recent listening".
       // A network row has no server of its own to ask: its ISRC, the match.
       // { kind: 'status', dot, text } | { kind: 'isrc' | 'text', text }. A
       // server not answering has its last seen as a part of its own, so the
-      // template's hidden "·" goes between them. From Peer Recommendations:
-      // the peer line alone — its label as the server stamped it, the dot
-      // only while the strip's last answer has the peer online.
+      // template's hidden "·" goes between them.
       dmMetaParts: function () {
         const m = this.discover.modal;
         const tr = m.track || {};
-        if (this.dmPeerRecs()) {
-          const p = m.peerLine;
-          return p && p.label ? [{ kind: 'status', dot: p.online ? 'ok' : 'none', text: p.label }] : [];
-        }
         const parts = [];
         if (m.source === 'federation') {
           const status = this.dmPeerStatus();
@@ -1593,16 +1542,14 @@ const VUEPLAYERCORE = (() => {
       //     goes back on close (else whatever had focus); a browse or queue
       //     control's data-keep-key finds it again after a redraw
       //     (dmFocusBack)
-      //   { from: 'peerRecs' } a network lead of the Peer Recommendations
-      //     page (plan §2 item 15) — it opens with the plug-ins off too
-      //     (Copy has its own row); with { peer } its peer line
-      //     (PEERRECS.peerLine: { label, online }) and { tile } its tile
-      //     (else the lead's own). No invite row; nothing plays until its
-      //     Preview is pressed, and a clip the page plays goes on.
+      // A network lead (source 'p2p') opens the same window wherever it is
+      // drawn — the now-playing panel, Discover, Peer Recommendations —
+      // and, with no plug-ins and no admin, copies "Artist - Title"
+      // instead. Nothing plays until a preview tile is pressed; a clip the
+      // page plays goes on until then (they share the aside player).
       openDiscoverModal: async function (track, source, opts) {
         const o = opts || {};
-        const page = source === 'p2p' && o.from === 'peerRecs';
-        if (source === 'p2p' && !page && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
+        if (source === 'p2p' && !this.discover.plugins.available && !this.discover.admin) { return this.copyDiscoverP2p(track); }
         this.stopDiscoverPreview();
         const gen = ++discoverModalGen;
         const peerRow = source === 'federation';
@@ -1626,9 +1573,7 @@ const VUEPLAYERCORE = (() => {
         // a window that replaces an open one goes back where that came from
         if (!this.discover.modal.open || !discoverModalOpener) { discoverModalOpener = dmOpenerOf(o.opener || document.activeElement); }
         this.discover.modal = blankDiscoverModal({
-          open: true, gen, source, track: shown, focus, from: browse ? 'browse' : (page ? 'peerRecs' : null), folder, creditsDisagree: browse && !focus && o.creditsDisagree === true,
-          tile: page ? dmTileOf(o.tile) || dmTileOf(t.tile) : null,
-          peerLine: page ? dmPeerLineOf(o.peer, t) : null,
+          open: true, gen, source, track: shown, focus, from: browse ? 'browse' : null, folder, creditsDisagree: browse && !focus && o.creditsDisagree === true,
           hide: Array.isArray(o.hide) ? o.hide.filter((h) => h === 'viewAlbum' || h === 'viewArtist') : [],
           matchSeed: typeof o.seedTitle === 'string' && o.seedTitle ? o.seedTitle : null,
           matchPlain: typeof o.seedPlain === 'string' && o.seedPlain ? o.seedPlain : null,
@@ -1645,12 +1590,11 @@ const VUEPLAYERCORE = (() => {
         if (this.discover.plugins.available) { if (links) { jobs.push(this.dmLoadLinks(gen)); } jobs.push(this.dmLoadJobs(gen)); }
         if (source === 'federation') { jobs.push(this.dmLoadPeerFacts(gen)); }
         if (focus === 'folder') { jobs.push(this.dmLoadFolderScan(gen)); }
-        if (source === 'p2p' && this.discover.admin && !page) { jobs.push(this.dmLoadFederate(gen)); }
+        if (source === 'p2p' && this.discover.admin) { jobs.push(this.dmLoadFederate(gen)); }
         await Promise.all(jobs);
       },
       closeDiscoverModal: function () {
         this.stopDiscoverPreview();
-        if (discoverPeerJobsTimer) { clearTimeout(discoverPeerJobsTimer); discoverPeerJobsTimer = null; }
         document.removeEventListener('keydown', onDiscoverModalKey);
         discoverModalGen++;
         this.discover.modal = blankDiscoverModal({ gen: discoverModalGen });
@@ -1720,12 +1664,9 @@ const VUEPLAYERCORE = (() => {
       // it failed (Copy title still works), or with links that name it —
       // absent where the server has no links plug-in, or one that only
       // searches songs (dmLoadLinks). An artist's and a folder's windows
-      // have none: the plug-in has no phrase for either. From Peer
-      // Recommendations it is the links alone, once they are there (Copy
-      // is a row of its own; no note while they are asked, or failed).
+      // have none: the plug-in has no phrase for either.
       dmFindVisible: function () {
         const m = this.discover.modal;
-        if (this.dmPeerRecs()) { return !m.loading && !m.error && m.links.length > 0; }
         if (this.dmArtistFocus() || this.dmFolderFocus()) { return false; }
         return !this.dmAlbumFocus() || m.loading || m.error || m.links.length > 0;
       },
@@ -1741,11 +1682,10 @@ const VUEPLAYERCORE = (() => {
         return /^search\s+/i.test(label) ? label.replace(/^search\s+/i, '') : label;
       },
       // Copy title: "Artist - Title" — or, in album focus, "Credit - Album".
-      // Peer Recommendations' Copy says "Copied" (plan §5.7).
       dmCopyTitle: function () {
         const tr = this.discover.modal.track || {};
         if (this.dmAlbumFocus()) { return this.copyDiscoverP2p({ artist: DISCOVERYPAGE.albumCreditOf(tr) || '', title: tr.album || '' }); }
-        return this.copyDiscoverP2p(tr, this.dmPeerRecs() ? 'peerRecs.copied' : undefined);
+        return this.copyDiscoverP2p(tr);
       },
       // A peer row's window: the peer's status from the peers
       // listing, the file's own facts (format, size, art) from its metadata
@@ -2223,70 +2163,10 @@ const VUEPLAYERCORE = (() => {
         if (this.discover.modal) { this.discover.modal.playing = null; }
       },
 
-      // ── The window's Preview, from Peer Recommendations ────────────────
-      // One control bound to the page's clip (discover.clip): it shows the
-      // clip only while the clip is this window's lead (by its lead key),
-      // else what the visit's resolves answered for the lead.
-      // The preview plug-in (PEERRECS.previewProvider): none = no section.
-      dmClipProvider: function () {
-        return this.clipProvider();
-      },
-      // The lead's clip as the window draws it: { status, preview, at,
-      // seconds } — the live clip's when it is this lead, else idle with
-      // the visit's answer for it (a preview resolved earlier, or none).
-      dmClipOf: function () {
-        const c = this.discover.clip;
-        const key = PEERRECS.leadKey(this.discover.modal.track);
-        if (key && c.key === key) { return { status: c.status, preview: c.preview, at: c.at, seconds: c.seconds }; }
-        const r = key ? c.results[key] : null;
-        if (r && r.status === 'none') { return { status: 'none', preview: null, at: 0, seconds: 30 }; }
-        return { status: 'idle', preview: r && r.preview ? r.preview : null, at: 0, seconds: 30 };
-      },
-      dmClipOn: function () {
-        return this.dmClipOf().status === 'playing';
-      },
-      // Being asked for, or waiting out a 429.
-      dmClipBusy: function () {
-        const s = this.dmClipOf().status;
-        return s === 'resolving' || s === 'waiting';
-      },
-      // "No preview": 'none' for the visit (the control goes quiet), or
-      // 'failed' for that press only (the next press asks again); '' else.
-      dmClipNone: function () {
-        const s = this.dmClipOf().status;
-        return s === 'none' || s === 'failed' ? s : '';
-      },
-      // The attribution, once a resolve answered: the server's words
-      // verbatim ("Preview from Deezer"), linked only to an https page.
-      // → { text, link } or null.
-      dmClipPreview: function () {
-        const p = this.dmClipOf().preview;
-        if (!p || typeof p.attribution !== 'string' || !p.attribution) { return null; }
-        let link = null;
-        try { link = typeof p.link === 'string' && new URL(p.link).protocol === 'https:' ? p.link : null; } catch (_) { link = null; }
-        return { text: p.attribution, link };
-      },
-      // ['0:12', '0:30']: where the clip is, and its length.
-      dmClipClock: function () {
-        const c = this.dmClipOf();
-        return [this.dmDuration(c.at) || '0:00', this.dmDuration(c.seconds) || '0:30'];
-      },
-      dmClipPct: function () {
-        const c = this.dmClipOf();
-        return c.seconds > 0 ? Math.max(0, Math.min(100, Math.round((c.at / c.seconds) * 100))) : 0;
-      },
-      // The control: the page's own play icon (clipToggle) on this lead.
-      dmClipToggle: function () {
-        const m = this.discover.modal;
-        if (!m.track || this.dmClipNone() === 'none') { return; }
-        this.clipToggle(m.track, { tile: m.tile });
-      },
-
       // ── Peer Recommendations' clip (discover.clip) ─────────────────────
       // One lead's 30-second preview at a time, on the aside player (owner
-      // 'clip'). The page's rows and band (m.js) and the window's Preview
-      // section draw this one state; mstreamModule.watchClip hears its
-      // events. Pacing (plan §5.5): a resolve only on a press (Preview all
+      // 'clip'). The page's rows and band (m.js) draw this one state;
+      // mstreamModule.watchClip hears its events. Pacing (plan §5.5): a resolve only on a press (Preview all
       // is one), one in flight, a newer press takes a queued one's place; a
       // 429 waits PEERRECS.retryDelayMs and is asked once more, then it is
       // "No preview" for that press only (failed); preview: null is "No
@@ -2298,7 +2178,7 @@ const VUEPLAYERCORE = (() => {
       },
       // The play icon: this lead's clip — paused or resumed when it already
       // is the clip, dropped when it is still being asked for, else asked.
-      clipToggle: function (raw, opts) {
+      clipToggle: function (raw) {
         const c = this.discover.clip;
         const key = PEERRECS.leadKey(raw);
         if (key && c.key === key) {
@@ -2306,22 +2186,22 @@ const VUEPLAYERCORE = (() => {
           if (c.status === 'paused') { return Promise.resolve(this.clipResume()); }
           if (c.status === 'resolving' || c.status === 'waiting') { return Promise.resolve(this.clipStop('user')); }
         }
-        return this.clipStart(raw, opts);
+        return this.clipStart(raw);
       },
-      // A new clip for `raw` (opts.tile: its tile, else the lead's): the
+      // A new clip for `raw` (its tile the lead's own): the
       // one before it stops at once — the main player stays paused across
       // the hand-off — and this one plays from the visit's answers, or once
       // its resolve answers. Preview all's next lead is a clipStart made
       // inside the 'ended' / 'none' event: a session that no listener
       // carries on ends there (clipEnd).
-      clipStart: async function (raw, opts) {
+      clipStart: async function (raw) {
         const c = this.discover.clip;
         const key = PEERRECS.leadKey(raw);
         if (!key) { return; }
         c.gen += 1;
         const gen = c.gen;
         this.clipHalt();
-        Object.assign(c, { key, raw, tile: dmTileOf((opts || {}).tile) || dmTileOf(raw.tile), status: 'resolving', preview: null, at: 0, seconds: 30 });
+        Object.assign(c, { key, raw, tile: dmTileOf(raw.tile), status: 'resolving', preview: null, at: 0, seconds: 30 });
         asideClaim('clip', this.clipHandlers(gen));
         this.clipEmit('resolving');
         if (this.discover.plugins.available) { await this.ensureDiscoverPlugins(); }
@@ -3666,9 +3546,7 @@ const VUEPLAYERCORE = (() => {
       // asks for its folder too: a folder copy is keyed by the folder (the
       // song's own lookup names a folder key of the song's file, G27 — never
       // a folder). An answer for the song as it read before its tags came
-      // (dmLoadBrowsedFacts asks again) is not this window's. Peer
-      // Recommendations' window asks with the one-row batch lookup (plan
-      // §3.6), then follows its live jobs by id (dmPeerJobsPoll).
+      // (dmLoadBrowsedFacts asks again) is not this window's.
       dmLoadJobs: async function (gen) {
         await this.ensureDiscoverPlugins();
         if (!this.dmLive(gen) || this.discoverAcquirePlugins().length === 0) { return; }
@@ -3676,10 +3554,8 @@ const VUEPLAYERCORE = (() => {
         const track = m.track;
         const settle = (p) => Promise.resolve(p).then((v) => v, () => null);
         const folderRec = !m.focus && m.folder ? this.dmFolderRecommendation() : null;
-        const page = m.from === 'peerRecs';
         const [found, foundFolder] = await Promise.all([
-          page ? settle(Promise.resolve(MSTREAMAPI.discoveryJobLookupBatch([this.dmRecommendation()])).then((r) => (r && Array.isArray(r.results) && r.results[0]) || null))
-            : settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
+          settle(MSTREAMAPI.discoveryJobLookup(this.dmRecommendation())),
           folderRec ? settle(MSTREAMAPI.discoveryJobLookup(folderRec)) : Promise.resolve(null),
           this.dmLoadDestination(gen),
         ]);
@@ -3700,59 +3576,6 @@ const VUEPLAYERCORE = (() => {
           m.jobs = jobs;
         }
         this.scheduleDiscoverJobsPoll();
-        if (page) { this.dmPeerJobsPoll(gen); }
-      },
-      // Peer Recommendations' Get it…: one chip per plug-in dmGetItRows
-      // offers (an acquire plug-in other than the peer copy, an account
-      // that may start jobs, a destination), titled by the plug-in alone.
-      // A press starts the server's best match at once (no lookup card, no
-      // bar); its job shows on the chip. → [{ plugin, state: idle | busy |
-      // live | done | failed, icon, aria, press }]. A start refused because
-      // the destination moved (409 destination_changed) is idle again: the
-      // destination was read anew (dmDestRefused).
-      dmGetItChips: function () {
-        const m = this.discover.modal;
-        return this.dmGetItRows().map(({ plugin, row }) => {
-          const slot = DISCOVERJOBS.jobSlot(plugin.name);
-          const refused = m.jobRefusals[slot];
-          const moved = !!(refused && refused.status === 409 && refused.error === 'destination_changed');
-          let state = 'idle';
-          if (m.jobBusy[slot]) { state = 'busy'; }
-          else if (row.live) { state = 'live'; }
-          else if (m.jobErrors[slot] && !moved) { state = 'failed'; }
-          else if (['downloaded', 'copied', 'copiedMany', 'owned', 'done'].indexOf(row.state) !== -1) { state = 'done'; }
-          else if (['failed', 'stopped', 'exists'].indexOf(row.state) !== -1) { state = 'failed'; }
-          const icon = state === 'live' ? row.icon : (state === 'done' ? 'check' : (state === 'failed' ? 'warn' : 'download'));
-          const word = state === 'live' || state === 'done' ? this.tt(row.tag) : (state === 'failed' ? this.tt('discover.job.failed') : '');
-          return { plugin, state, icon, aria: word ? `${plugin.title}: ${word}` : plugin.title, press: state === 'idle' || state === 'failed' };
-        });
-      },
-      dmGetIt: async function (chip) {
-        if (!chip || !chip.press) { return; }
-        const gen = this.discover.modal.gen;
-        await this.dmJobStart(chip.plugin, null);
-        this.dmPeerJobsPoll(gen);
-      },
-      // Peer Recommendations' window follows its own live jobs by id, every
-      // 1.5 s while it is open (plan §3.6); paused while the tab is hidden.
-      dmPeerJobsPoll: function (gen) {
-        if (discoverPeerJobsTimer) { clearTimeout(discoverPeerJobsTimer); discoverPeerJobsTimer = null; }
-        const m = this.discover.modal;
-        if (!this.dmLive(gen) || !this.dmPeerRecs() || !this.dmAnyJobLive()) { return; }
-        discoverPeerJobsTimer = setTimeout(async () => {
-          discoverPeerJobsTimer = null;
-          if (!document.hidden) {
-            for (const slot of Object.keys(m.jobs)) {
-              const held = m.jobs[slot];
-              if (!DISCOVERJOBS.isLive(held)) { continue; }
-              let one = null;
-              try { one = await MSTREAMAPI.discoveryJob(held.id); } catch (_) { one = null; }
-              if (!this.dmLive(gen)) { return; }
-              if (one && one.job && m.jobs[slot] === held) { this.$set(m.jobs, slot, one.job); }
-            }
-          }
-          this.dmPeerJobsPoll(gen);
-        }, 1500);
       },
       // `choice` = { url } picked from the plug-in's lookup; null = the plain
       // download (the plug-in searches); undefined (a Retry) = whatever the
@@ -4749,9 +4572,7 @@ const VUEPLAYERCORE = (() => {
           });
         }
         if (document.hidden) { return; }   // the listener picks it up when the tab is back
-        // (Peer Recommendations' window follows its own jobs: dmPeerJobsPoll)
-        const fast = this.dmAnyJobLive() && this.discover.modal.from !== 'peerRecs';
-        const beat = fast ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
+        const beat = this.dmAnyJobLive() ? 1500 : ((this.discover.tray.collapsed || this.discover.collapsed) ? 10000 : 4000);
         const delay = Math.min(60000, beat * Math.pow(2, Math.min(discoverJobsFailures, 6)));
         discoverJobsTimer = setTimeout(() => { discoverJobsTimer = null; this.refreshDiscoverJobs(); }, delay);
       },
@@ -4847,21 +4668,15 @@ const VUEPLAYERCORE = (() => {
       // Not playable (the track lives on someone else's server) — clicking
       // copies "Artist - Title" so the user can go find it: the title alone
       // when there is no artist (PEERRECS.copyText's rule, plan §2 item
-      // 19). `copied` = the toast's own key, its one word (Peer
-      // Recommendations' window: 'peerRecs.copied'). The text is the
-      // peer's: escaped for the toast, which takes markup (m.js's
-      // escapeHtml); the clipboard gets it as it is.
-      copyDiscoverP2p: async function (track, copied) {
+      // 19). The text is the peer's: escaped for the toast, which takes
+      // markup (m.js's escapeHtml); the clipboard gets it as it is.
+      copyDiscoverP2p: async function (track) {
         const artist = String(track.artist || '').trim();
         const title = String(track.title || '').trim();
         const text = artist && title ? `${artist} - ${title}` : (title || artist);
         try {
           await navigator.clipboard.writeText(text);
-          if (copied) {
-            iziToast.success({ title: t(copied), position: 'topCenter', timeout: 2500 });
-          } else {
-            iziToast.success({ title: t('discover.network.copied'), message: escapeHtml(text), position: 'topCenter', timeout: 2500 });
-          }
+          iziToast.success({ title: t('discover.network.copied'), message: escapeHtml(text), position: 'topCenter', timeout: 2500 });
         } catch (_) {
           // no clipboard here (plain http): the text itself, to copy by hand
           iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
@@ -6036,6 +5851,12 @@ const VUEPLAYERCORE = (() => {
     if (!track || typeof track !== 'object' || (source !== 'p2p' && source !== 'federation')) { return Promise.resolve(); }
     return playlistVue.openDiscoverModal(track, source, opts);
   };
+  // Whether a network lead's press opens the window (true), or copies
+  // "Artist - Title" (no plug-ins and no admin: openDiscoverModal's own
+  // fallback) — for a list that draws its rows' role before the press.
+  mstreamModule.leadOpensWindow = () => discoverState.plugins.available === true || discoverState.admin === true;
+  // The window is up: a list behind it holds still (no redraw under it).
+  mstreamModule.discoverWindowOpen = () => !!(discoverState.modal && discoverState.modal.open);
 
   // The plug-in list, whether this account may start jobs and the most
   // songs one folder copy takes here (the listing's jobs.maxFolderSongs;
@@ -6116,17 +5937,17 @@ const VUEPLAYERCORE = (() => {
   };
 
   // ── Peer Recommendations' clip (m.js, the page) ──────────────────────────
-  // The page's play icons, its band and Preview all drive the one clip the
-  // window's Preview section shows too (playlistVue.clipStart and the rest:
-  // every rule is said there). A lead is the raw taste lead, as the page's
-  // rows hold it (DISCOVERYPAGE.networkRows' raw); opts.tile = its tile.
-  mstreamModule.clipToggle = (raw, opts) => {
+  // The page's play icons, its band and Preview all drive the one clip
+  // (playlistVue.clipStart and the rest: every rule is said there). A lead
+  // is the raw taste lead, as the page's rows hold it
+  // (DISCOVERYPAGE.networkRows' raw).
+  mstreamModule.clipToggle = (raw) => {
     if (!raw || typeof raw !== 'object') { return Promise.resolve(); }
-    return Promise.resolve(playlistVue.clipToggle(raw, opts));
+    return Promise.resolve(playlistVue.clipToggle(raw));
   };
-  mstreamModule.clipStart = (raw, opts) => {
+  mstreamModule.clipStart = (raw) => {
     if (!raw || typeof raw !== 'object') { return Promise.resolve(); }
-    return playlistVue.clipStart(raw, opts);
+    return playlistVue.clipStart(raw);
   };
   // → whether it asked (false: a resolve out or queued, the lead answered
   // already, no preview plug-in).

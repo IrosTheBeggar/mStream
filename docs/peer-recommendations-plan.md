@@ -45,12 +45,10 @@ Tags: **[user]** = the user's words. **[orch]** = decided by the orchestrator be
     - web: the page is left;
     - phone: the frame is covered or popped, or the app is backgrounded;
     - terminal: the room is not drawn (another room, a server switch, quit, or the mini player).
-15. **[review] The modal shows only what the board draws**: header (tile or earned art, title, "Artist · Album", "● label"), then Preview, Get it…, Find elsewhere, Copy.
-    - Get it… is one chip or row per acquire plug-in (title only). A press starts the server's best-match job. There is no destination bar, description, YouTube lookup card or candidate picker.
-    - The web window hides its admin "Invite <peer> to federate" row **[flag]**, the "Opens in a new tab" hint and the "Search" lead label.
-    - Copy has its own row, whatever plug-ins are on.
-    - With plug-ins off and a member user, a web row click **still opens the window** (today it copies, `webapp/alpha/vp.js:1370`).
-16. **[review] Rows carry no job state** (no badge, no thin bar, no swatch mark). The job shows inside the modal or sheet only, with a one-row `lookup/batch` when it opens. So the page never batch-looks-up jobs.
+15. **[user] One window for every network lead** (2026-11-19, replacing the page's own trimmed window): a lead opens the window the now-playing panel's "From the network" rows open — its header and cover, a preview tile per provider, Get it with the admin's invite row, Find elsewhere with Copy title — through `openDiscoverModal(raw, 'p2p', { opener })`; with no plug-ins and no admin a lead is copied, as those rows are. Any later surface that lists recommendations reuses the same window. (The board's version — tile header, "● label", one Preview control, Get it… chips, a Copy row — is gone from the web; the phone and terminal plans below still describe their own sheets.)
+    - Phone and terminal sheets: Get it… is one chip or row per acquire plug-in (title only). A press starts the server's best-match job. There is no destination bar, description, YouTube lookup card or candidate picker.
+    - Phone and terminal sheets: Copy has its own row, whatever plug-ins are on.
+16. **[review] Rows carry no job state** (no badge, no thin bar, no swatch mark). The job shows inside the window or sheet only: the web window's own lookup when it opens (§2 item 15); the phone and terminal sheets' one-row `lookup/batch`. So the page never batch-looks-up jobs.
 17. **[review] No "Show more".**
     - Web: draws all leads (≤ 32) as `DISCOVERYPAGE.columnBlocks` blocks of 16, each 8 | 8, so leads read best-first per block.
     - Terminal: blocks of 2 × the visible rows.
@@ -234,7 +232,7 @@ networkOnRandomSeed: Joi.boolean().default(false),
   - `GET /api/v1/discovery/collection/destination` returns a non-null `destination` (null when uploads are off, `src/discovery-plugins/destination.js:50-53`).
 
   Start a job with `POST /api/v1/discovery/plugins/:name/jobs {recommendation, destination: <shown>}`. A 409 `destination_changed` (`discovery-plugin-jobs.js:153-196`) → re-read the destination and return the chip to idle. YouTube is off by default.
-- **Job state in a modal**: `POST /api/v1/discovery/plugin-jobs/lookup/batch {recommendations:[lead]}` when it opens, then `GET …/plugin-jobs/:id` every 1.5 s while it is open and the job is live.
+- **Job state in a modal** (the phone and terminal sheets; the web window keeps its own lookup, §2 item 15): `POST /api/v1/discovery/plugin-jobs/lookup/batch {recommendations:[lead]}` when it opens, then `GET …/plugin-jobs/:id` every 1.5 s while it is open and the job is live.
 - **Find elsewhere**: the `links` plug-in's resolve (`plugins/links.js:44-75`, no network call).
 
 ### 3.7 Server pieces and file ownership (one PR; about 6 dev-days)
@@ -380,8 +378,8 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 | # | piece | owns | effort |
 |---|---|---|---|
 | W1 | Pure page model | DP: `PAGES`; `peerRecsAvailable`; `PEER_LIMITS {seeds:12, network:32}`; `buildRequests` (DP:252-291) page body per R1 (`networkPeers` kept only as `/^[0-9a-f]{64}$/`, deduped, ≤ 50, the key omitted when empty); NEW `batchRequest(body, batch, peerId)` after `peersRequest` (DP:303-317), per R2 (pins the random pick too); `networkRows` (DP:597-619) gains `peerId`, `peerLabel`, `tile` (from `raw.tile`), subtitle `Artist · Album`, and drops `onLabel` / `newArtist*` / `line`; `sourceState('network')` (DP:1220-1249) reads `network.reason` (drop the `searched.peers === 0` guess); `stateOf` (DP:1276-1299): `scan-pending` → scanPending, random + leads → ready; delete `pluginChips` (DP:465-476); exports (DP:1301-1312). EN: delete `dpage.network.*`, `dpage.plugins.*`. PT describes at `:136, :181, :571, :2362, :2468, :2487`. | 0.75 d |
-| W2 | Pure helpers | NEW `webapp/alpha/peer-recs.js` (UMD, global `PEERRECS`): `tileColours(hue)`, `stripItems(answer,{selected,local})`, `pollDelay`, `addOutcome(status,body)`, `landed(prev,next,posted,showingNoPeers)` (R4), `previewProvider(list)`, `retryDelayMs(name)`, `artMatches(raw,preview)`, `leadKey` (§5.3), `nextIndex`, `copyListText`, `copyText`, `peerLine(raw, peersAnswer)`; NEW `test/unit/webapp-peer-recs.test.mjs` | 0.5 d |
-| W3 | API + aside audio + window | API: NEW private `statusReq`; `discoveryP2pPeers` (throws), `discoveryP2pAdd` and `discoveryPreview` (→ `{status, body}`). VP: module aside player replacing `discoverPreviewAudio` (VP:349-350): `asideEl / asidePlay / asidePause / asideResume / asideStop / asideMainPlaying`, one reused `HTMLAudioElement` and owner tokens; `playDiscoverPreview` / `stopDiscoverPreview` (VP:1966-1992) become owner `'window'`; `discoverState.clip` (beside VP:164-175) and the `clip*` methods (`clipToggle / Start / Prefetch / Pause / Resume / Stop / Reset`) with exports and `watchClip`; the `playerStats.playing` watcher (VP:4556) calls `asideMainPlaying` first. Window, behind `modal.from === 'peerRecs'`: `openDiscoverModal` (VP:1369) skips the copy fallback (VP:1370) for this source; header `dmArt` (VP:1210) = `clip.art[tile.key]`, NEW `dmTile`; subtitle (VP:1187) `[artist, album]`; meta (VP:1232) = the peer line only (dot when online); a NEW Preview section (one control bound to `discover.clip`, attribution once resolved); Get it… as one chip per acquire plug-in starting the job directly (the existing rows, destination bar, sub lines and lookup card are not drawn); a NEW own Copy row; the invite row, `findHint` and the "Search" lead hidden. IX modal (`:1136-1462`, find section `:1449-1461`). `copyDiscoverP2p` (VP:4236) drops the leading "- ". CSS `.dmodal-tile`, `.dm-clip*`, `.dmodal-dot-none`. NEW `test/unit/webapp-peer-recs-clip.test.mjs`; PT `WINDOW_METHODS` (`:726-746`), `makeWindow` (`:819`) + one describe. | 1.5 d |
+| W2 | Pure helpers | NEW `webapp/alpha/peer-recs.js` (UMD, global `PEERRECS`): `hueOf(hue)`, `stripItems(answer,{selected,local})`, `pollDelay`, `addOutcome(status,body)`, `landed(prev,next,posted,showingNoPeers)` (R4), `previewProvider(list)`, `retryDelayMs(name)`, `artMatches(raw,preview)`, `leadKey` (§5.3), `nextIndex`, `copyListText`, `copyText`; NEW `test/unit/webapp-peer-recs.test.mjs` | 0.5 d |
+| W3 | API + aside audio + window | API: NEW private `statusReq`; `discoveryP2pPeers` (throws), `discoveryP2pAdd` and `discoveryPreview` (→ `{status, body}`). VP: module aside player replacing `discoverPreviewAudio` (VP:349-350): `asideEl / asidePlay / asidePause / asideResume / asideStop / asideMainPlaying`, one reused `HTMLAudioElement` and owner tokens; `playDiscoverPreview` / `stopDiscoverPreview` (VP:1966-1992) become owner `'window'`; `discoverState.clip` (beside VP:164-175) and the `clip*` methods (`clipToggle / Start / Prefetch / Pause / Resume / Stop / Reset`) with exports and `watchClip`; the `playerStats.playing` watcher (VP:4556) calls `asideMainPlaying` first. **Superseded 2026-11-19 (§2 item 15), the page now opens the now-playing window:** window, behind `modal.from === 'peerRecs'`: `openDiscoverModal` (VP:1369) skips the copy fallback (VP:1370) for this source; header `dmArt` (VP:1210) = `clip.art[tile.key]`, NEW `dmTile`; subtitle (VP:1187) `[artist, album]`; meta (VP:1232) = the peer line only (dot when online); a NEW Preview section (one control bound to `discover.clip`, attribution once resolved); Get it… as one chip per acquire plug-in starting the job directly (the existing rows, destination bar, sub lines and lookup card are not drawn); a NEW own Copy row; the invite row, `findHint` and the "Search" lead hidden. IX modal (`:1136-1462`, find section `:1449-1461`). `copyDiscoverP2p` (VP:4236) drops the leading "- ". CSS `.dmodal-tile`, `.dm-clip*`, `.dmodal-dot-none`. NEW `test/unit/webapp-peer-recs-clip.test.mjs`; PT `WINDOW_METHODS` (`:726-746`), `makeWindow` (`:819`) + one describe. | 1.5 d |
 | W4 | The page | M: `discoveryPanel` (M:4109-4158) title, programState and highlight per page; `discoveryOnScreen` (M:4055-4057); `discoveryWatchJobs` (M:4369) → `!discoveryOnScreen()`; `discoveryPick` back (M:5229-5241); `setBrowserRootPanel` (M:411-424) calls `peerRecsLeave()`; `redoDiscovery({batch})` (M:4166-4241); every `v.page === 'explore'` site (M:3961, 3997, 4107, 4318, 4352, 4448, 4497, 4556, 4876); New seeds passes the pick (M:5117-5122); delete the explore draw code (`discoveryExploreHtml`, `discoverySectionHtml`, `discoveryEmptyHtml`, `discoveryLeadTag`, `discoveryNetworkHtml`, `discoveryCheckHtml`, `discoveryProgressHtml`, the `lead`/`newArtists` actions, `discoveryView.newArtistsOnly`). NEW top-level `peerRecs*` section (column-0 closing braces, MT's slicer): view const, open/leave, poll (R6, `visibilitychange`), Add, strip + in-place patch, rows (`D.columnBlocks` blocks of 16, markup as M:4829-4830, no Show more), band, Preview-all sequence, Copy list, Get-it gate. No job badges on rows (`discoveryLoadBadges` is not called for this page). IX: nav row, `#dpage-band` host after `#filelist` (`:861`), `<script src="alpha/peer-recs.js">` before `vp.js` (`:1497`). CSS `.prec-*`, `#dpage-band`, `@media (pointer:coarse)` 44 px hit areas on `.prec-play` and the band buttons. MT: FNS (`:100-114`), auto-list `PEER_FNS`, `KNOWN_IDS` (`:123`) += `nav-peer-recs`, `dpage-band`; delete the explore describe (`:2001-2071`) and rewrite or remove the badges describe (`:2120`). | 2 d |
 | W5 | Strings | EN + 11 locale files (flat dotted keys, e.g. `"peerRecs.all"`) | 0.5 d |
 | W6 | Live walk + fixes | – | 1 d |
@@ -392,14 +390,14 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 - **Acts line**: "Preview all · Copy list", only in ready with rows; Preview all only with a provider.
 - **Row**: an open button (40 px tile from `raw.tile` or earned art; title 13 px; "Artist · Album" 12 px), then an always-visible 28 px teal play circle with states idle / live / resolving / waiting / none (muted, `aria-disabled`). No play circle when there is no provider.
 - **Band**: sticky at the bottom of the browser column, 56 px: 44 px art or tile, title, artist, attribution link (`rel="noopener noreferrer"`), ⏸ ⏭, Get it… (only with the gate; opens the window), ✕.
-- **Window from the page**: §2 item 15. Focus starts on Close and returns to the row's open button.
+- **Window from the page**: §2 item 15 — the now-playing panel's window. Focus starts on Close and returns to the row's open button.
 - **States**: §2 item 18. Loading = 8 skeleton rows × 2 columns; a re-ask dims the old rows (`.6`).
 
 **Strings (complete; EN values; every file).**
 - Visible:
   - `nav.peerRecs` / `panel.peerRecs` "Peer Recommendations";
   - `peerRecs.all` "All", `.adding` "Adding…", `.tryAgain` "Try again", `.noRoom` "No room", `.noPeers` "No peers yet", `.nothingNew` "Nothing new";
-  - `.preview` "Preview", `.previewAll` "Preview all", `.copyList` "Copy list", `.copied` "Copied", `.getIt` "Get it…", `.copy` "Copy", `.noPreview` "No preview".
+  - `.preview` "Preview", `.previewAll` "Preview all", `.copyList` "Copy list", `.copied` "Copied", `.getIt` "Get it…", `.noPreview` "No preview".
 - a11y:
   - `peerRecs.a11y.peers` "Peers", `.add` "Add {{name}}", `.adding` "{{name}}: Adding…", `.failed` "{{name}}: Try again", `.noRoom` "{{name}}: No room";
   - `.previewSong` "Preview {{title}}", `.pauseSong` "Pause preview of {{title}}";
@@ -418,7 +416,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
   - `landed` (R4: an own POST lands, 0 → > 0 only on No peers, a rotation swap → none);
   - `previewProvider` (no fall-through), `retryDelayMs` (deezer 5000, itunes 60000, other 5000);
   - `artMatches` (album + artist; empty lead album; non-https);
-  - `nextIndex`, `copyListText` / `copyText` (empty artist → title), `peerLine`, `leadKey`;
+  - `nextIndex`, `copyListText` / `copyText` (empty artist → title), `leadKey`;
   - every new key in all 12 files with matching `{{params}}`.
 - **PT (W1)**:
   - `PAGES`;
@@ -428,11 +426,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
   - `stateOf` for every reason; random + leads = ready;
   - `pluginChips` tests deleted.
 - **PT (W3)**:
-  - `WINDOW_METHODS` += `dmTile`, `dmClip*`;
-  - the window from peerRecs: meta = the peer line (dot ok / none, no ISRC, no %); subtitle without year / length; `dmArt` = earned art for `tile.key` only; tile fallback; Preview follows `discover.clip` only for its lead; Get it chips start a job directly; its own Copy row;
-  - the trim list: none of `discover.modal.getItLiveHint`, `getItSub`, `inviteTitle`, `findHint`, `search`; no destination bar, no lookup card;
-  - plug-ins off + member → the window opens and `copyDiscoverP2p` is not called;
-  - Discover and now-playing windows unchanged.
+  - the window from the page is the now-playing window (§2 item 15): a lead's window is a network row's (header, previews, Get it with the admin's invite, Find elsewhere with Copy title); plug-ins off + member → the lead is copied; nothing of the old page variant left in `index.html`, `vp.js` or `spa.css`;
 - **`webapp-peer-recs-clip.test.mjs`**:
   - one `Audio` element reused;
   - main paused once and resumed once across 3 hand-offs, never touched when not playing;
@@ -461,7 +455,7 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
 1. The nav row under Discover; `/api` flags.
 2. Frame 1: strip states, two columns 6 | 6, shared album tiles. **Screenshot to the user for the palette decision (§2 item 9).**
 3. Frame 2: queue a fixture song; Signal Fires' play pauses main; the band and attribution show; Night Ferry art lands on both Night Ferry rows; ✕ resumes main.
-4. Frame 3: the Long Exposure row opens the window with nothing playing: tile M, "Marlowe Fields · Daylight Savings", "● Kitchen Radio", Preview / Get it… (noop) / Find elsewhere / Copy only.
+4. Frame 3: the Long Exposure row opens the now-playing window with nothing playing: "Marlowe Fields · Daylight Savings · <length>", the ISRC and the match line naming its seed, a Deezer preview tile, Get it (the noop row; an admin's invite row where federation applies), Find elsewhere with Copy title.
 5. Frame 4: the Kitchen Radio tab (network panel: one call with `networkPeers` + 12 pins; leads 3 | 2; All → no call); `+ Static Garden` Adding… with 3 s polls; Rooftop Try again; `+ Lighthouse` lands → Attic Tapes leaves the strip and a pinned re-ask follows.
 6. Preview all pacing (≤ 2 resolves per clip; Arcade Rain skipped; Quiet Engine's 429 then a retry).
 7. stage-member (no "+"), stage-new (leads).
@@ -918,7 +912,7 @@ House rules for every phase:
 
 ## 7. Open questions (each with the default this plan builds)
 1. **Palette** (§2 item 9): computed FNV hues (default) vs a curated palette indexed by the hash. **Decided at Gate W, 2026-10-27: computed hues, reds included.**
-2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins.
+2. **Admin "Invite <peer> to federate" row in the web window from the page**: hidden (default, minimal text) vs kept for admins. **Superseded 2026-11-19 (§2 item 15):** the page opens the now-playing window, so admins keep the invite row.
 3. **Coordinated release** (§2 item 22): hold the mStream bump for the player pin (default), vs ship server + web first and let the terminal room arrive with the next mStream release.
 4. **Admin panel sync `peer-dbs/fetch` keeps pinning** (default yes, back-compat), while page Adds never pin. An admin who wants a page-added peer kept presses Pin in the panel.
 5. **Addable rows**: online peers only (default, the design), vs also offline peers that seeders still hold.

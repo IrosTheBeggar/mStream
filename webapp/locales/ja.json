@@ -700,7 +700,6 @@
   "peerRecs.copyList": "リストをコピー",
   "peerRecs.copied": "コピーしました",
   "peerRecs.getIt": "入手…",
-  "peerRecs.copy": "コピー",
   "peerRecs.noPreview": "試聴なし",
   "peerRecs.turnOn.shares": "オーディオは含めず、ライブラリのメタデータだけを、このサーバーの名前と説明とともに公開のディスカバリーネットワークで共有します。",
   "peerRecs.turnOn.collection": "ディスカバリーデータの収集もオンになります。",

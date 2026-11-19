@@ -700,7 +700,6 @@
   "peerRecs.copyList": "复制列表",
   "peerRecs.copied": "已复制",
   "peerRecs.getIt": "获取…",
-  "peerRecs.copy": "复制",
   "peerRecs.noPreview": "无试听",
   "peerRecs.turnOn.shares": "在公共发现网络上共享你曲库的元数据（绝不共享音频），并附上本服务器的名称和描述。",
   "peerRecs.turnOn.collection": "同时开启发现数据收集。",

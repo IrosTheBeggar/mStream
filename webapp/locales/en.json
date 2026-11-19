@@ -1530,7 +1530,6 @@
   "peerRecs.copyList": "Copy list",
   "peerRecs.copied": "Copied",
   "peerRecs.getIt": "Get it…",
-  "peerRecs.copy": "Copy",
   "peerRecs.noPreview": "No preview",
   "peerRecs.turnOn.shares": "Shares your library's metadata, never its audio, on the public discovery network, with this server's name and description.",
   "peerRecs.turnOn.collection": "Also turns on discovery data collection.",
