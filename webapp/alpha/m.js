@@ -83,8 +83,10 @@ myDropzone.on('error', (err, msg, xhr) => {
     timeout: 3500
   };
 
+  // the server's words, which can name the library: escaped for the toast,
+  // which takes markup
   if (msg.error) {
-    iziStuff.message = msg.error;
+    iziStuff.message = escapeHtml(msg.error);
   }
 
   iziToast.error(iziStuff);
@@ -2715,8 +2717,12 @@ function downloadFileplaylist(el) {
       if (match) { message = match[1]; }
     }
 
+    // The server's words quote the path it could not read ('Cannot read
+    // playlist "<folder>/<file>" (ENOENT)'), and a folder's or a file's name
+    // is whatever the music came with: escaped for the toast, which takes
+    // markup.
     const opts = { title: t('toast.downloadFailed'), position: 'topCenter', timeout: 5000 };
-    if (message) { opts.message = message; }
+    if (message) { opts.message = escapeHtml(message); }
     iziToast.error(opts);
 
     // Clear so stale error text can't be re-read on a later submit.
