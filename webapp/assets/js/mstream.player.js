@@ -43,7 +43,13 @@ const MSTREAMPLAYER = (() => {
     }
     mstreamModule.playerStats.volume = newVolume;
 
-    const rgainAdjustedVolume = newVolume / 100 * currentReplayGainAmp;
+    // A positive track gain (a quiet master) can take the product past 1,
+    // and HTMLMediaElement.volume throws outside [0, 1]. That throw would
+    // land mid song change and skip the rest of goToSong (the Auto DJ
+    // top-up, the next-song cache, the play session). The element cannot
+    // amplify, so a boost stops at the track's own level; the negative
+    // pre-gain steps are the headroom for it.
+    const rgainAdjustedVolume = Math.min(1, Math.max(0, newVolume / 100 * currentReplayGainAmp));
     getCurrentPlayer().playerObject.volume = rgainAdjustedVolume;
     getOtherPlayer().playerObject.volume = rgainAdjustedVolume;
   }

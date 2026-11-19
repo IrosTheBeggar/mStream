@@ -4599,7 +4599,9 @@ const VUEPLAYERCORE = (() => {
         MSTREAMPLAYER.setReplayGainActive(localStorage.getItem("replayGain") == "true");
 
         const rgPregain = Number(localStorage.getItem("replayGainPreGainDb"));
-        MSTREAMPLAYER.setReplayGainPreGainDb(rgPregain === NaN ? 0 : rgPregain);
+        // Number.isNaN: `=== NaN` is never true, and a NaN pre-gain makes a
+        // NaN volume, which the media element refuses with a throw.
+        MSTREAMPLAYER.setReplayGainPreGainDb(Number.isNaN(rgPregain) ? 0 : rgPregain);
       }
     },
     computed: {

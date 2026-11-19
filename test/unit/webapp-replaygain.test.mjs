@@ -31,8 +31,16 @@ const ampOf = (db) => Math.pow(10, db / 20);
 // A fresh player per test: the module keeps its ReplayGain amp in a closure.
 function loadPlayer() {
   const audios = [];
+  // Like the real element, `volume` refuses anything outside [0, 1] (a
+  // browser throws IndexSizeError, and TypeError for NaN).
   class Audio {
-    constructor() { this.volume = 1; this.playbackRate = 1; this.currentTime = 0; audios.push(this); }
+    #volume = 1;
+    constructor() { this.playbackRate = 1; this.currentTime = 0; audios.push(this); }
+    get volume() { return this.#volume; }
+    set volume(v) {
+      if (!(v >= 0 && v <= 1)) { throw new RangeError(`volume ${v} is outside [0, 1]`); }
+      this.#volume = v;
+    }
     addEventListener() {}
     load() {}
     pause() {}
@@ -81,6 +89,32 @@ describe('web player ReplayGain', () => {
 
   test('a 0 dB gain plays as is, not as a missing gain', () => {
     player.updateReplayGainFromSong({ metadata: { 'replaygain-track': 0 } });
+    assert.equal(volume(), 1);
+  });
+
+  test('a positive gain stops at full volume instead of overdriving the element', () => {
+    // +4 dB at full volume would be 1.58, which the element refuses.
+    player.updateReplayGainFromSong({ metadata: { 'replaygain-track': 4 } });
+    assert.equal(volume(), 1);
+
+    // Below full volume the boost has room and applies in full...
+    player.changeVolume(50);
+    assert.ok(Math.abs(volume() - 0.5 * ampOf(4)) < 1e-9);
+
+    // ...and so does a negative pre-gain's headroom.
+    player.changeVolume(100);
+    player.setReplayGainPreGainDb(-6);
+    player.updateReplayGainFromSong({ metadata: { 'replaygain-track': 4 } });
+    assert.ok(Math.abs(volume() - ampOf(-2)) < 1e-9);
+  });
+
+  test('a song change to a positive-gain track runs to the end', () => {
+    player.addSong({ url: 'media/a.flac', filepath: 'a.flac', metadata: { title: 'A', 'replaygain-track': -6 } }, true);
+    player.addSong({ url: 'media/b.flac', filepath: 'b.flac', metadata: { title: 'B', 'replaygain-track': 4 } }, true);
+
+    player.goToSongAtPosition(1); // threw from changeVolume before the clamp
+    assert.equal(player.playerStats.metadata.title, 'B');
+    assert.equal(player.playerStats.metadata['replaygain-track-db'], 4);
     assert.equal(volume(), 1);
   });
 
