@@ -870,7 +870,9 @@ components:
         swap, a block, a pin or an unpin — so "No room" clears itself as soon
         as an admin unpins something. A `no-room` also clears when any other
         download (an Add, the admin panel's fetch, the auto-fetch) ends
-        without landing, since the room it held is free again. A `done`
+        without landing, since the room it held is free again, and on any
+        read once the room is there (a raised storage cap, a smaller
+        announcement): it is re-planned whenever it is read. A `done`
         state goes as soon as its snapshot leaves the shelf again (the row is
         then plain addable). Every stop of the discovery network drops every
         state — switching it off, a failed switch-on rolled back, and the
@@ -4266,7 +4268,8 @@ paths:
         auto-fetch) is not downloaded twice: the call joins that download
         and pins what lands. Joining a page Add means joining its swap too:
         the unpinned snapshots that Add planned to evict leave the shelf
-        when it lands, before this call answers. While it runs the peer's
+        when it lands (as many as the landed bytes need), before this call
+        answers. While it runs the peer's
         Add state on
         `GET /api/v1/discovery/p2p/peers` reads `adding`, then `done` or
         `failed` — a cap refusal stored as code `failed`, never `no-room`
@@ -4341,6 +4344,8 @@ paths:
         longest-standing member; a tie goes to one other peers also hold),
         with no age gate, and never a pinned one; `no-room`
         only when it cannot fit even after evicting every unpinned snapshot.
+        The room is planned on the announced size, but only as many of the
+        planned evictees leave as the bytes that actually landed need.
         It **fetches first, then evicts**, so a failed or slow Add costs no
         peer: the evictions land in the same step as the new entry, so the
         shelf is never over its cap at rest, but during the download the

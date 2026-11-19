@@ -136,11 +136,15 @@ export function hashOf(endpointId) {
 // What the fake fetch serves for `hash`: the blob (from `tracks`, current
 // catalogue layout), and the optional delay and failure markers. Call it
 // again to change a marker; `delayMs: 0` / `fail: false` remove one.
-export function stageFakeBlob(fakeDir, hash, { tracks = null, modelId = TEST_MODEL, delayMs, fail } = {}) {
+// `size` zero-extends the blob to that many bytes (SQLite ignores the tail),
+// so a peer announcing it delivers it: an honest announcement is byte-exact,
+// and the shelf swaps out only what the landed bytes need.
+export function stageFakeBlob(fakeDir, hash, { tracks = null, modelId = TEST_MODEL, delayMs, fail, size } = {}) {
   fs.mkdirSync(fakeDir, { recursive: true });
   const blob = path.join(fakeDir, hash);
   if (tracks) {
     makeSnapshotFile(`${blob}.db`, { modelId, catalogue: true, tracks: unitTracks(tracks, modelId) });
+    if (size > fs.statSync(`${blob}.db`).size) { fs.truncateSync(`${blob}.db`, size); }
   }
   if (delayMs !== undefined) {
     if (delayMs > 0) { fs.writeFileSync(`${blob}.delay-ms`, String(delayMs)); } else { fs.rmSync(`${blob}.delay-ms`, { force: true }); }
@@ -173,9 +177,10 @@ const MB = 1024 * 1024;
  *   blocked     listed in the returned blockedPeers
  *   shelf       held: { tracks, sizeBytes (default `size`), pinned,
  *               heldForMs (membership age, default 1 day) }
- *   blob        the fake fetch's copy: { tracks, delayMs, fail }; with no
- *               tracks only the markers are written (no blob = the fetch
- *               rejects "no provider", an offline peer)
+ *   blob        the fake fetch's copy: { tracks, delayMs, fail, size };
+ *               with no tracks only the markers are written (no blob = the
+ *               fetch rejects "no provider", an offline peer). The copy is
+ *               the announced `size` unless `blob.size` says otherwise
  *
  * Tracks: { artist, title, album?, vec, ... } — vectors are normalized
  * here. A shelf snapshot carries the peer's modelId on every row.
@@ -213,7 +218,7 @@ export function stagePeers({ dbDir, fakeDir = null, peers, now = Date.now() }) {
     }
     if (p.blob) {
       if (!fakeDir) { throw new Error(`stagePeers: peer ${p.id.slice(0, 12)}… has a blob but no fakeDir`); }
-      stageFakeBlob(fakeDir, hash, { modelId, ...p.blob });
+      stageFakeBlob(fakeDir, hash, { modelId, size, ...p.blob });
     }
   }
   writeShelf(dbDir, shelf);

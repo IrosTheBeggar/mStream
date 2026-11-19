@@ -36,10 +36,12 @@
  *      Shelf (cap 10 MB, 8 MB held): Kitchen Radio K (online, 2 MB), 'mStream'
  *      M (offline, 1 MB), Quarry Q (another model, 1 MB), Attic Tapes OLD
  *      (unpinned, offline the longest, 4 MB). Catalog: those, plus K2 (K's
- *      name, 7 MB: no room until something goes), Lighthouse L (3 MB: one
- *      eviction, OLD; its songs are all owned here), Rooftop R (.fail),
- *      Static S (delay-ms), Dusty (offline, no seeders) and a blocked id. A
- *      second blocked id is in no catalog at all.
+ *      name, 2 MB: no room on the full shelf until K is unpinned),
+ *      Lighthouse L (3 MB: one eviction, OLD; its songs are all owned here),
+ *      Rooftop R (.fail), Static S (delay-ms), Dusty (offline, no seeders)
+ *      and a blocked id. A second blocked id is in no catalog at all. Every
+ *      fake download delivers its announced size (stagePeers), so the shelf
+ *      fills as it would for honest peers: 10 MB once L and S land.
  *   B  p2p on, empty shelf (public mode).
  *   C  p2p off (public mode).
  *   D  admin, then lockAdmin (adminAccess 'none', flipped live).
@@ -133,7 +135,7 @@ const A_PEERS = [
   { id: M, name: 'mStream', heardAgoMs: 2 * DAY, shelf: { tracks: [T.sundayWire], sizeBytes: MB } },
   { id: Q, name: 'Quarry', modelId: 'other-model', shelf: { tracks: [T.otherSpace], sizeBytes: MB } },
   { id: OLD, name: 'Attic Tapes', heardAgoMs: 10 * DAY, shelf: { tracks: [T.dustyReel], sizeBytes: 4 * MB } },
-  { id: K2, name: 'Kitchen Radio', size: 7 * MB, rowCount: 900, blob: { tracks: [T.longExposure], delayMs: SLOW_MS } },
+  { id: K2, name: 'Kitchen Radio', size: 2 * MB, rowCount: 900, blob: { tracks: [T.longExposure], delayMs: SLOW_MS } },
   { id: L, name: 'Lighthouse Tapes', size: 3 * MB, rowCount: 700, blob: { tracks: [T.rise, T.highway] } },
   { id: R, name: 'Rooftop FM', size: MB, rowCount: 500, blob: { fail: true } },
   { id: S, name: 'Static Garden', size: 3 * MB, rowCount: 300, blob: { tracks: [T.arcadeRain], delayMs: SLOW_MS } },
@@ -666,7 +668,7 @@ describe('peer recs: the Add', () => {
     const row = rowOf(await peersView(A, tok.admin), S);
     assert.deepEqual([row.onShelf, row.pinned, row.add.state], [true, true, 'done']);
 
-    // K2's 7 MB cannot fit beside 4 MB held, and this fetch never swaps.
+    // K2's 2 MB cannot fit beside the 10 MB held, and this fetch never swaps.
     const full = await call(A, 'POST', FETCH, { endpointId: K2 }, tok.admin);
     assert.equal(full.status, 500, JSON.stringify(full.body));
     assert.match(full.body.error, /^fetch failed: fetch would exceed the peer-DB storage cap/);
@@ -708,6 +710,10 @@ describe('peer recs: an Add across a kill and a stop', () => {
     assert.deepEqual([row.onShelf, row.add], [false, null], 'nothing survives a restart');
     assert.equal(rowOf(v, ATTIC)?.onShelf, true, 'the planned evictee leaves only when the newcomer lands');
     assert.ok(!fs.existsSync(sFile()), 'the orphan was swept');
+    assert.ok(fs.existsSync(path.join(stateF.dbDir, 'discovery-p2p', 'peer-dbs-swept')),
+      "the first boot's sweep left its marker");
+    assert.ok(!fs.existsSync(path.join(stateF.dbDir, 'discovery-fetched', path.basename(sFile()))),
+      'deleted, not moved: only the first sweep on a dbDirectory moves');
     assert.deepEqual(shelfFiles(stateF.dbDir), readRegistry(stateF.dbDir).map((e) => path.basename(e.path)).sort(),
       'every snapshot file is a shelf entry');
     const at = await storage();
@@ -844,7 +850,7 @@ describe('peer recs: taste generation 3', () => {
   test('21. taste calls while an Add swaps a snapshot out: every one answers 200', async () => {
     const logs = await call(A, 'GET', '/api/v1/admin/logs/recent', undefined, tok.admin);
     const since = logs.body.lastSeq;
-    // K2 (7 MB) fits once Kitchen Radio's 2 MB go: unpin it, and K2 swaps it out.
+    // K2 (2 MB) fits once Kitchen Radio's 2 MB go: unpin it, and K2 swaps it out.
     await setPinned(A, tok.admin, K, false);
     const r = await addPeer(A, tok.admin, K2);
     assert.equal(r.status, 202, JSON.stringify(r.body));

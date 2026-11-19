@@ -31,7 +31,9 @@
  *   Static Garden     catalog, online   Add stays 'adding' for 120 s
  *   Rooftop FM        catalog, online   Add fails 'offline'
  * The shelf cap is 10 MB with 8 MB held, so Lighthouse (3 MB) needs one
- * swap and, after it, Static (3 MB) fits. The leads are DECISIONS §3's twelve
+ * swap and, after it, Static (2 MB) fits. Every download delivers the size
+ * its peer announces (stagePeers), as an honest peer's does, so these sums
+ * are the shelf's own. The leads are DECISIONS §3's twelve
  * and nothing else: Attic, Lighthouse and Static hold only songs this
  * library owns, which the walk drops. Every lead shares one direction in
  * the library's plane, so any seed ranks them in DECISIONS order.
@@ -179,7 +181,7 @@ const PEERS = [
   },
   { name: 'Lighthouse Tapes', prefix: '11fe90', size: 3 * MB, rowCount: 9400, blob: { tracks: [owned('Icarus', 'Orbit'), owned('Vosto', 'Neon')] } },
   {
-    name: 'Static Garden', prefix: '57a76a', size: 3 * MB, rowCount: 7000,
+    name: 'Static Garden', prefix: '57a76a', size: 2 * MB, rowCount: 7000,
     blob: { tracks: [owned('Icarus', 'Return'), owned('Vosto', 'Static')], delayMs: STATIC_DELAY_MS },
   },
   { name: 'Rooftop FM', prefix: 'f00f70', size: MB, rowCount: 3100, blob: { fail: true } },

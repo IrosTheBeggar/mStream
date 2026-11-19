@@ -87,6 +87,7 @@ async function fakeFetch(addressing, outDir) {
   return { hash, size: fs.statSync(dest).size, path: dest };
 }
 
+const forgotten = [];
 const callsFor = (ch) => fake.calls.filter((h) => h === hashOf(ch)).length;
 
 // Wait until a held download is actually sitting in the fake (fetchPeer
@@ -106,17 +107,38 @@ function failHeld(ch, err) {
   h.reject(err);
 }
 
-// A catalog peer (heard just now, so online) whose snapshot is ~pad bytes.
+// A catalog peer (heard just now, so online) whose snapshot is ~pad bytes,
+// announced at its exact size unless `announcedSize` claims another.
 const announced = new Set();
-function announce(ch, pad, { rowCount = 10 } = {}) {
+function announce(ch, pad, { rowCount = 10, announcedSize } = {}) {
   const hash = hashOf(ch);
   const file = path.join(templateDir, `${hash}.db`);
   fs.rmSync(file, { force: true });
   const size = makeSnapshot(file, pad);
   templates.set(hash, file);
-  catalog.record(id(ch), { hash, size, snapshotSeq: 1, rowCount, modelId: MODEL, name: `Peer ${ch}` });
+  catalog.record(id(ch), {
+    hash, size: announcedSize ?? size, snapshotSeq: 1, rowCount, modelId: MODEL, name: `Peer ${ch}`,
+  });
   announced.add(id(ch));
   return size;
+}
+
+// A catalog peer announcing ANOTHER peer's snapshot (same hash, same size):
+// a server re-keyed under a new id, or a peer re-announcing a blob it holds.
+function announceSame(ch, ofCh) {
+  const hash = hashOf(ofCh);
+  catalog.record(id(ch), {
+    hash, size: fs.statSync(templates.get(hash)).size, snapshotSeq: 1, rowCount: 10, modelId: MODEL, name: `Peer ${ch}`,
+  });
+  announced.add(id(ch));
+}
+
+const fileOf = (ch) => path.join(peerDir, `${hashOf(ch).slice(0, 16)}.db`);
+// A shelf entry's snapshot opens and reads (its file is still the one the
+// registry names).
+function readable(ch) {
+  const db = new DatabaseSync(peerDbs.get(id(ch)).path, { readOnly: true });
+  try { return db.prepare('SELECT COUNT(*) AS n FROM tracks').get().n === 1; } finally { db.close(); }
 }
 
 // Put a peer on the shelf for real. `ageDays` back-dates its membership:
@@ -162,6 +184,9 @@ before(async () => {
     endpointId: id('0'), hash: hashOf('0'), path: heldFile, snapshotSeq: 1, modelId: MODEL,
     rowCount: 1, sizeBytes: heldSize, name: 'Held', fetchedAt: new Date().toISOString(),
   }]));
+  // A server past its first sweep (the upgrade's one-time move of unnamed
+  // files is test/unit/discovery-peer-dbs-first-sweep.test.mjs).
+  fs.writeFileSync(path.join(path.dirname(registryFile), 'peer-dbs-swept'), 'earlier\n');
 
   config = await import('../../src/state/config.js');
   await config.setup(path.join(testRoot, 'config.json'));
@@ -172,6 +197,8 @@ before(async () => {
   discoveryP2p = await import('../../src/state/discovery-p2p.js');
   peerDbs = await import('../../src/state/discovery-peer-dbs.js');
   peerDbs.setFetchForTests(fakeFetch);
+  // every blob root the shelf releases (the sidecar's forget)
+  peerDbs.setForgetForTests((hash) => { forgotten.push(hash); });
   // What the raw admin p2p/fetch route delivered before this boot: a file
   // for the admin, in a directory of its own.
   fs.mkdirSync(peerDbs.rawFetchDir(), { recursive: true });
@@ -188,10 +215,12 @@ afterEach(() => {
   for (const peer of announced) { catalog.forget(peer); }
   announced.clear();
   config.program.discoveryP2p.blockedPeers = [];
+  forgotten.length = 0; // after the clean-up's own removals
 });
 
 after(() => {
   peerDbs.setFetchForTests(null);
+  peerDbs.setForgetForTests(null);
   winston.remove(quiet);
   try { fs.rmSync(testRoot, { recursive: true, force: true }); } catch (_e) { /* win file locks */ }
 });
@@ -201,6 +230,7 @@ describe('boot', () => {
     assert.deepEqual(peerDbs.list().map((e) => e.endpointId), [id('0')]);
     assert.ok(fs.existsSync(path.join(peerDir, 'held.db')));
     assert.ok(!fs.existsSync(path.join(peerDir, 'orphan.db')), 'nothing names it, nothing would ever remove it');
+    assert.ok(!fs.existsSync(path.join(peerDbs.rawFetchDir(), 'orphan.db')), 'deleted, not moved: not the first sweep');
     assert.ok(fs.existsSync(path.join(peerDir, 'notes.txt')), 'only *.db files are snapshots');
     assert.notEqual(peerDbs.rawFetchDir(), peerDir);
     assert.ok(fs.existsSync(path.join(peerDbs.rawFetchDir(), 'pulled.db')), "the raw route's deliverable stays");
@@ -468,6 +498,183 @@ describe("an Add's discount", () => {
     await peerDbs.fetchPeer(id('m'), { discount: second.evictIds });
     assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('m'), id('n')]);
     assert.ok(peerDbs.totalBytes() <= CAP_MB * 1024 * 1024);
+  });
+});
+
+describe('the swap goes by the bytes that landed', () => {
+  test('a peer that announces big and sends small swaps nobody out', async () => {
+    await shelve('a', 300_000);
+    await shelve('b', 300_000);
+    await shelve('e', 300_000);
+    announce('c', 0, { announcedSize: 1_000_000 });
+    const plan = peerDbs.planRoomFor(id('c'));
+    assert.deepEqual(plan.evictIds.length, 3, 'precondition: the announced size plans every unpinned one away');
+    await peerDbs.fetchPeer(id('c'), { discount: plan.evictIds });
+    assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('a'), id('b'), id('c'), id('e')]);
+    assert.deepEqual(registryIds().sort(), [id('a'), id('b'), id('c'), id('e')]);
+    assert.ok(peerDbs.totalBytes() <= CAP_MB * 1024 * 1024);
+  });
+
+  test('an under-delivery swaps out the plan in its order, only until the landed bytes fit', async () => {
+    await shelve('a', 300_000, { ageDays: 9 }); // oldest: first in the plan
+    await shelve('b', 300_000, { ageDays: 5 });
+    await shelve('e', 300_000, { ageDays: 1 });
+    announce('c', 350_000, { announcedSize: 700_000 });
+    const plan = peerDbs.planRoomFor(id('c'));
+    assert.deepEqual(plan.evictIds, [id('a'), id('b')], 'precondition: the claim needs two');
+    const removed = [];
+    const off = peerDbs.onShelfChange((c) => { if (c.change === 'removed') { removed.push(c.endpointId); } });
+    try {
+      await peerDbs.fetchPeer(id('c'), { discount: plan.evictIds });
+    } finally {
+      off();
+    }
+    assert.deepEqual(removed, [id('a')], 'the 350 KB that landed needed one');
+    assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('b'), id('c'), id('e')]);
+    assert.ok(!fs.existsSync(fileOf('a')));
+    assert.ok(peerDbs.totalBytes() <= CAP_MB * 1024 * 1024);
+  });
+});
+
+describe('peers announcing one snapshot share its file', () => {
+  test('a swap that evicts one keeps the file and blob the newcomer landed on', async () => {
+    await shelve('a', 300_000);
+    await shelve('b', 500_000, { pinned: true });
+    announceSame('c', 'a');
+    const plan = peerDbs.planRoomFor(id('c'));
+    assert.deepEqual(plan, { fits: true, evictIds: [id('a')] }, 'precondition');
+    await peerDbs.fetchPeer(id('c'), { discount: plan.evictIds });
+    assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('b'), id('c')]);
+    assert.equal(peerDbs.get(id('c')).path, fileOf('a'), 'the sidecar names the export after the hash');
+    assert.ok(fs.existsSync(fileOf('a')), "the evictee's file is the newcomer's");
+    assert.ok(readable('c'), 'the newcomer reads');
+    assert.ok(!forgotten.includes(hashOf('a')), "the blob root stays: it is the newcomer's");
+  });
+
+  test('removing one sharer keeps the file until the last one goes', async () => {
+    await shelve('a', 1000);
+    announceSame('d', 'a');
+    await peerDbs.fetchPeer(id('d'));
+    assert.ok(peerDbs.removePeerDb(id('a')));
+    assert.ok(fs.existsSync(fileOf('a')));
+    assert.deepEqual(forgotten, [], 'no blob root released while D holds it');
+    assert.ok(readable('d'));
+    assert.ok(peerDbs.removePeerDb(id('d')));
+    assert.ok(!fs.existsSync(fileOf('a')), 'the last one takes it');
+    assert.deepEqual(forgotten, [hashOf('a')], 'and releases the root, once');
+  });
+
+  test("a refused download of a held snapshot leaves the holder's file", async () => {
+    await shelve('a', 1000);
+    announceSame('c', 'a');
+    fake.holdNext.add(hashOf('a'));
+    const c = peerDbs.fetchPeer(id('c'));
+    await downloading('a');
+    config.program.discoveryP2p.blockedPeers = [id('c')];
+    release('a');
+    await assert.rejects(c, { code: 'blocked' });
+    assert.ok(fs.existsSync(fileOf('a')));
+    assert.ok(readable('a'));
+  });
+  test("a sharer's refresh to a new snapshot keeps the other's file and blob", async () => {
+    await shelve('a', 1000);
+    announceSame('d', 'a');
+    await peerDbs.fetchPeer(id('d'));
+    // A publishes anew: its announcement now carries another hash
+    announce('z', 1000);
+    catalog.record(id('a'), {
+      hash: hashOf('z'), size: fs.statSync(templates.get(hashOf('z'))).size, snapshotSeq: 2, rowCount: 10, modelId: MODEL, name: 'Peer a',
+    });
+    await peerDbs.fetchPeer(id('a'));
+    assert.equal(peerDbs.get(id('a')).hash, hashOf('z'));
+    assert.ok(fs.existsSync(fileOf('a')), "A's old file is D's");
+    assert.ok(readable('d'));
+    assert.ok(!forgotten.includes(hashOf('a')), "and so is A's old blob root");
+  });
+
+  test('a sharer still downloading keeps the file: the holder removed mid-download leaves it for the landing', async () => {
+    await shelve('a', 1000);
+    announceSame('c', 'a');
+    fake.holdNext.add(hashOf('a'));
+    const c = peerDbs.fetchPeer(id('c'));
+    await downloading('a');
+    assert.ok(peerDbs.removePeerDb(id('a')));
+    assert.ok(fs.existsSync(fileOf('a')), 'C is about to land on it');
+    assert.ok(!forgotten.includes(hashOf('a')));
+    release('a');
+    await c;
+    assert.ok(readable('c'));
+  });
+});
+
+describe('the registry write', () => {
+  test('a write that fails undoes the swap: the evictee keeps its place and its file, the newcomer goes', async () => {
+    await shelve('e', 200_000);
+    await shelve('p', 200_000, { pinned: true });
+    announce('n', 700_000);
+    const plan = peerDbs.planRoomFor(id('n'));
+    assert.deepEqual(plan.evictIds, [id('e')], 'precondition');
+    const onDisk = fs.readFileSync(registryFile, 'utf8');
+    const changes = [];
+    const off = peerDbs.onShelfChange((c) => changes.push(c.change));
+    // A directory where the temp file goes: every platform refuses the write.
+    const tmp = `${registryFile}.tmp`;
+    fs.mkdirSync(tmp);
+    try {
+      await assert.rejects(peerDbs.fetchPeer(id('n'), { discount: plan.evictIds }), { code: 'failed' });
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+      off();
+    }
+    assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('e'), id('p')]);
+    assert.equal(fs.readFileSync(registryFile, 'utf8'), onDisk, 'the registry on disk never moved');
+    assert.ok(fs.existsSync(fileOf('e')));
+    assert.ok(!fs.existsSync(fileOf('n')), 'the download is thrown away');
+    assert.deepEqual(changes, ['released'], 'nothing landed or left');
+
+    await peerDbs.fetchPeer(id('n'), { discount: plan.evictIds });
+    assert.deepEqual(registryIds().sort(), [id('n'), id('p')], 'once writable, the same Add lands');
+  });
+
+  test('a busy rename is tried again; one that stays busy leaves peer-dbs.json as it was, and undoes the swap', async (t) => {
+    const renameSync = fs.renameSync;
+    let busy = 2;
+    const mocked = t.mock.method(fs, 'renameSync', (from, to) => {
+      if (to === registryFile && busy > 0) {
+        busy -= 1;
+        throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' });
+      }
+      return renameSync(from, to);
+    });
+    await shelve('e', 200_000);
+    assert.deepEqual(registryIds(), [id('e')], 'the third try landed');
+    assert.equal(mocked.mock.callCount(), 3);
+
+    await shelve('p', 200_000, { pinned: true });
+    announce('n', 700_000);
+    const plan = peerDbs.planRoomFor(id('n'));
+    const onDisk = fs.readFileSync(registryFile, 'utf8');
+    busy = Infinity;
+    await assert.rejects(peerDbs.fetchPeer(id('n'), { discount: plan.evictIds }), { code: 'failed' });
+    busy = 0;
+    assert.equal(fs.readFileSync(registryFile, 'utf8'), onDisk, 'never truncated, never half-written');
+    assert.ok(!fs.existsSync(`${registryFile}.tmp`), 'the temp file goes');
+    assert.deepEqual(peerDbs.list().map((e) => e.endpointId).sort(), [id('e'), id('p')], 'memory matches disk');
+    assert.ok(fs.existsSync(fileOf('e')));
+  });
+
+  test('it is written whole: a temp file renamed over it, never the registry truncated in place', async (t) => {
+    const writes = [];
+    const writeFileSync = fs.writeFileSync;
+    t.mock.method(fs, 'writeFileSync', (file, ...rest) => {
+      writes.push(file);
+      return writeFileSync(file, ...rest);
+    });
+    await shelve('a', 1000);
+    assert.ok(writes.length > 0);
+    assert.ok(!writes.includes(registryFile), writes.join('\n'));
+    assert.ok(!fs.existsSync(`${registryFile}.tmp`));
+    assert.deepEqual(registryIds(), [id('a')]);
   });
 });
 

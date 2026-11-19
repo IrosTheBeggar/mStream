@@ -172,15 +172,22 @@ function ensureLoaded() {
   loaded = true;
   try {
     for (const e of JSON.parse(fs.readFileSync(registryPath(), 'utf8'))) {
-      // Drop registry entries whose file has vanished (manual cleanup etc.).
-      if (e && e.endpointId && e.path && fs.existsSync(e.path)) {
-        // Backfill pre-rotation registries: the membership clock starts at
-        // whatever fetch we knew about, and nothing is pinned until an
-        // admin says so.
-        if (!e.firstFetchedAt) { e.firstFetchedAt = e.fetchedAt || new Date().toISOString(); }
-        if (typeof e.pinned !== 'boolean') { e.pinned = false; }
-        registry.set(e.endpointId, e);
+      if (!e || !e.endpointId || !e.path) { continue; }
+      if (!fs.existsSync(e.path)) {
+        // The path is stored whole, so a dbDirectory moved or renamed (a new
+        // mount, a copied data dir) leaves it pointing at the old place: the
+        // snapshot is in the shelf directory as it stands now. Re-attached
+        // there, or the sweep below would take it for an orphan.
+        const here = path.join(peerDbDir(), path.basename(e.path));
+        if (!fs.existsSync(here)) { continue; } // gone for real (manual cleanup etc.)
+        e.path = here;
       }
+      // Backfill pre-rotation registries: the membership clock starts at
+      // whatever fetch we knew about, and nothing is pinned until an admin
+      // says so.
+      if (!e.firstFetchedAt) { e.firstFetchedAt = e.fetchedAt || new Date().toISOString(); }
+      if (typeof e.pinned !== 'boolean') { e.pinned = false; }
+      registry.set(e.endpointId, e);
     }
   } catch (err) {
     if (err.code !== 'ENOENT') {
@@ -201,19 +208,83 @@ function ensureLoaded() {
 // make a held snapshot look orphaned. Only shelf downloads land here: the
 // raw admin p2p/fetch route exports into a directory of its own
 // (rawFetchDir), whose files are the route's deliverable.
+//
+// Until the sweep existed, that raw route exported into this directory too,
+// so on a server upgraded from then an unnamed *.db may be a file an admin
+// pulled, not an interrupted download. The first sweep on a dbDirectory
+// therefore MOVES unnamed files to rawFetchDir() instead of deleting them,
+// and leaves a marker (sweepMarkerPath): { sweptAt, pending }, `pending`
+// naming the files a move failed for. Every later sweep moves those again
+// (until each goes) and deletes the rest — so one file that will not move
+// never turns the interrupted downloads after it into "pulled" files.
+function sweepMarkerPath() {
+  return path.join(config.program.storage.dbDirectory, 'discovery-p2p', 'peer-dbs-swept');
+}
+
+// The marker's pending names, or null when there is no marker (the first
+// sweep: every unnamed file is a legacy one).
+function readSweepPending() {
+  let text;
+  try {
+    text = fs.readFileSync(sweepMarkerPath(), 'utf8');
+  } catch (_err) {
+    return null;
+  }
+  try {
+    const pending = JSON.parse(text).pending;
+    return new Set(Array.isArray(pending) ? pending.filter((n) => typeof n === 'string') : []);
+  } catch (_err) {
+    return new Set(); // a marker that is not ours to read: swept, nothing pending
+  }
+}
+
+// One legacy file into rawFetchDir(). The sidecar names an export after its
+// snapshot hash, so the same name there is the same snapshot, already kept.
+// A rename across filesystems (discovery-fetched/ mounted elsewhere) copies.
+function moveToRawFetch(file) {
+  const from = path.join(peerDbDir(), file);
+  const to = path.join(rawFetchDir(), file);
+  fs.mkdirSync(rawFetchDir(), { recursive: true });
+  if (fs.existsSync(to)) {
+    fs.rmSync(from, { force: true });
+    return;
+  }
+  try {
+    fs.renameSync(from, to);
+  } catch (err) {
+    if (err.code !== 'EXDEV') { throw err; }
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
+}
+
 function sweepOrphans() {
   const named = new Set([...registry.values()].map((e) => path.basename(e.path)));
-  let files;
+  const pending = readSweepPending();
+  const legacy = (file) => pending === null || pending.has(file);
+  let files = [];
   try {
     files = fs.readdirSync(peerDbDir());
   } catch (err) {
     if (err.code !== 'ENOENT') {
       winston.warn(`[discovery-peer-dbs] orphan sweep skipped: ${err.message}`);
+      return;
     }
-    return;
   }
+  const stillPending = [];
   for (const file of files) {
     if (!file.endsWith('.db') || named.has(file)) { continue; }
+    if (legacy(file)) {
+      try {
+        moveToRawFetch(file);
+        winston.info(`[discovery-peer-dbs] moved ${file} to ${rawFetchDir()}: no shelf entry names it, `
+          + 'and before this version the raw admin fetch saved its files beside the shelf\'s');
+      } catch (err) {
+        stillPending.push(file);
+        winston.warn(`[discovery-peer-dbs] could not move ${file} to ${rawFetchDir()} (the next boot tries again): ${err.message}`);
+      }
+      continue;
+    }
     try {
       fs.rmSync(path.join(peerDbDir(), file), { force: true });
       winston.info(`[discovery-peer-dbs] removed ${file}: no shelf entry names it (an interrupted download)`);
@@ -221,16 +292,103 @@ function sweepOrphans() {
       winston.warn(`[discovery-peer-dbs] could not remove orphaned ${file}: ${err.message}`);
     }
   }
-}
-
-function save() {
-  try {
-    fs.mkdirSync(path.dirname(registryPath()), { recursive: true });
-    fs.writeFileSync(registryPath(), JSON.stringify([...registry.values()], null, 2));
-  } catch (err) {
-    winston.warn(`discovery peer-db registry save failed: ${err.message}`);
+  if (pending === null || pending.size !== stillPending.length) {
+    try {
+      fs.mkdirSync(path.dirname(sweepMarkerPath()), { recursive: true });
+      fs.writeFileSync(sweepMarkerPath(), `${JSON.stringify({ sweptAt: new Date().toISOString(), pending: stillPending })}\n`);
+    } catch (err) {
+      winston.warn(`[discovery-peer-dbs] could not mark the shelf directory swept: ${err.message}`);
+    }
   }
 }
+
+// Windows: a scanner or an editor holding a file can fail a rename for a
+// moment (src/util/atomic-json.js retries the same codes, asynchronously).
+const RENAME_BUSY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
+const RENAME_TRIES = 5;
+
+// Wait `ms` without yielding: save() must not let the event loop in.
+function holdStill(ms) {
+  const until = Date.now() + ms;
+  while (Date.now() < until) { /* a busy rename: wait it out */ }
+}
+
+// Write the registry whole: to a temp file beside it, then a rename over it,
+// so a kill mid-write leaves the old registry or the new one, never a
+// truncated one (an unreadable registry starts the shelf empty and skips the
+// sweep). Synchronous, since the swap in fetchPeerNow must not yield: a
+// rename the platform refuses for a moment is tried again after 20, 40, 60
+// and 80 ms. Returns whether the registry on disk now matches memory; on
+// false, peer-dbs.json is exactly what it was, and the swap undoes itself.
+function save() {
+  const file = registryPath();
+  const tmp = `${file}.tmp`;
+  const dropTmp = () => { try { fs.rmSync(tmp, { force: true }); } catch (_err) { /* a directory, or held */ } };
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify([...registry.values()], null, 2));
+  } catch (err) {
+    winston.warn(`discovery peer-db registry save failed: ${err.message}`);
+    dropTmp();
+    return false;
+  }
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(tmp, file);
+      return true;
+    } catch (err) {
+      if (!RENAME_BUSY_CODES.has(err.code) || attempt >= RENAME_TRIES) {
+        winston.warn(`discovery peer-db registry save failed: ${err.message}`);
+        dropTmp();
+        return false;
+      }
+      holdStill(20 * attempt);
+    }
+  }
+}
+
+// The snapshot hashes of the downloads in flight, but `exceptId`'s: each
+// will export onto `<16 hex of its hash>.db`.
+function inFlightHashes(exceptId) {
+  const hashes = new Set();
+  for (const id of inFlight.keys()) {
+    if (id === exceptId) { continue; }
+    const hash = discoveryCatalog.get(id)?.payload.hash;
+    if (hash) { hashes.add(hash); }
+  }
+  return hashes;
+}
+
+// Whether something still uses this exported file, or this snapshot's blob
+// root. Peers announcing one snapshot hash share both (the sidecar names
+// the export after the hash), so neither goes while a shelf entry, or a
+// download in flight (but `exceptId`'s own), has that hash — nor, for the
+// blob, while it is this server's own published snapshot. Callers take the
+// departing entry out of the registry first.
+function fileInUse(filePath, exceptId = null) {
+  const name = path.basename(filePath);
+  for (const e of registry.values()) {
+    if (path.basename(e.path) === name) { return true; }
+  }
+  for (const hash of inFlightHashes(exceptId)) {
+    if (`${hash.slice(0, 16)}.db` === name) { return true; }
+  }
+  return false;
+}
+
+function hashInUse(hash, exceptId = null) {
+  if (hash === discoveryP2p.getOwnSnapshotHash()) { return true; }
+  for (const e of registry.values()) {
+    if (e.hash === hash) { return true; }
+  }
+  return inFlightHashes(exceptId).has(hash);
+}
+
+// The blob store's forget. Swappable only for the unit tests, which watch
+// what the shelf releases; nothing in the server calls the setter.
+const sidecarForget = (hash) => discoveryP2p.forget(hash);
+let forgetBlob = sidecarForget;
+export function setForgetForTests(fn) { forgetBlob = fn ? (hash) => Promise.resolve(fn(hash)) : sidecarForget; }
 
 export function list() {
   ensureLoaded();
@@ -391,7 +549,8 @@ function dropConnection(endpointId) {
 // the same file; the joiner's own `discount` is ignored, since the download
 // was admitted on its own terms. `discount` (an Add's planRoom evictIds)
 // names held snapshots to swap out: the cap checks count them as gone, and
-// they leave the shelf in the same synchronous block that shelves this one.
+// as many of them as the landed bytes need leave the shelf in the same
+// synchronous block that shelves this one.
 // Failures reject with a coded error (shelfError).
 export async function fetchPeer(endpointId, { pinned = false, discount = [] } = {}) {
   ensureLoaded();
@@ -427,14 +586,19 @@ export async function fetchPeer(endpointId, { pinned = false, discount = [] } = 
 
 // Throw away a download that will not join the shelf: the exported file and
 // the blob root its hold:true fetch took in the sidecar store (without the
-// forget it would stay pinned forever). A same-blob refresh keeps both —
-// fetched.path IS the held file when the hash didn't change, and removing it
-// would orphan the live registry entry.
-function discardFetched(fetched, held, why) {
-  if (held && held.hash === fetched.hash) { return; }
-  try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
-  discoveryP2p.forget(fetched.hash)
-    .catch((err) => winston.debug(`[discovery-peer-dbs] forget ${why} blob: ${err.message}`));
+// forget it would stay pinned forever). Both stay while something else uses
+// them (fileInUse / hashInUse): a same-blob refresh (fetched.path IS the held
+// file when the hash didn't change), another peer announcing the same
+// snapshot, on the shelf or downloading it now — removing either would
+// orphan a live registry entry or a download about to land.
+function discardFetched(fetched, why, endpointId) {
+  if (!fileInUse(fetched.path, endpointId)) {
+    try { fs.rmSync(fetched.path, { force: true }); } catch (_rmErr) { /* best effort */ }
+  }
+  if (!hashInUse(fetched.hash, endpointId)) {
+    forgetBlob(fetched.hash)
+      .catch((err) => winston.debug(`[discovery-peer-dbs] forget ${why} blob: ${err.message}`));
+  }
 }
 
 async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
@@ -524,7 +688,7 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   // machine has already forgotten it), nor for a peer blocked meanwhile
   // (the block route removed what we held; the download must not undo it).
   if (epoch !== shelfEpoch || isBlocked(endpointId)) {
-    discardFetched(fetched, current, 'abandoned');
+    discardFetched(fetched, 'abandoned', endpointId);
     throw epoch !== shelfEpoch
       ? shelfError('stopped', 'the discovery network stopped during the download')
       : shelfError('blocked', 'peer is blocked (config: discoveryP2p.blockedPeers)');
@@ -543,7 +707,7 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   const overAnnounced = announcedSize > 0 && actualBytes > announcedSize;
   const projectedActual = restingWithout() + actualBytes;
   if (overAnnounced || projectedActual > storageCapBytes()) {
-    discardFetched(fetched, current, 'oversized');
+    discardFetched(fetched, 'oversized', endpointId);
     throw overAnnounced
       ? shelfError('bad-snapshot', `peer announced ${announcedSize} bytes but sent ${actualBytes} — rejecting the snapshot`)
       : shelfError('no-room', `snapshot is ${actualBytes} bytes on disk — over the peer-DB storage cap; rejecting`);
@@ -554,7 +718,7 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
     inspected = inspectSnapshot(fetched.path);
   } catch (err) {
     // Failed validation = not a snapshot we can use; don't leave it around.
-    discardFetched(fetched, current, 'invalid');
+    discardFetched(fetched, 'invalid', endpointId);
     throw shelfError('bad-snapshot', `peer sent an invalid snapshot: ${err.message}`, { cause: err });
   }
 
@@ -564,16 +728,25 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
   // BEFORE any old file is deleted: a kill before it leaves the shelf as it
   // was, a kill after it leaves files the registry no longer names, and the
   // next boot sweeps both kinds (sweepOrphans). Deleting first would lose
-  // the evictees and the newcomer together.
+  // the evictees and the newcomer together. A write that fails undoes the
+  // swap instead (below).
   //
-  // The swap: every discount snapshot still held and still unpinned leaves
-  // now — exactly the bytes the checks above counted as gone.
+  // The swap: discount snapshots still held and still unpinned leave in
+  // plan order (rotation's eviction order), but only as many as the bytes
+  // that LANDED need. The plan ran on the announced size, which the
+  // announcer controls: a peer that announces a big snapshot and sends a
+  // small one must not empty the shelf for it. The check above proved that
+  // all of them leaving fits, so this always ends under the cap.
+  const before = [...registry.entries()];
+  let resting = totalBytes() - (current?.sizeBytes || 0) + reservedOthers(endpointId) + actualBytes;
   const swappedOut = [];
   for (const id of discount) {
+    if (resting <= storageCapBytes()) { break; }
     const victim = registry.get(id);
     if (id === endpointId || !victim || victim.pinned === true) { continue; }
     registry.delete(id);
     swappedOut.push(victim);
+    resting -= victim.sizeBytes || 0;
   }
 
   const record = {
@@ -594,14 +767,25 @@ async function fetchPeerNow(endpointId, pinned, { discount, epoch }) {
     pinned: current?.pinned === true || pinned === true,
   };
   registry.set(endpointId, record);
-  save();
+  if (!save()) {
+    // peer-dbs.json still names the shelf as it was. Put memory back to
+    // match it and throw the download away, so no file the registry on disk
+    // names is deleted and the next boot finds what this process had.
+    registry.clear();
+    for (const [id, e] of before) { registry.set(id, e); }
+    discardFetched(fetched, 'unsaved', endpointId);
+    throw shelfError('failed', 'could not write the peer-DB registry, so the snapshot was not kept');
+  }
   // Replace-on-update: a peer has ONE live snapshot; drop the old file AND
-  // unpin the old blob so the sidecar store's GC reclaims it.
+  // unpin the old blob so the sidecar store's GC reclaims it — unless
+  // another shelf entry announces the same snapshot.
   if (current && current.path !== fetched.path) {
     dropConnection(endpointId);
-    try { fs.rmSync(current.path, { force: true }); } catch (_err) { /* best effort */ }
-    if (current.hash && current.hash !== fetched.hash) {
-      discoveryP2p.forget(current.hash)
+    if (!fileInUse(current.path)) {
+      try { fs.rmSync(current.path, { force: true }); } catch (_err) { /* best effort */ }
+    }
+    if (current.hash && current.hash !== fetched.hash && !hashInUse(current.hash)) {
+      forgetBlob(current.hash)
         .catch((err) => winston.debug(`[discovery-peer-dbs] forget replaced blob: ${err.message}`));
     }
   }
@@ -660,14 +844,17 @@ export function planRoomFor(endpointId) {
   });
 }
 
-// Take one snapshot off the shelf: its connection, file, registry row and
-// blob root (unpinned for GC). The caller saves and pushes holds.
+// Take one snapshot off the shelf: its connection, registry row, file and
+// blob root (unpinned for GC); the file and the root stay while another
+// entry announces the same snapshot. The caller saves and pushes holds.
 function dropEntry(entry) {
   dropConnection(entry.endpointId);
-  try { fs.rmSync(entry.path, { force: true }); } catch (_err) { /* best effort */ }
   registry.delete(entry.endpointId);
-  if (entry.hash) {
-    discoveryP2p.forget(entry.hash)
+  if (!fileInUse(entry.path)) {
+    try { fs.rmSync(entry.path, { force: true }); } catch (_err) { /* best effort */ }
+  }
+  if (entry.hash && !hashInUse(entry.hash)) {
+    forgetBlob(entry.hash)
       .catch((err) => winston.debug(`[discovery-peer-dbs] forget removed blob: ${err.message}`));
   }
 }
