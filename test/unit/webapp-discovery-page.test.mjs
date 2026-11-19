@@ -1094,6 +1094,7 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     ${VP_SRC.match(/\n {2}const FOLDER_TAGS_MAX = \d+;/)[0]}
     ${vpModuleFn('dmAttrValue')}
     ${vpModuleFn('blankDiscoverModal')}
+    ${vpModuleFn('dmTileOf')}
     ${vpModuleFn('dmNameKey')}
     ${vpModuleFn('dmOpenerOf')}
     ${vpModuleFn('dmFocusBack')}
@@ -1118,8 +1119,8 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); } };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
-  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', 'escapeHtml', body)(
-    J, D, reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); }, escapeHtml);
+  const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'PEERRECS', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', 'escapeHtml', body)(
+    J, D, require('../../webapp/alpha/peer-recs.js'), reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); }, escapeHtml);
   const loads = [];
   const starts = [];
   const cancels = [];
@@ -1127,9 +1128,11 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
   // $nextTick's callbacks, run by the test (ticks.splice(0).forEach(f => f()))
   const ticks = [];
   const vm = {
-    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank() },
+    discover: { plugins: { available, list: plugins, jobsAllowed }, dest: { view: { destination }, saves: 0 }, admin: false, seedTitle: '', modal: mod.blank(), clip: { art: {}, results: {} } },
     $refs: {}, $nextTick(cb) { if (cb) { ticks.push(cb); } }, $set(o, k, v) { o[k] = v; }, $delete(o, k) { delete o[k]; },
     stopDiscoverPreview() {}, scheduleDiscoverJobsPoll() {}, copyDiscoverP2p(track) { loads.push('copied'); copied.push(`${track.artist || ''} - ${track.title || ''}`); },
+    // the page's preview answers (test/unit/webapp-peer-recs-clip.test.mjs drives the real one)
+    dmSeedPreviews() { loads.push('seed'); },
     dmLoadLinks: async () => { loads.push('links'); },
     dmLoadJobs: async () => { loads.push('jobs'); },
     dmLoadFederate: async () => { loads.push('federate'); },
@@ -5937,9 +5940,13 @@ describe('the window keeps no older plug-in listing than the page that offered t
   const take = VP_SRC.match(/mstreamModule\.takeDiscoverPlugins = (\(listing\) => \{[\s\S]*?\n {2}\});/)[1];
   const harness = (api) => {
     const state = { plugins: { available: true, list: null, jobsAllowed: false, maxFolderSongs: null } };
-    const h = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'discoverState', `let discoverPluginsPromise = null;
-      return { ensure: ${vpMethodSrc('ensureDiscoverPlugins')}, take: ${take} };`)(api, J, state);
-    return { state, ...h, self: { discover: state } };
+    // the clip's preview plug-in before and after (vp.js clipProviderCheck)
+    const checks = [];
+    const vue = { clipProvider: () => (state.plugins.list || []).find((x) => (x.capabilities || []).includes('preview')) || null,
+      clipProviderCheck: (before) => { checks.push([before, (vue.clipProvider() || {}).name]); } };
+    const h = new Function('MSTREAMAPI', 'DISCOVERJOBS', 'discoverState', 'playlistVue', `let discoverPluginsPromise = null;
+      return { ensure: ${vpMethodSrc('ensureDiscoverPlugins')}, take: ${take} };`)(api, J, state, vue);
+    return { state, checks, ...h, self: { discover: state } };
   };
   test('the page\'s read becomes the window\'s: the list, the right to start jobs, the folder cap', () => {
     const { state, take: give } = harness({});
@@ -5950,6 +5957,15 @@ describe('the window keeps no older plug-in listing than the page that offered t
     state.plugins.available = false;
     give({ plugins: [COPY], jobs: { allowed: true } });
     assert.deepEqual(state.plugins.list, [], 'no plug-ins on this server: nothing taken');
+  });
+  test('the clip hears which plug-in previewed before the new listing (its answers go when another one previews now)', () => {
+    const { state, take: give, checks } = harness({});
+    const DZ = { name: 'deezer', capabilities: ['preview'] };
+    const IT = { name: 'itunes', capabilities: ['preview'] };
+    give({ plugins: [DZ], jobs: {} });
+    give({ plugins: [IT, DZ], jobs: {} });
+    assert.deepEqual(checks, [[null, 'deezer'], ['deezer', 'itunes']], 'none before the first listing');
+    assert.deepEqual(state.plugins.list, [IT, DZ]);
   });
   test('an older read of the window\'s own, answering after the page\'s, does not undo it', async () => {
     const old = deferred();
@@ -6036,6 +6052,7 @@ describe('a Peer Recommendations lead opens the now-playing panel\'s window (vp.
     assert.ok(w.vm.dmSubtitle().startsWith('Paper Lantern · Night Ferry'), w.vm.dmSubtitle());
     assert.ok(w.loads.includes('federate'), 'the admin\'s invite row');
     assert.ok(win.includes('<section v-if="discover.modal.source !== \'federation\' && discoverPreviewPlugins().length" class="dmodal-section">'), 'one preview tile per provider, for every network lead');
+    assert.equal(w.loads.filter((l) => l === 'seed').length, 1, 'its preview tile starts from the page\'s answer, if the page asked (dmSeedPreviews)');
     assert.deepEqual(w.vm.dmGetItRows().map((r) => r.plugin.name), ['youtube'], 'Get it\'s rows');
     assert.equal(w.vm.dmFindVisible(), true);
     assert.equal(w.vm.dmArt(), null);

@@ -50,8 +50,10 @@ const ASIDE_FNS = ['asideMainStats', 'asideEl', 'asideClaim', 'asideStart', 'asi
 const DECLS = ['aside', 'CLIP_LIVE', 'CLIP_QUEUE_MS', 'CLIP_RESULTS_MAX', 'clipNet', 'clipRetryTimer', 'clipWatchers'];
 const CLIP_METHODS = ['clipProvider', 'clipToggle', 'clipStart', 'clipHandlers', 'clipAsk', 'clipPump', 'clipSend', 'clipPlay', 'clipSettle', 'clipEnd',
   'clipHalt', 'clipPrefetch', 'clipPause', 'clipResume', 'clipStop', 'clipReset', 'clipRemember', 'clipState', 'clipEmit',
-  // the window's tile clip, on the same aside (owner 'window')
-  'playDiscoverPreview', 'stopDiscoverPreview'];
+  // the window's tile clip, on the same aside (owner 'window'), and the
+  // preview answers it shares with the clip
+  'playDiscoverPreview', 'stopDiscoverPreview', 'toggleDiscoverPreview', 'discoverPreviewState', 'dmSeedPreviews', 'dmSharePreview',
+  'dmLive', 'dmRecommendation', 'dmFolderFocus', 'dmArt', 'clipProviderCheck'];
 
 const DEEZER = { name: 'deezer', title: 'Deezer', capabilities: ['preview'] };
 const ITUNES = { name: 'itunes', title: 'Apple Music', capabilities: ['preview'] };
@@ -103,7 +105,15 @@ function makeClip({ plugins = [DEEZER], playing = false, answers = [], available
   const clearT = (id) => { clock.list = clock.list.filter((x) => x.id !== id); };
   const calls = [];
   const queue = answers.slice();
+  // the window's tile asks the same resolve without its status
+  const resolves = [];
+  const resolveQueue = [];
   const api = {
+    discoveryPluginResolve: (name, rec) => {
+      resolves.push({ name, title: rec.title, rec });
+      assert.ok(resolveQueue.length > 0, `an unexpected window resolve for ${rec.title}`);
+      return Promise.resolve(resolveQueue.shift());
+    },
     discoveryPreview: (name, rec) => {
       calls.push({ name, title: rec.title, rec });
       assert.ok(queue.length > 0, `an unexpected resolve for ${rec.title}`);
@@ -148,7 +158,7 @@ function makeClip({ plugins = [DEEZER], playing = false, answers = [], available
   const userPlays = async () => { player.playerStats.playing = true; await step(); };
   const el = () => FakeAudio.made[0];
   const types = () => events.map((e) => e.type);
-  return { vm, mod, api, calls, queue, player, clock, events, types, step, tick, userPlays, el, c: vm.discover.clip };
+  return { vm, mod, api, calls, queue, resolves, resolveQueue, player, clock, events, types, step, tick, userPlays, el, c: vm.discover.clip };
 }
 
 describe('the aside player: one element, the main player paused once and resumed once (§2 items 13–14)', () => {
@@ -651,5 +661,145 @@ describe('api.js: the strip, the Add and the preview calls (plan §3.2, §3.3, �
     assert.deepEqual([a.sent[0].url, a.sent[0].method, a.sent[0].body], ['http://h/api/v1/discovery/plugins/dee%20zer/resolve', 'POST', { recommendation: SIGNAL }]);
     assert.deepEqual((await makeApi(ok(SIGNAL)).api.discoveryPreview('deezer', SIGNAL)).body.result.preview.attribution, 'Preview from Deezer');
     assert.deepEqual(await makeApi(new TypeError('offline')).api.discoveryPreview('deezer', SIGNAL), { status: 0, body: null });
+  });
+});
+
+// ── one answer per lead: the window's preview tile and the page's clip ───
+// Both ask the preview plug-in's resolve about the same lead; whichever
+// asked first answers for the other (vp.js dmSeedPreviews / dmSharePreview).
+describe('the window and the page share a lead\'s preview answer', () => {
+  // the window as openDiscoverModal leaves it for a network lead
+  const openWindow = (h, track, source = 'p2p') => {
+    h.vm.discover.modal = { open: true, gen: 7, source, track, focus: null, previews: {}, playing: null };
+    if (source === 'p2p') { h.vm.dmSeedPreviews(); }
+  };
+  const resolved = (l) => ({ result: { preview: previewOf(l) } });
+
+  test('the page asked first: the window\'s tile starts ready to play, its header has the art, and a press plays without asking again', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.vm.clipStop('user');
+    await h.step();
+    openWindow(h, SIGNAL);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'ready', preview: previewOf(SIGNAL) });
+    assert.equal(h.vm.dmArt(), previewOf(SIGNAL).artwork);
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.equal(h.resolves.length, 0, 'no second resolve');
+    assert.deepEqual([h.vm.discover.modal.playing, h.mod.aside.owner], ['deezer', 'window']);
+    assert.equal(h.el().plays.at(-1), previewOf(SIGNAL).url);
+  });
+
+  test('the page found no preview: the window\'s tile says so at once', async () => {
+    const h = makeClip({ answers: [none()] });
+    await h.vm.clipStart(ARCADE);
+    await h.step();
+    openWindow(h, ARCADE);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'none', preview: null });
+    assert.deepEqual(h.vm.discoverPreviewState('itunes'), { status: 'idle', preview: null }, 'another plug-in\'s tile asks as ever');
+  });
+
+  test('the window asked first: the page\'s play icon plays its answer without a resolve, and the album\'s art reaches the rows', async () => {
+    const h = makeClip({ answers: [] });
+    openWindow(h, LONG);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'idle', preview: null }, 'nothing to start from');
+    h.resolveQueue.push(resolved(LONG));
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.equal(h.resolves.length, 1);
+    assert.deepEqual(h.c.results[PR.leadKey(LONG)], { status: 'ready', preview: previewOf(LONG) });
+    assert.deepEqual(h.events.filter((e) => e.type === 'result').map((e) => [e.key, e.status]), [[PR.leadKey(LONG), 'ready']], 'the page hears it');
+    assert.equal(h.c.art[LONG.tile.key], previewOf(LONG).artwork);
+    assert.deepEqual(h.events.filter((e) => e.type === 'art').map((e) => e.tileKey), [LONG.tile.key]);
+    h.vm.stopDiscoverPreview();
+    await h.vm.clipToggle(LONG);
+    await h.step();
+    assert.equal(h.calls.length, 0, 'the page\'s clip asks nothing');
+    assert.deepEqual([h.c.status, h.mod.aside.owner], ['playing', 'clip']);
+  });
+
+  test('the window\'s "no preview" is the page\'s too; a preview of another album earns no art', async () => {
+    const h = makeClip({ answers: [] });
+    openWindow(h, ARCADE);
+    h.resolveQueue.push({ result: { preview: null } });
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    assert.deepEqual(h.c.results[PR.leadKey(ARCADE)], { status: 'none', preview: null });
+    await h.vm.clipStart(ARCADE);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status], [0, 'none']);
+    openWindow(h, SIGNAL);
+    h.resolveQueue.push({ result: { preview: previewOf(SIGNAL, { album: 'Some Other Album' }) } });
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    assert.equal(h.c.results[PR.leadKey(SIGNAL)].status, 'ready');
+    assert.deepEqual(h.c.art, {}, 'not the lead\'s album: no art');
+  });
+
+  test('only the page\'s preview plug-in, only a network lead: another tile, a failed ask or a connected server\'s song shares nothing', async () => {
+    const h = makeClip({ plugins: [DEEZER, ITUNES], answers: [] });
+    openWindow(h, LONG);
+    h.resolveQueue.push(resolved(LONG));
+    await h.vm.toggleDiscoverPreview(ITUNES);
+    assert.deepEqual(h.c.results, {}, 'the page plays the first previewing plug-in\'s');
+    h.resolveQueue.push(null);
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    assert.deepEqual(h.c.results, {}, 'no answer: nothing to share');
+    openWindow(h, { ...LONG, filepath: 'x.mp3' }, 'federation');
+    h.resolveQueue.push(resolved(LONG));
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    assert.deepEqual(h.c.results, {});
+  });
+
+  test('a network lead\'s header falls back on the art its album earned this visit; a connected server\'s song never does', () => {
+    const h = makeClip({ answers: [] });
+    h.c.art[NIGHT_FERRY] = 'https://cdn.example/night-ferry.jpg';
+    openWindow(h, HARBOR);
+    assert.equal(HARBOR.tile.key, NIGHT_FERRY, 'precondition: the same album\'s tile');
+    assert.equal(h.vm.dmArt(), 'https://cdn.example/night-ferry.jpg');
+    h.vm.discover.modal.previews = { deezer: { status: 'ready', preview: previewOf(HARBOR) } };
+    assert.equal(h.vm.dmArt(), previewOf(HARBOR).artwork, 'a tile\'s own answer first, as the window always drew it');
+    h.vm.discover.modal = { open: true, gen: 7, source: 'federation', track: { ...HARBOR, peer: null }, focus: null, previews: {}, playing: null };
+    assert.equal(h.vm.dmArt(), null);
+  });
+
+  test('a page answer that came after the window opened: the tile\'s press plays it, or says "No preview", without asking', async () => {
+    for (const [answer, l, expect] of [[ok(SIGNAL), SIGNAL, 'ready'], [none(), ARCADE, 'none']]) {
+      const asked = deferred();
+      const h = makeClip({ answers: [asked.answer] });
+      h.vm.clipStart(l);
+      await h.step();
+      openWindow(h, l);
+      assert.equal(h.vm.discoverPreviewState('deezer').status, 'idle', 'nothing yet');
+      asked.resolve(answer);
+      await h.step();
+      h.vm.clipStop('user');
+      await h.vm.toggleDiscoverPreview(DEEZER);
+      await h.step();
+      assert.equal(h.resolves.length, 0, `${expect}: the page's answer`);
+      assert.equal(h.vm.discoverPreviewState('deezer').status, expect);
+      assert.equal(h.vm.discover.modal.playing, expect === 'ready' ? 'deezer' : null);
+    }
+  });
+
+  test('a network lead\'s header: its own album\'s art first — a tile of another album never outranks the art its album earned', () => {
+    const h = makeClip({ answers: [] });
+    h.c.art[NIGHT_FERRY] = 'https://cdn.example/night-ferry.jpg';
+    openWindow(h, HARBOR);
+    h.vm.discover.modal.previews = { deezer: { status: 'ready', preview: previewOf(HARBOR, { album: 'Some Other Album', artwork: 'https://cdn.example/other.jpg' }) } };
+    assert.equal(h.vm.dmArt(), 'https://cdn.example/night-ferry.jpg', 'earned, of its own album');
+    h.c.art = {};
+    assert.equal(h.vm.dmArt(), 'https://cdn.example/other.jpg', 'nothing known of its album: the tile\'s artwork, as the window always drew it');
+  });
+
+  test('another plug-in previewing now: the visit\'s answers were the old one\'s — dropped; the same one keeps them', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.vm.clipProviderCheck('deezer');
+    assert.ok(h.c.results[PR.leadKey(SIGNAL)], 'deezer still previews');
+    h.vm.discover.plugins.list = [ITUNES];
+    h.vm.clipProviderCheck('deezer');
+    assert.deepEqual(h.c.results, {});
+    assert.equal(h.c.art[NIGHT_FERRY], previewOf(SIGNAL).artwork, 'the album\'s art stays');
   });
 });

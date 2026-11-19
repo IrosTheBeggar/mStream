@@ -5956,6 +5956,8 @@ async function peerRecsReadGate() {
     getIt = !!(view && view.destination);
   }
   const redraw = (provider && provider.name) !== (p.provider && p.provider.name);
+  // the visit's "no preview" leads were the old plug-in's answers
+  if (redraw) { p.noPreview = new Set(); }
   p.provider = provider;
   p.getIt = getIt;
   if (redraw && peerRecsOnScreen()) { renderDiscovery(); }
@@ -6496,6 +6498,12 @@ function peerRecsOnClip(ev) {
     }
   } else if (ev.type === 'art') {
     peerRecsPatchArt(ev.tileKey);
+  } else if (ev.type === 'result') {
+    // the window's preview tile answered for a lead: the page knows it now
+    // (Preview all and ⏭ pass a lead with no preview by), and its play icon
+    // follows
+    if (ev.status === 'none') { p.noPreview.add(ev.key); } else if (ev.status === 'ready') { p.noPreview.delete(ev.key); }
+    peerRecsPatchPlay();
   } else if (ev.type === 'ended') {
     if (!(all && peerRecsAdvance())) { peerRecsEnd(); }
   } else if (ev.type === 'none' || ev.type === 'failed') {

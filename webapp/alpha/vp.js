@@ -1382,7 +1382,8 @@ const VUEPLAYERCORE = (() => {
       // Header artwork: the peer's own art file for a peer row (its
       // metadata read's, else the row's own albumArt — drawn before that
       // read answers), else the first preview provider that answered
-      // with artwork.
+      // with artwork, else — a network lead — the art a preview of its
+      // album earned this visit (the page's rows show it too).
       dmArt: function () {
         const m = this.discover.modal;
         if (!m.open) { return null; }
@@ -1392,11 +1393,18 @@ const VUEPLAYERCORE = (() => {
         if (peerArt) {
           return MSTREAMAPI.peerArtUrl(m.track.peer.id, peerArt, 's');
         }
-        for (const name of Object.keys(m.previews || {})) {
-          const p = m.previews[name] && m.previews[name].preview;
-          if (p && p.artwork) { return p.artwork; }
+        const shown = Object.keys(m.previews || {}).map((name) => m.previews[name] && m.previews[name].preview).filter((p) => p && p.artwork);
+        // a network lead: art known to be its album's first — a tile's
+        // answer of its own album and artist (PEERRECS.artMatches, https),
+        // then what a preview earned for its album this visit
+        // (discover.clip.art) — and only then any tile's artwork
+        if (m.source === 'p2p') {
+          const own = shown.find((p) => PEERRECS.artMatches(m.track, p));
+          if (own) { return own.artwork; }
+          const tile = dmTileOf(m.track && m.track.tile);
+          if (tile && tile.key && this.discover.clip.art[tile.key]) { return this.discover.clip.art[tile.key]; }
         }
-        return null;
+        return shown.length ? shown[0].artwork : null;
       },
       // The header's one meta line, its parts joined by "·": a connected
       // server's status, the song's format (an album has many: none), and
@@ -1582,6 +1590,7 @@ const VUEPLAYERCORE = (() => {
           // don't have" ticked; a plain artist job leaves it unticked
           keep: { scope: scope === 'artist-missing' ? 'artist' : scope, onlyMissing: scope !== 'artist', landing: 'mirror', into: null, tree: null },
         });
+        if (source === 'p2p') { this.dmSeedPreviews(); }
         document.addEventListener('keydown', onDiscoverModalKey);
         this.$nextTick(() => { const el = this.$refs.dmodalClose; if (el && el.focus) { el.focus(); } });
         const jobs = [];
@@ -2129,7 +2138,13 @@ const VUEPLAYERCORE = (() => {
       toggleDiscoverPreview: async function (plugin) {
         const name = plugin.name;
         if (this.discover.modal.playing === name) { this.stopDiscoverPreview(); return; }
-        const state = this.discoverPreviewState(name);
+        let state = this.discoverPreviewState(name);
+        if (state.status === 'idle' && this.discover.modal.source === 'p2p') {
+          // the page may have answered for the lead since the window opened
+          this.dmSeedPreviews();
+          state = this.discoverPreviewState(name);
+          if (state.status === 'none') { return; }
+        }
         if (state.status === 'ready' && state.preview) { this.playDiscoverPreview(name, state.preview); return; }
         if (state.status === 'loading') { return; }
         const gen = this.discover.modal.gen;
@@ -2142,7 +2157,42 @@ const VUEPLAYERCORE = (() => {
         }
         const preview = res.result.preview || null;
         this.$set(this.discover.modal.previews, name, { status: preview ? 'ready' : 'none', preview });
+        this.dmSharePreview(name, preview);
         if (preview) { this.playDiscoverPreview(name, preview); }
+      },
+      // A network lead's previews are one answer per lead for the visit,
+      // whichever side asked: the window's tiles and the Peer
+      // Recommendations page's clip (discover.clip.results) — both ask the
+      // preview plug-in's resolve about the same lead. Opening the window
+      // on a lead the page already asked about starts the preview plug-in's
+      // tile from that answer (ready to play, or "No preview") instead of
+      // asking again.
+      dmSeedPreviews: function () {
+        const m = this.discover.modal;
+        const provider = this.clipProvider();
+        const key = provider ? PEERRECS.leadKey(m.track) : '';
+        const hit = key ? this.discover.clip.results[key] : null;
+        if (!hit) { return; }
+        this.$set(m.previews, provider.name, hit.status === 'ready' && hit.preview ? { status: 'ready', preview: hit.preview } : { status: 'none', preview: null });
+      },
+      // …and what the window's tile asked is the page's answer for the lead
+      // too: its row's play icon plays it (or says "No preview") without a
+      // second resolve, and a preview of the lead's own album and artist
+      // earns the art of every row with the lead's tile (as a clip's does).
+      dmSharePreview: function (name, preview) {
+        const m = this.discover.modal;
+        const provider = this.clipProvider();
+        const key = m.source === 'p2p' && provider && provider.name === name ? PEERRECS.leadKey(m.track) : '';
+        if (!key) { return; }
+        const c = this.discover.clip;
+        const playable = clipPreviewOf(preview);
+        this.clipRemember(c.results, key, playable ? { status: 'ready', preview: playable } : { status: 'none', preview: null });
+        this.clipEmit('result', { key, status: playable ? 'ready' : 'none' });
+        const tile = dmTileOf(m.track.tile);
+        if (playable && tile && tile.key && PEERRECS.artMatches(m.track, playable) && c.art[tile.key] !== playable.artwork) {
+          this.$set(c.art, tile.key, playable.artwork);
+          this.clipEmit('art', { tileKey: tile.key, url: playable.artwork });
+        }
       },
       // One tile's clip in place of whatever the aside played (a tile's,
       // the page's clip): the main player stays paused across the swap.
@@ -2396,6 +2446,16 @@ const VUEPLAYERCORE = (() => {
         this.clipStop('reset');
         Object.assign(c, { key: null, raw: null, tile: null, status: 'idle', preview: null, at: 0, seconds: 30, art: {}, results: {} });
         this.clipEmit('reset');
+      },
+      // The plug-in listing changed under the visit (takeDiscoverPlugins):
+      // when another plug-in previews now, the visit's answers were the
+      // old one's — dropped, so neither the page nor a window's tile plays
+      // or reports them under the new one. Earned art stays: it is the
+      // album's, whichever plug-in found it.
+      clipProviderCheck: function (before) {
+        const now = this.clipProvider();
+        if ((now && now.name) === before) { return; }
+        this.discover.clip.results = {};
       },
       // An answer kept for the visit, the oldest dropped past
       // CLIP_RESULTS_MAX. `results` is the map the ask began with: a visit
@@ -5911,7 +5971,9 @@ const VUEPLAYERCORE = (() => {
   // on or off, a right granted or taken since the window last asked).
   mstreamModule.takeDiscoverPlugins = (listing) => {
     if (!discoverState.plugins.available || !listing || typeof listing !== 'object') { return; }
+    const previewing = playlistVue.clipProvider();
     discoverState.plugins.list = Array.isArray(listing.plugins) ? listing.plugins : [];
+    playlistVue.clipProviderCheck(previewing && previewing.name);
     discoverState.plugins.jobsAllowed = !!(listing.jobs && listing.jobs.allowed === true);
     discoverState.plugins.maxFolderSongs = DISCOVERJOBS.maxFolderSongs(listing);
     discoverPluginsPromise = null;
@@ -5972,7 +6034,9 @@ const VUEPLAYERCORE = (() => {
   // Call fn(event) on every clip event: { type, key, state, …extra } —
   // resolving · waiting { ms } · playing · paused · time · art { tileKey,
   // url } · ended · none · failed · stopped { why: user | preempted | main
-  // | reset | … } · reset · off. → the unwatch function.
+  // | reset | … } · reset · off · result { key, status: ready | none } (the
+  // window answered for a lead: clipResult has it now). → the unwatch
+  // function.
   mstreamModule.watchClip = (fn) => {
     if (typeof fn !== 'function') { return () => {}; }
     clipWatchers.push(fn);

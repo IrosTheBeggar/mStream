@@ -668,6 +668,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     none: () => { clipResults[clip.key] = { status: 'none', preview: null }; Object.assign(clip, { status: 'none', preview: null }); clipEmit('none'); },
     fail: () => { Object.assign(clip, { status: 'failed', preview: null }); clipEmit('failed'); },
     earn: (tileKey, url) => { clipArt[tileKey] = url; clipEmit('art', { tileKey, url }); },
+    // the window's preview tile answered for a lead (vp.js dmSharePreview)
+    answer: (raw, entry) => { clipResults[PEERRECS.leadKey(raw)] = entry; clipEmit('result', { key: PEERRECS.leadKey(raw), status: entry.status }); },
     off: () => { clipStop('reset'); clipEmit('reset'); clipEmit('off'); },
     main: () => { clipStop('main'); },
   };
@@ -3534,6 +3536,31 @@ describe('Peer Recommendations: Add', () => {
     const asked = tasteCalls(calls);
     assert.equal(asked.length, n + 1, 'asked once the clip ended');
     assert.deepEqual(asked.at(-1).pin, SEEDS.map((s) => s.filepath), 'on the batch');
+  });
+
+  test('the window\'s preview tile answered for a lead: its play icon follows at once ("No preview": muted, inert)', async () => {
+    const box = prBox();
+    await openPage(box);
+    const before = playOf(box.S.html(), 1);
+    assert.ok(before && !String(before.attrs.class).includes('is-none'));
+    box.clip.answer(PR_LEADS[1], { status: 'none', preview: null });
+    const muted = lastWrite(box.writes, '[data-cslot="1"]');
+    assert.ok(muted && muted.html.includes('prec-play is-none'), 'written in place');
+    assert.ok(muted.html.includes('aria-disabled="true"'));
+  });
+
+  test('a lead the window found no preview for is passed by, as one the page found: ⏭ goes on to the next; a later answer lets it play again', async () => {
+    const box = prBox();
+    await openPage(box);
+    const { click, bandClick, clip } = box;
+    box.clip.answer(PR_LEADS[2], { status: 'none', preview: null });
+    click({ 'data-dp': 'precPlay', 'data-i': 1 });
+    clip.play(PREVIEW);
+    bandClick({ 'data-dp': 'bandNext' });
+    assert.deepEqual(clip.calls.at(-1), ['start', PR_LEADS[3]], 'lead 2 has no preview: skipped');
+    box.clip.answer(PR_LEADS[2], { status: 'ready', preview: PREVIEW });
+    const live = lastWrite(box.writes, '[data-cslot="2"]');
+    assert.ok(live && !live.html.includes('is-none'), 'a ready answer: playable again');
   });
 
   test('a lead\'s open button says it opens a dialog only when it does: no plug-ins and no admin, a press copies', async () => {
