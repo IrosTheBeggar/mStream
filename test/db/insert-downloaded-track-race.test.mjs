@@ -28,6 +28,12 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SWEEPER = path.join(__dirname, '..', 'fixtures', 'orphan-sweeper.mjs');
 const VPATH = 'race-unit';
 
+// The stress loop's bounds (see the test): at least this long, then on
+// until this many sweeps have taken the orphans, and never past the cap.
+const STRESS_MIN_MS = 2000;
+const STRESS_WANT_CAUGHT = 20;
+const STRESS_MAX_MS = 30000;
+
 let tmpDir;
 let libDir;
 let manager;
@@ -138,12 +144,27 @@ describe('insertDownloadedTrack vs the scanner\'s orphan sweep', () => {
     const meta = { title: 'Harbour Days', artist: 'Marlowe Vale', album: 'Harbour Days' };
     await land(rel, meta);
 
+    // The sweeper decides how long this runs, not the clock: at least
+    // STRESS_MIN_MS, then on until it has taken the orphans
+    // STRESS_WANT_CAUGHT times, up to STRESS_MAX_MS. Two processes trading
+    // one write lock go at the speed of SQLite's busy-wait sleeps, which is
+    // the timer's: a fixed two seconds was about a thousand inserts on one
+    // machine and 25 on Windows under a parallel suite. The count is the
+    // sweeper's own (see sweepCaught there), so the race's exposure is the
+    // same on a slow machine as on a fast one.
+    let caught = 0;
+    const onCaught = (msg) => { if ('caught' in msg) { caught = msg.caught; } };
+    sweeper.on('message', onCaught);
     sweeper.send({ cmd: 'sweep' });
-    const deadline = Date.now() + 2000;
+    const start = Date.now();
+    const running = () => {
+      const ms = Date.now() - start;
+      return ms < STRESS_MIN_MS || (caught < STRESS_WANT_CAUGHT && ms < STRESS_MAX_MS);
+    };
     let iterations = 0;
     let failures = 0;
     let last = null;
-    while (Date.now() < deadline) {
+    while (running()) {
       // Remove the only track (artist + album orphaned), then land it again:
       // the sweep runs a random 0–1 ms apart, so it sometimes takes the
       // orphans first (the insert re-creates them) and sometimes lands
@@ -157,13 +178,15 @@ describe('insertDownloadedTrack vs the scanner\'s orphan sweep', () => {
       }
       iterations++;
     }
+    const elapsed = Date.now() - start;
+    sweeper.off('message', onCaught);
     sweeper.send({ cmd: 'stop' });
     const swept = await reply('swept');
-    const summary = `${iterations} inserts, ${failures} FOREIGN KEY failures; sweeper: ${swept.sweeps} sweeps took ${swept.albums} albums / ${swept.artists} artists`;
+    const summary = `${iterations} inserts in ${elapsed} ms, ${failures} FOREIGN KEY failures; sweeper: ${swept.caught} of ${swept.sweeps} sweeps took the orphans`;
     t.diagnostic(summary);
 
     assert.equal(failures, 0, summary);
-    assert.ok(swept.albums > 0, 'the sweeper deleted orphaned albums while the loop ran (the race was live)');
+    assert.ok(swept.caught > 0, 'the sweeper deleted the orphans while the loop ran (the race was live)');
     assert.deepEqual(albumOf(last.trackId), { album: 'Harbour Days', artist: 'Marlowe Vale' });
   });
 });

@@ -5,8 +5,10 @@
 //
 // argv[2] = the mstream.db path. Driven over the fork() IPC channel:
 //   { cmd: 'sweep' }            sweep over and over, a random 0–1 ms apart,
-//                               until { cmd: 'stop' }; replies
-//                               { swept: { sweeps, albums, artists } }
+//                               until { cmd: 'stop' }; sends { caught: n }
+//                               each time a sweep deletes something (n =
+//                               how many have so far), and replies
+//                               { swept: { sweeps, caught } }
 //   { cmd: 'hold', ms }         BEGIN IMMEDIATE, sweep inside it, reply
 //                               { held: { albums, artists } } and COMMIT
 //                               `ms` later — the window in which a writer
@@ -25,9 +27,12 @@ db.exec('PRAGMA recursive_triggers = ON');
 
 const countAlbums = db.prepare('SELECT COUNT(*) AS n FROM albums');
 const countArtists = db.prepare('SELECT COUNT(*) AS n FROM artists');
+const totalChanges = db.prepare('SELECT total_changes() AS n');
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
-// One sweep; how many albums / artists it took.
+// One sweep; how many albums / artists it took. A row count before and
+// after, so it is only right while nothing else writes: under 'hold', where
+// this connection has the write lock.
 function sweep() {
   const albums = countAlbums.get().n;
   const artists = countArtists.get().n;
@@ -35,18 +40,29 @@ function sweep() {
   return { albums: albums - countAlbums.get().n, artists: artists - countArtists.get().n };
 }
 
+// One sweep; whether it deleted anything. total_changes() counts this
+// connection's own row changes, so it stays right while the server writes.
+// A row count does not: an album the server creates between the two counts
+// cancels one this sweep took.
+function sweepCaught() {
+  const before = totalChanges.get().n;
+  cleanupOrphans(db);
+  return totalChanges.get().n > before;
+}
+
 let sweeping = false;
-const swept = { sweeps: 0, albums: 0, artists: 0 };
+const swept = { sweeps: 0, caught: 0 };
 
 // Sweeps in ~20 ms slices, so the stop message gets through between them.
 function slice() {
   if (!sweeping) { return; }
   const until = performance.now() + 20;
   while (performance.now() < until) {
-    const r = sweep();
     swept.sweeps++;
-    swept.albums += r.albums;
-    swept.artists += r.artists;
+    if (sweepCaught()) {
+      swept.caught++;
+      process.send({ caught: swept.caught });
+    }
     pause(Math.random());
   }
   setImmediate(slice);
