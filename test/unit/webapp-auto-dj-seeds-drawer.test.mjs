@@ -496,10 +496,10 @@ const keyOf = (name, owner = null) => AUTODJ.seeds.keyOf(owner, `music/${name}.m
 const queueRow = (name, extra = {}) => ({ rawFilePath: `music/${name}.mp3`, filepath: `music/${name}.mp3`, metadata: { title: name, artist: `${name} artist` }, ...extra });
 
 const PANEL_FNS = ['escapeHtml', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'autoDjSeedArtUrl', 'autoDjSecToMin',
-  'autoDjChipsHtml', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
+  'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
   'autoDjApplySonicDim', 'autoDjRenderTiles', 'autoDjRenderToggle', 'autoDjPanel'];
 // Every function of the drawer, Add song and the library pick.
-const DRAWER_FNS = [...SRC.matchAll(/^(?:async )?function ((?:autoDjSeed|onAutoDjSeeds|autoDjAddSong|autoDjAddResults|autoDjPickRow)\w*)\(/gm)].map((m) => m[1]);
+const DRAWER_FNS = [...SRC.matchAll(/^(?:async )?function ((?:autoDjSeed|onAutoDjSeeds|autoDjAddSong|autoDjAddResults|autoDjPickRow|autoDjDrawer)\w*)\(/gm)].map((m) => m[1]);
 const CAPTURE_FNS = ['peerOf', 'onFileClick', 'showPickBanner', 'sonicPathHideBanner'];
 const FNS = [...new Set([...PANEL_FNS, ...DRAWER_FNS, ...CAPTURE_FNS])];
 

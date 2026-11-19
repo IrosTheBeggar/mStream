@@ -17,7 +17,14 @@
  *   - a clear is a lane edge (the box, the deferred bootstrap), the heal of
  *     a refused seed (never sent again in its lane, the song playing
  *     included), the Skipped ring, the fan-out's negatives, and the panel's
- *     events.
+ *     events;
+ *   - the genre kind (`genreSource`, the Genres drawer's Generated | Tags):
+ *     only with the filter on and narrowed, to a server whose version is
+ *     known to take it — the local ask by /api/'s, each peer by its health
+ *     `server` — and an answer asked under a kind is not re-checked on its
+ *     genres; each peer's kind is read with the body, so a filter change
+ *     while a round is out never marks an answer asked without one as
+ *     asked under one.
  *
  * The player's closure functions are sliced out of the file and run against
  * the real AUTODJ module and stub servers, as webapp-auto-dj-moods does.
@@ -916,5 +923,172 @@ describe('Start, Stop and a clear tell the panel (_seedsOnToggle, _seedsOnClear)
     const toggle = PLAYER.slice(PLAYER.indexOf('mstreamModule.toggleAutoDJ = () => {'));
     assert.ok(toggle.indexOf('_seedsOnToggle(true);') < toggle.indexOf('_autoDjQueueN(2);'), 'the lane edge comes before the bootstrap');
     assert.match(PLAYER, /setActionHandler\('nexttrack', function\(\) \{ mstreamModule\.nextSong\(\); \}\)/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────
+// 10. the genre kind on the wire (the Genres drawer's Generated | Tags)
+// ─────────────────────────────────────────────────────────────────────
+
+describe('the genre kind on the wire', () => {
+  test('genreSource rides with genres only when narrowed, on, and this server is known to take it', async () => {
+    const { E, api } = makeEngine({ server: { version: '6.33.1' } });
+    const build = async () => (await E.fns._buildAutoDjBody({})).body;
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['Jazz'], source: 'model' });
+    let body = await build();
+    assert.deepEqual(body.genres, ['Jazz']);
+    assert.equal(body.genreMode, 'whitelist');
+    assert.equal(body.genreSource, 'model');
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Jazz'], source: 'tag' });
+    assert.equal((await build()).genreSource, 'tag');
+
+    for (const version of ['6.32.1', undefined, '6.33.1-velvet']) {
+      api.currentServer.version = version;
+      body = await build();
+      assert.deepEqual(body.genres, ['Jazz'], String(version));
+      assert.equal('genreSource' in body, false, `${version}: not known to take it`);
+    }
+
+    api.currentServer.version = '6.33.1';
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['Jazz'], source: null });
+    body = await build();
+    assert.deepEqual(body.genres, ['Jazz']);
+    assert.equal('genreSource' in body, false, 'Mixed');
+
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: [], source: 'model' });
+    body = await build();
+    assert.equal('genres' in body, false, 'off: nothing chosen');
+    assert.equal('genreSource' in body, false);
+    AUTODJ.setState({ djGenreEnabled: false, djGenres: ['Jazz'], djGenreSource: 'model' });
+    body = await build();
+    assert.equal('genres' in body, false, "an older client's off filter, with a list");
+    assert.equal('genreSource' in body, false);
+  });
+
+  test('a song the server let through under a kind is not re-checked on its genres', async () => {
+    const tagged = { title: 't', genres: ['Rock'] };
+    const rockThenJazz = () => [
+      { songs: [{ filepath: 'music/tagged.mp3', metadata: { title: 'tagged', artist: 'a', genres: ['Rock'] } }], ignoreList: [1] },
+      { songs: [{ filepath: 'music/other.mp3', metadata: { title: 'other', artist: 'b', genres: ['Jazz'] } }], ignoreList: [1, 2] },
+    ];
+    const kind = makeEngine({ server: { version: '6.33.1' }, answers: rockThenJazz() });
+    lane();
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Rock'], source: 'model' });
+    assert.equal(kind.E.fns._autoDjSongBlocked(tagged, null, null, true), false, 'asked under a kind');
+    assert.equal(kind.E.fns._autoDjSongBlocked(tagged, null, null, false), true, 'asked under Mixed');
+    assert.equal(kind.E.fns._autoDjSongBlocked(tagged, null, null), true, 'no kind given: as before');
+    await kind.E.fns.autoDJ();
+    assert.equal(kind.asked.length, 1);
+    assert.equal(kind.asked[0].body.genreSource, 'model');
+    assert.deepEqual(kind.queued, ['music/tagged.mp3'], "skipping the model's Rock keeps a song tagged Rock");
+    assert.deepEqual(kind.toasts, []);
+
+    const mixed = makeEngine({ server: { version: '6.33.1' }, answers: rockThenJazz() });
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Rock'], source: null });
+    await mixed.E.fns.autoDJ();
+    assert.equal(mixed.asked.length, 2, 'under Mixed the Rock song is dropped and the pick asked again');
+    assert.equal('genreSource' in mixed.asked[0].body, false);
+    assert.deepEqual(mixed.queued, ['music/other.mp3']);
+    assert.deepEqual(mixed.toasts, []);
+  });
+
+  test('the fan-out: the local ask and a peer known to take it carry the kind; an older or unknown peer gets genres only', async () => {
+    const eng = makeEngine({ server: { federationBrowse: true, version: '6.33.1' } });
+    const { api } = eng;
+    api.federationPeers = resolving(() => ({ peers: [{ id: 7, name: 'New' }, { id: 8, name: 'Old' }] }));
+    api.peer.health = resolving((id) => (id === 7
+      ? { server: '6.33.1', discovery: { modelId: 'm1' } }
+      : { discovery: { modelId: 'm1' } }));
+    api.discoveryEmbeddings = resolving(() => ({ model: { id: 'm1' }, dim: 2, tracks: [{ embedding: AUTODJ.encodeWireVector([1, 0]) }] }));
+    const rock = (name, sim) => ({
+      songs: [{ filepath: `music/${name}.mp3`, metadata: { title: name, artist: `${name} band`, genres: ['Rock'] } }],
+      ignoreList: [],
+      sonic: { similarities: [sim] },
+    });
+    api.getRandomSong = resolving((body) => { eng.asked.push({ to: 'local', body }); return rock('local', 0.5); });
+    api.peer.randomSongs = resolving((id, body) => { eng.asked.push({ to: id, body }); return rock(`peer${id}`, id === 8 ? 0.9 : 0.6); });
+    AUTODJ.setState({ sonicEnabled: true, federatedEnabled: true, djLimit: 3 });
+    lane();
+    SEEDS.add('more', song('seed'));
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Rock'], source: 'tag' });
+
+    assert.equal(await eng.E.fns._autoDjFederatedPick(null), true);
+    const local = eng.asked.find((a) => a.to === 'local').body;
+    const seven = eng.asked.find((a) => a.to === 7).body;
+    const eight = eng.asked.find((a) => a.to === 8).body;
+    for (const [who, body] of [['local', local], ['7', seven], ['8', eight]]) {
+      assert.deepEqual(body.genres, ['Rock'], who);
+      assert.equal(body.genreMode, 'blacklist', who);
+    }
+    assert.equal(local.genreSource, 'tag');
+    assert.equal(seven.genreSource, 'tag');
+    assert.equal('genreSource' in eight, false, 'a peer not known to take the key');
+    // Peer 8's Rock-tagged song has the best cosine, but it was asked without
+    // a kind: blocked on its genres. The other two were asked under Tags (a
+    // Rock link of theirs may be the model's): kept, best cosine first.
+    assert.deepEqual(eng.queued, ['7:music/peer7.mp3', 'music/local.mp3']);
+  });
+
+  test("a peer's kind is read with the body: the filter turned on while a round is out puts no kind on its ask, and its answer is still re-checked", async () => {
+    // Peer 7 (6.33.1) answers Rock at the best cosine, this server Ambient.
+    // The filter is off as the round starts; Only Ambient under Generated is
+    // chosen in the Genres drawer while the seeds' vectors load, or once
+    // every ask is out.
+    for (const when of ['embeddings', 'asks']) {
+      // a fresh start, as beforeEach gives
+      _store.clear();
+      AUTODJ._internals.rehydrate();
+      AUTODJ.reset();
+      const eng = makeEngine({ server: { federationBrowse: true, version: '6.33.1' } });
+      const { api } = eng;
+      const choose = (at) => {
+        if (at === when) { AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['Ambient'], source: 'model' }); }
+      };
+      const one = (name, genres, sim) => ({
+        songs: [{ filepath: `music/${name}.mp3`, metadata: { title: name, artist: `${name} band`, genres } }],
+        ignoreList: [],
+        sonic: { similarities: [sim] },
+      });
+      api.federationPeers = resolving(() => ({ peers: [{ id: 7, name: 'New' }] }));
+      api.peer.health = resolving(() => ({ server: '6.33.1', discovery: { modelId: 'm1' } }));
+      api.discoveryEmbeddings = resolving(() => {
+        choose('embeddings');
+        return { model: { id: 'm1' }, dim: 2, tracks: [{ embedding: AUTODJ.encodeWireVector([1, 0]) }] };
+      });
+      api.getRandomSong = resolving((body) => { eng.asked.push({ to: 'local', body }); return one('local-ambient', ['Ambient'], 0.5); });
+      api.peer.randomSongs = resolving((id, body) => {
+        eng.asked.push({ to: id, body });
+        choose('asks');
+        return one('peer-rock', ['Rock'], 0.9);
+      });
+      AUTODJ.setState({ sonicEnabled: true, federatedEnabled: true });
+      lane();
+      SEEDS.add('more', song('seed'));
+
+      assert.equal(await eng.E.fns._autoDjFederatedPick(null), true, when);
+      assert.equal(AUTODJ.genreSourceFor({ version: '6.33.1' }), 'model', `${when}: the filter is on now`);
+      assert.deepEqual(eng.asked.map((a) => a.to), ['local', 7], when);
+      for (const a of eng.asked) {
+        assert.equal('genres' in a.body, false, `${when}: ${a.to} was asked with the filter off`);
+        assert.equal('genreSource' in a.body, false, `${when}: so no kind to ${a.to}`);
+      }
+      // Asked under no kind, peer 7's Rock song is checked on its genres and
+      // blocked under Only Ambient: this server's Ambient song is queued.
+      assert.deepEqual(eng.queued, ['music/local-ambient.mp3'], when);
+    }
+  });
+
+  test("_federatedPeers keeps each peer's version (federation health's server)", async () => {
+    const { E, api } = makeEngine();
+    api.federationPeers = resolving(() => ({ peers: [{ id: 7, name: 'a' }, { id: 8, name: 'b' }, { id: 9, name: 'c' }, { id: 10, name: 'd' }] }));
+    api.peer.health = resolving((id) => {
+      if (id === 9) { throw new Error('unreachable'); }
+      if (id === 10) { return { server: 6, discovery: { modelId: 'm1' } }; }
+      return id === 7 ? { server: '6.33.1', discovery: { modelId: 'm1' } } : { discovery: { modelId: 'm1' } };
+    });
+    const peers = await E.fns._federatedPeers();
+    assert.deepEqual(peers.map((p) => [p.id, p.version]), [[7, '6.33.1'], [8, null], [9, null], [10, null]]);
+    assert.deepEqual(peers[0], { id: 7, name: 'a', modelId: 'm1', version: '6.33.1' });
+    assert.equal(peers[2].modelId, null, 'a failed health sits the session out');
   });
 });

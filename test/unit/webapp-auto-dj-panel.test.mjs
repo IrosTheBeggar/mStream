@@ -14,6 +14,13 @@
  *     filter's editor (and Sonic's amount, Beat matching's tolerance) is
  *     shown only while its switch is on, turning it off keeps the values,
  *     and every field carries Materialize's opt-out (browser-default);
+ *   - Genres is a value row with no switch (the filter is on exactly while
+ *     genres are chosen) that opens the Genres drawer through
+ *     autoDjGenresOpen (aria-haspopup dialog): "Any", or the chosen genres
+ *     sorted and joined (under Skip, "Skip …"), drawn as text; off only
+ *     while the library's genre list can't load and nothing is chosen; the
+ *     panel's genres answer takes a stored kind back to Mixed when it has
+ *     no genres of both kinds;
  *   - Sonic similarity off hides the amount, dims its sub-items and makes
  *     them inert (Seeds disabled) and keeps both seed lists; without
  *     discovery its row is disabled;
@@ -24,12 +31,13 @@
  *     dialog), draws the three newest More like covers, newest leftmost
  *     (a peer row's through the art proxy), redraws them in place on a
  *     seeds or song change, and draws markup in data as text;
- *   - the ping's autoDj and /api/'s features.discoveryReady land on
- *     MSTREAMAPI.currentServer; the live playlist's boot clear is not a
- *     user clear; the Auto DJ nav item has an id for the library pick's
- *     return;
+ *   - the ping's autoDj and /api/'s features.discoveryReady and server (the
+ *     version) land on MSTREAMAPI.currentServer; the live playlist's boot
+ *     clear is not a user clear; the Auto DJ nav item has an id for the
+ *     library pick's return;
  *   - the Start/Stop label follows a 'dj' event (the player bar's toggle);
- *   - spa.css carries design E's block (the Materialize cascade fixes).
+ *   - spa.css carries design E's block (the Materialize cascade fixes, the
+ *     Genres row's value), and the old genre editor's rules are gone.
  *
  * Same technique as webapp-discovery-panel.test.mjs: the real functions are
  * sliced out of m.js and run against stub globals. AUTODJ is the real module
@@ -133,12 +141,13 @@ const rowOf = (html, id) => switchRows(html).find((r) => r.id === id) || null;
 
 // The card's rows, in drawn order, by a marker each.
 function rowOrder(html) {
-  const re = /id="dj-src"|<label class="dj-field-label" for="(dj-limit|dj-min-rating)">|<h4 class="autodj-section-heading">([^<]*)<\/h4>|<input type="checkbox" role="switch" id="([^"]+)"|id="dj-seeds-btn"/g;
+  const re = /id="dj-src"|<label class="dj-field-label" for="(dj-limit|dj-min-rating)">|<h4 class="autodj-section-heading">([^<]*)<\/h4>|<input type="checkbox" role="switch" id="([^"]+)"|id="dj-genres-btn"|id="dj-seeds-btn"/g;
   return [...html.matchAll(re)].map((m) => {
     if (m[0] === 'id="dj-src"') { return 'Sources'; }
     if (m[1]) { return m[1] === 'dj-limit' ? 'Batch' : 'Rating'; }
     if (m[2] !== undefined) { return `h4:${textOf(m[2])}`; }
     if (m[3]) { return m[3]; }
+    if (m[0] === 'id="dj-genres-btn"') { return 'Genres'; }
     return 'Seeds';
   });
 }
@@ -149,7 +158,10 @@ const RETIRED = ['heroDescription', 'statusOn', 'statusOff', 'sectionContinuity'
   'durationFilterLabel', 'durationFilterHint', 'durationUnknownHint', 'sonicHint', 'sonicHintNoDiscovery', 'sonicSimValue',
   'sonicSimAdventurous', 'sonicSimBalanced', 'sonicSimFocused', 'sonicSimLockedIn', 'sonicAnchorLabel', 'sonicAnchorRolling',
   'sonicAnchorLocked', 'sonicAnchorRollingHint', 'sonicAnchorLockedHint', 'sonicSeedLabel', 'sonicSeedHint', 'sonicSeedNone',
-  'sonicSeedRemove', 'federatedHint', 'genreNoMatches', 'sonicSeedNeededTitle', 'sonicSeedNeeded'].map((k) => `autoDJ.${k}`);
+  'sonicSeedRemove', 'federatedHint', 'genreNoMatches', 'sonicSeedNeededTitle', 'sonicSeedNeeded',
+  // the inline genre editor's (the Genres drawer took its place)
+  'genreModeWhitelist', 'genreModeBlacklist', 'genrePlaceholder', 'genreInputLabel', 'genreTagsLabel', 'genreTagRemove',
+  'genreMoreSuggestions', 'genreNoMatchesHint'].map((k) => `autoDJ.${k}`);
 
 // t() echoes the key, with its params when there are any.
 const tStub = (k, p) => (p && Object.keys(p).length ? `${k}${JSON.stringify(p)}` : k);
@@ -232,18 +244,22 @@ function makeDom() {
 }
 
 const FNS = ['escapeHtml', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'autoDjSeedArtUrl', 'autoDjSecToMin',
-  'autoDjChipsHtml', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
+  'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
   'autoDjApplySonicDim', 'autoDjRenderTiles', 'autoDjRenderToggle', 'autoDjPanel'];
 
 // One stubbed app around the sliced panel.
 //   server   MSTREAMAPI.currentServer's flags (the ping's)
 //   lastfm   the Last.fm status's serverEnabled
 //   genres   the library's genre list (null: the load fails)
+//   sources  the genres answer's { tag, model } (absent by default: a
+//            server older than the kinds)
 //   djOn     MSTREAMPLAYER.playerStats.autoDJ
 //   noHooks  a player without onAutoDj / fillBareSeeds (server-audio mode)
-function makeSandbox({ server = {}, lastfm = true, genres = ['Rock', 'Jazz'], djOn = false, noHooks = false } = {}) {
+function makeSandbox({ server = {}, lastfm = true, genres = ['Rock', 'Jazz'], sources, djOn = false, noHooks = false } = {}) {
   const dom = makeDom();
   const opened = [];
+  const genresOpened = [];
+  const genreAsks = [];
   const playerListeners = new Set();
   const calls = [];
   const unsubscribed = [];
@@ -275,7 +291,10 @@ function makeSandbox({ server = {}, lastfm = true, genres = ['Rock', 'Jazz'], dj
     AUTODJ: { ...AUTODJ, seeds },
     MSTREAMAPI: {
       currentServer: { host: HOST, token: 'TOK', vpaths: ['Music'], discovery: true, autoDj: 1, ...server },
-      getGenres: () => Promise.resolve(genres ? { status: 'ok', value: genres } : { status: 'error', code: 500 }),
+      getGenres: (...args) => {
+        genreAsks.push(args);
+        return Promise.resolve(genres ? { status: 'ok', value: genres, ...(sources !== undefined ? { sources } : {}) } : { status: 'error', code: 500 });
+      },
       peerArtUrl,
     },
     MSTREAMPLAYER,
@@ -287,6 +306,7 @@ function makeSandbox({ server = {}, lastfm = true, genres = ['Rock', 'Jazz'], dj
     _fetchLastfmStatus: () => Promise.resolve({ serverEnabled: lastfm }),
     _syncVpathsToLegacy: () => {},
     autoDjSeedsOpen: (opts) => { opened.push(opts); },
+    autoDjGenresOpen: (...args) => { genresOpened.push(args); },
   };
   const body = `
     'use strict';
@@ -297,7 +317,7 @@ function makeSandbox({ server = {}, lastfm = true, genres = ['Rock', 'Jazz'], dj
     return { ${FNS.join(', ')} };
   `;
   const S = new Function(...Object.keys(globals), body)(...Object.values(globals));
-  return { S, dom, globals, opened, calls, playerListeners, unsubscribed, live, server: globals.MSTREAMAPI.currentServer };
+  return { S, dom, globals, opened, genresOpened, genreAsks, calls, playerListeners, unsubscribed, live, server: globals.MSTREAMAPI.currentServer };
 }
 
 // The builders' ctx, as autoDjPanel reads it.
@@ -331,7 +351,7 @@ describe('the Auto DJ panel: rows', () => {
     const full = makeSandbox({ server: { vpaths: ['Music', 'Live'], moodFilters: true, federationBrowse: true } });
     assert.deepEqual(rowOrder(draw(full)), [
       'Sources', 'Batch',
-      'h4:autoDJ.sectionFilters', 'dj-mood-on', 'dj-genre-on', 'Rating', 'dj-duration-on', 'dj-duration-unknown', 'dj-filter-on',
+      'h4:autoDJ.sectionFilters', 'dj-mood-on', 'Genres', 'Rating', 'dj-duration-on', 'dj-duration-unknown', 'dj-filter-on',
       'h4:autoDJ.sectionMatch', 'dj-sonic-on', 'dj-skips-on', 'Seeds', 'dj-federated-on', 'dj-bpm-cont', 'dj-harmonic', 'dj-similar',
     ]);
     // one library, no mood filters, no federation: no Sources, no Smart
@@ -339,7 +359,7 @@ describe('the Auto DJ panel: rows', () => {
     const bare = makeSandbox({ server: { vpaths: ['Music'], moodFilters: false, federationBrowse: false } });
     assert.deepEqual(rowOrder(draw(bare)), [
       'Batch',
-      'h4:autoDJ.sectionFilters', 'dj-genre-on', 'Rating', 'dj-duration-on', 'dj-duration-unknown', 'dj-filter-on',
+      'h4:autoDJ.sectionFilters', 'Genres', 'Rating', 'dj-duration-on', 'dj-duration-unknown', 'dj-filter-on',
       'h4:autoDJ.sectionMatch', 'dj-sonic-on', 'dj-skips-on', 'Seeds', 'dj-bpm-cont', 'dj-harmonic', 'dj-similar',
     ]);
     // the renamed labels
@@ -347,7 +367,6 @@ describe('the Auto DJ panel: rows', () => {
     const labels = Object.fromEntries(switchRows(html).map((r) => [r.id, r.label]));
     assert.deepEqual(labels, {
       'dj-mood-on': 'autoDJ.smartFiltersLabel',
-      'dj-genre-on': 'autoDJ.genresLabel',
       'dj-duration-on': 'autoDJ.lengthLabel',
       'dj-duration-unknown': 'autoDJ.durationUnknownLabel',
       'dj-filter-on': 'autoDJ.skipWordsLabel',
@@ -362,6 +381,8 @@ describe('the Auto DJ panel: rows', () => {
     assert.match(html, /<label class="dj-field-label" for="dj-min-rating">autoDJ\.ratingLabel<\/label>/);
     assert.match(html, /<span class="dj-sources-label" id="dj-src">autoDJ\.sectionSources<\/span><div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-labelledby="dj-src">/);
     assert.match(html, /<span class="dj-seeds-row-label">autoDJ\.seedsLabel<\/span>/);
+    // Genres: a value row in its block, no switch
+    assert.match(html, /<div class="dj-block"><button type="button" id="dj-genres-btn" class="dj-seeds-row dj-genres-row" aria-haspopup="dialog" aria-expanded="false"><span class="dj-seeds-row-label">autoDJ\.genresLabel<\/span><span class="dj-genres-value" id="dj-genres-value">autoDJ\.genresAny<\/span><svg class="dj-seeds-chev" [^>]*><path d="M9 6l6 6-6 6"><\/path><\/svg><\/button><\/div>/);
     // the sub-items are indented under Sonic similarity (one .dj-sub each)
     assert.match(html, /<div class="dj-sub" id="dj-sub-skips"><label class="dj-row dj-sub-row">/);
     assert.match(html, /<div class="dj-sub" id="dj-sub-seeds"><button type="button" id="dj-seeds-btn"/);
@@ -406,7 +427,7 @@ describe('the Auto DJ panel: switches and editors', () => {
     const sb = makeSandbox({ server: { vpaths: ['Music', 'Live'], moodFilters: true, federationBrowse: true } });
     const html = draw(sb);
     const boxes = tagsOf(html).filter((el) => el.tag === 'input' && el.attrs.type === 'checkbox');
-    assert.equal(boxes.length, 11);
+    assert.equal(boxes.length, 10);
     for (const box of boxes) {
       assert.equal(box.attrs.role, 'switch', box.attrs.id);
       const row = rowOf(html, box.attrs.id);
@@ -422,14 +443,14 @@ describe('the Auto DJ panel: switches and editors', () => {
     }
     // the switch itself is a span: labels can't nest
     assert.ok(!html.includes('<label class="toggle-sw"'));
-    assert.equal(tagsOf(html).filter((el) => el.tag === 'span' && el.attrs.class === 'toggle-sw').length, 11);
+    assert.equal(tagsOf(html).filter((el) => el.tag === 'span' && el.attrs.class === 'toggle-sw').length, 10);
     // a disabled row looks it (Similar artists without a Last.fm key)
     const noKey = rowOf(draw(sb, { lastfmAvailable: false }), 'dj-similar');
     assert.ok(noKey.disabled && !noKey.checked && noKey.rowClass.includes('is-disabled'));
   });
 
   test('an editor is drawn only while its switch is on, and off keeps the values', async () => {
-    const EDITORS = [['dj-mood-on', 'dj-mood-editor', 'djMoodEnabled'], ['dj-genre-on', 'dj-genre-editor', 'djGenreEnabled'],
+    const EDITORS = [['dj-mood-on', 'dj-mood-editor', 'djMoodEnabled'],
       ['dj-duration-on', 'dj-duration-editor', 'djDurationEnabled'], ['dj-filter-on', 'dj-filter-editor', 'djFilterEnabled']];
     const server = { moodFilters: true };
     // off: every editor drawn hidden (its fields never disabled)
@@ -438,7 +459,6 @@ describe('the Auto DJ panel: switches and editors', () => {
     // on: shown, holding today's controls
     AUTODJ.setState({ djMoodEnabled: true, djGenreEnabled: true, djDurationEnabled: true, djFilterEnabled: true, bpmContinuity: true });
     AUTODJ.addFilterWord('live');
-    AUTODJ.addGenre('Rock');
     AUTODJ.setDurationBounds(120, 600, 'min');
     AUTODJ.setState({ djMoods: { valence: 'happy' } });
     html = draw(makeSandbox({ server }));
@@ -455,15 +475,9 @@ describe('the Auto DJ panel: switches and editors', () => {
     assert.match(html, /<div class="dj-moods" id="dj-moods"><div class="mood-seg" role="group"/, 'Smart filters: the mood segments');
     assert.equal(byId(html, 'dj-moods') && tagsOf(html).find((el) => el.attrs['data-mood-value'] === 'happy').attrs['aria-pressed'], 'true');
     assert.ok(tagsOf(html).some((el) => el.attrs['data-mood-level'] === 'strict'), 'Strict | Standard | Loose');
-    assert.ok(tagsOf(html).some((el) => el.attrs.class === 'dj-genre-mode-btn' && el.attrs['data-mode'] === 'whitelist'), 'Whitelist | Blacklist');
-    assert.equal(byId(html, 'dj-genre-input').attrs.placeholder, 'autoDJ.genrePlaceholder');
-    assert.ok(tagsOf(html).some((el) => el.attrs['data-genre'] === 'Rock'), 'the genre chips');
     assert.equal(byId(html, 'dj-duration-min').attrs.value, '2');
     assert.equal(byId(html, 'dj-duration-max').attrs.value, '10');
     assert.ok(tagsOf(html).some((el) => el.attrs['data-word'] === 'live'), 'the skip words chips');
-    // the genre list failed to load: Genres off, its editor away
-    const failed = draw(makeSandbox({ server }), { genres: [], loadState: 'error' });
-    assert.ok(rowOf(failed, 'dj-genre-on').disabled && 'hidden' in byId(failed, 'dj-genre-editor').attrs);
 
     // the switches, as wired: off hides the editor and keeps the values,
     // on shows it again
@@ -489,7 +503,7 @@ describe('the Auto DJ panel: switches and editors', () => {
     AUTODJ.setState({ djMoodEnabled: true, djGenreEnabled: true, djDurationEnabled: true, djFilterEnabled: true });
     const html = draw(makeSandbox({ server: { moodFilters: true } }));
     const fields = tagsOf(html).filter((el) => el.tag === 'select' || (el.tag === 'input' && ['text', 'number', 'search'].includes(el.attrs.type)));
-    assert.deepEqual(fields.map((el) => el.attrs.id).sort(), ['dj-duration-max', 'dj-duration-min', 'dj-filter-input', 'dj-genre-input', 'dj-limit', 'dj-min-rating']);
+    assert.deepEqual(fields.map((el) => el.attrs.id).sort(), ['dj-duration-max', 'dj-duration-min', 'dj-filter-input', 'dj-limit', 'dj-min-rating']);
     for (const el of fields) { assert.ok(classesOf(el).has('browser-default'), el.attrs.id); }
   });
 });
@@ -742,8 +756,125 @@ describe('the Auto DJ panel: the Seeds row', () => {
     assert.deepEqual(tags.filter((el) => 'data-vpath' in el.attrs).map((el) => el.attrs['data-vpath']), [evil, 'Music']);
     assert.ok(textOf(html).includes(evil), 'the library name is drawn as text');
     assert.equal(tags.find((el) => el.attrs.class === 'dj-filter-tag-rm' && 'data-word' in el.attrs).attrs['data-word'], evil);
-    assert.equal(tags.find((el) => el.attrs.class === 'dj-filter-tag-rm' && 'data-genre' in el.attrs).attrs['data-genre'], `"x"=${evil}`);
+    // the Genres row's value reads the genre as text
+    const value = html.match(/<span class="dj-genres-value is-set" id="dj-genres-value">([^<]*)<\/span>/);
+    assert.ok(value, 'the Genres row draws the chosen genre');
+    assert.equal(decode(value[1]), `"x"=${evil}`);
     assert.equal(tags.find((el) => 'data-word' in el.attrs).attrs['aria-label'], `autoDJ.keywordFilterTagRemove${JSON.stringify({ word: evil })}`);
+  });
+});
+
+describe('the Auto DJ panel: the Genres row', () => {
+  // the row's value span: its classes and its text (decoded)
+  const valueOf = (html) => {
+    const m = html.match(/<span class="(dj-genres-value[^"]*)" id="dj-genres-value">([^<]*)<\/span>/);
+    assert.ok(m, 'the Genres row\'s value');
+    return [m[1], decode(m[2])];
+  };
+
+  test('a value row with a chevron that opens the drawer', async () => {
+    const sb = makeSandbox();
+    const html = draw(sb);
+    const btn = byId(html, 'dj-genres-btn');
+    assert.equal(btn.tag, 'button');
+    assert.equal(btn.attrs.type, 'button');
+    assert.equal(btn.attrs['aria-haspopup'], 'dialog');
+    assert.equal(btn.attrs['aria-expanded'], 'false');
+    assert.ok(!('aria-controls' in btn.attrs), 'aria-controls only while the drawer is open');
+    assert.ok(!('disabled' in btn.attrs));
+    assert.deepEqual([...classesOf(btn)], ['dj-seeds-row', 'dj-genres-row'], 'the Seeds row\'s look');
+    // its label, its value, the chevron — spans and an svg, nothing else
+    const inner = html.match(/<button type="button" id="dj-genres-btn"[^>]*>([\s\S]*?)<\/button>/)[1];
+    assert.match(inner, /^<span class="dj-seeds-row-label">autoDJ\.genresLabel<\/span><span class="dj-genres-value" id="dj-genres-value">autoDJ\.genresAny<\/span><svg class="dj-seeds-chev" [^>]*aria-hidden="true"><path d="M9 6l6 6-6 6"><\/path><\/svg>$/);
+    // no switch, no inline editor
+    for (const gone of ['dj-genre-on', 'dj-genre-editor', 'dj-genre-input', 'dj-genre-tags', 'dj-genre-suggest']) { assert.equal(byId(html, gone), null, `${gone} is gone`); }
+    assert.ok(!SRC.includes('dj-genre-'), 'no id or class of the old editor is left in m.js');
+    // a press opens the drawer through its one way in, with no redraw
+    await sb.S.autoDjPanel();
+    sb.dom.els.get('dj-genres-btn').onclick();
+    assert.deepEqual(sb.genresOpened, [[]]);
+    assert.equal(sb.dom.renders(), 1);
+  });
+
+  test('off while the library\'s genre list can\'t load and nothing is chosen; live with genres chosen', async () => {
+    const sb = makeSandbox();
+    const lists = [{ genres: [], loadState: 'error' }, { genres: [], loadState: 'auth' }, { genres: [], loadState: 'ready' }];
+    for (const ctx of lists) {
+      const html = draw(sb, ctx);
+      assert.ok('disabled' in byId(html, 'dj-genres-btn').attrs, JSON.stringify(ctx));
+      assert.ok(!html.includes('<p '), 'no reason line');
+    }
+    assert.ok(!('disabled' in byId(draw(sb), 'dj-genres-btn').attrs), 'a list that loaded');
+    // as wired: a failed load, and a press does nothing
+    const failed = makeSandbox({ genres: null });
+    await failed.S.autoDjPanel();
+    assert.equal(failed.dom.els.get('dj-genres-btn').disabled, true);
+    failed.dom.els.get('dj-genres-btn').onclick();
+    assert.deepEqual(failed.genresOpened, []);
+    // with genres chosen it stays live, so they can always be let go
+    AUTODJ.setGenreFilter({ genres: ['Rock'] });
+    for (const ctx of lists) {
+      const html = draw(sb, ctx);
+      assert.ok(!('disabled' in byId(html, 'dj-genres-btn').attrs), JSON.stringify(ctx));
+      assert.deepEqual(valueOf(html), ['dj-genres-value is-set', 'Rock']);
+    }
+    const live = makeSandbox({ genres: null });
+    await live.S.autoDjPanel();
+    assert.equal(live.dom.els.get('dj-genres-btn').disabled, false);
+    live.dom.els.get('dj-genres-btn').onclick();
+    assert.equal(live.genresOpened.length, 1);
+    // an older client's filter switched off with a list: nothing is chosen
+    AUTODJ.setState({ djGenreEnabled: false });
+    assert.ok('disabled' in byId(draw(sb, lists[0]), 'dj-genres-btn').attrs);
+  });
+
+  test('its value: Any, the chosen genres sorted and joined, Skip …', () => {
+    const sb = makeSandbox();
+    assert.deepEqual(valueOf(draw(sb)), ['dj-genres-value', 'autoDJ.genresAny'], 'nothing chosen: Any, neutral');
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['rock', 'Ambient', 'jazz'] });
+    assert.deepEqual(valueOf(draw(sb)), ['dj-genres-value is-set', 'Ambient · jazz · rock'], 'sorted whatever their case, the accent');
+    assert.deepEqual(AUTODJ.state.djGenres, ['rock', 'Ambient', 'jazz'], 'stored in tick order');
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['rock', 'Ambient', 'jazz'] });
+    assert.deepEqual(valueOf(draw(sb)), ['dj-genres-value is-set', 'autoDJ.genresSkipValue{"genres":"Ambient · jazz · rock"}']);
+    assert.deepEqual(sb.S.autoDjGenresValue(AUTODJ.state), { text: 'autoDJ.genresSkipValue{"genres":"Ambient · jazz · rock"}', set: true });
+    // the kind is never named
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['Rock'], source: 'model' });
+    assert.deepEqual(valueOf(draw(sb)), ['dj-genres-value is-set', 'Rock']);
+    // an older client's filter switched off with a list: Any, the list kept
+    AUTODJ.setState({ djGenreEnabled: false });
+    assert.deepEqual(valueOf(draw(sb)), ['dj-genres-value', 'autoDJ.genresAny']);
+    assert.deepEqual(AUTODJ.state.djGenres, ['Rock']);
+  });
+
+  test('the panel\'s genres answer: one without both kinds takes a stored kind back to Mixed; a failed one leaves it', async () => {
+    const KEY = 'mstream-dj-djGenreSource';
+    const stored = () => {
+      AUTODJ.setGenreFilter({ genres: ['Rock'], source: 'model' });
+      AUTODJ.invalidateGenresCache();
+    };
+    // both kinds: the kind stays, and the counts ride in the cache
+    stored();
+    const both = makeSandbox({ sources: { tag: 3, model: 2 } });
+    await both.S.autoDjPanel();
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+    assert.deepEqual(AUTODJ.getCachedGenreSources(), { tag: 3, model: 2 });
+    assert.deepEqual(AUTODJ.getCachedGenresList(), ['Rock', 'Jazz']);
+    assert.deepEqual(both.genreAsks, [[]], 'the panel asks for every kind');
+    // one kind, none, or no counts at all (a server older than the kinds)
+    for (const sources of [{ tag: 3, model: 0 }, { tag: 0, model: 2 }, { tag: 0, model: 0 }, undefined]) {
+      stored();
+      const sb = makeSandbox({ sources });
+      await sb.S.autoDjPanel();
+      assert.equal(AUTODJ.state.djGenreSource, null, JSON.stringify(sources));
+      assert.equal(localStorage.getItem(KEY), null);
+      assert.deepEqual(AUTODJ.state.djGenres, ['Rock'], 'the genres stay');
+    }
+    // a failed load says nothing about the kinds
+    stored();
+    const failed = makeSandbox({ genres: null });
+    await failed.S.autoDjPanel();
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+    assert.equal(localStorage.getItem(KEY), '"model"');
   });
 });
 
@@ -781,6 +912,25 @@ describe('the Auto DJ panel: facts on the server object', () => {
     }
     const fail = init.slice(init.indexOf('.catch(() => {'), init.indexOf('MSTREAMAPI.currentServer.discoveryPath'));
     assert.match(fail, /^\.catch\(\(\) => \{\n\s*MSTREAMAPI\.currentServer\.discoveryReady = undefined;\n/, 'a failed /api/ leaves it unknown');
+  });
+
+  test('init reads the server\'s version from /api/ (the Genres drawer\'s kind and its wire)', () => {
+    const init = sliceFn('init');
+    const then = init.slice(init.indexOf('MSTREAMAPI.serverInfo()'), init.indexOf('.catch(() => {'));
+    const m = then.match(/\n\s*MSTREAMAPI\.currentServer\.version = ([^\n]+);\n/);
+    assert.ok(m, 'serverInfo().then sets currentServer.version');
+    assert.ok(then.indexOf(m[0]) > then.indexOf('const admin = '), 'after the statements a throw must not skip (the admin line)');
+    const read = new Function('info', `return ${m[1]};`);
+    assert.equal(read({ server: '6.33.1' }), '6.33.1');
+    assert.equal(read({ server: '6.33.1-velvet' }), '6.33.1-velvet', 'kept as it is: the gate reads it');
+    for (const info of [{}, { server: 6 }, { server: null }, null, undefined]) {
+      assert.equal(read(info), undefined, `unknown for ${JSON.stringify(info)}`);
+    }
+    const fail = init.slice(init.indexOf('.catch(() => {'), init.indexOf('MSTREAMAPI.currentServer.discoveryPath'));
+    assert.match(fail, /^\.catch\(\(\) => \{\n\s*MSTREAMAPI\.currentServer\.discoveryReady = undefined;\n\s*MSTREAMAPI\.currentServer\.version = undefined;\n/, 'a failed /api/ leaves it unknown');
+    // the gate it feeds
+    assert.equal(AUTODJ.takesGenreSource({ version: read({ server: '6.33.1' }) }), true);
+    assert.equal(AUTODJ.takesGenreSource({ version: read({}) }), false);
   });
 });
 
@@ -868,14 +1018,27 @@ describe('the Auto DJ panel: spa.css (design E)', () => {
     assert.match(rule('.autodj-toggle'), /margin: 0 0 24px;/, 'no status line under it');
   });
 
+  test('the Genres row\'s rules sit in design E\'s block: a fixed label, the value on one line in its tone', () => {
+    assert.match(block, /\n\.dj-genres-row \.dj-seeds-row-label \{ flex: 0 0 auto; \}/, 'the label keeps its width');
+    assert.match(block, /\n\.dj-genres-value \{ flex: 1 1 auto; min-width: 0;[^}]*color: #b8bcc6; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; \}/, 'one line, cut short');
+    assert.match(block, /\n\.dj-genres-value\.is-set \{ color: #fa832b; \}/, 'a set value in the accent');
+    assert.match(block, /\n\.dj-genres-row:disabled \.dj-genres-value \{ color: #8c919a; \}/);
+    // the rest comes from the Seeds row's rules, which stay as they are
+    assert.match(block, /\n\.dj-seeds-row \{ display: flex;[^}]*min-height: 48px;/);
+    assert.match(block, /\n\.dj-seeds-row:disabled \{ color: #8c919a; cursor: default; \}/);
+  });
+
   test('today\'s dead rules are gone; shared rules are untouched', () => {
-    for (const gone of ['.autodj-hero', '.autodj-status', '.autodj-opt-row', '.autodj-opt-hint', '.dj-filter-head', '.dj-duration-unknown', '.dj-moods button:disabled']) {
+    for (const gone of ['.autodj-hero', '.autodj-status', '.autodj-opt-row', '.autodj-opt-hint', '.dj-filter-head', '.dj-duration-unknown', '.dj-moods button:disabled',
+      '.dj-genre-mode', '.dj-genre-combo', '.dj-genre-suggest']) {
       assert.ok(!CSS.includes(gone), `${gone} is gone`);
     }
+    assert.ok(!CSS.includes('.dj-genre-'), 'none of the old genre editor\'s rules is left');
     assert.match(CSS, /\n\.autodj-opt-label \{/, 'Sonic Path still uses .autodj-opt-label');
-    // the Genres panel's source switch and the mood bar share these lists
-    assert.match(CSS, /\n\.dj-genre-mode, \.genre-source \{\n {2}display: inline-flex;\n {2}margin-top: 6px;/);
-    assert.match(CSS, /\n\.dj-genre-mode-btn, \.genre-source-btn \{\n {2}appearance: none;/);
+    // the Genres page's source switch keeps its look, without the old
+    // editor's halves; the mood bar shares this list
+    assert.match(CSS, /\n\.genre-source \{\n {2}display: inline-flex;\n {2}margin-top: 6px;/);
+    assert.match(CSS, /\n\.genre-source-btn \{\n {2}appearance: none;/);
     assert.match(CSS, /\n\.mood-seg-btn, \.mood-chip, \.mood-clear \{\n {2}appearance: none;\n {2}height: 34px;/);
     assert.match(block, /\n\.dj-moods \.mood-seg-btn, \.dj-moods \.mood-chip, \.dj-moods \.mood-clear \{ height: 44px; \}/, '44px only inside the panel');
   });

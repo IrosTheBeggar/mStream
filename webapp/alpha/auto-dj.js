@@ -345,8 +345,11 @@
   const DEFAULT_BPM_TOLERANCE = 8;
   const GENRE_LIST_LIMIT = 200;         // sanity cap on the genre whitelist/blacklist (mirrors Joi)
   const DURATION_MAX_SECONDS = 86400;   // mirrors src/api/random.js Joi.number().max(86400) — 24h
-  const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — popover dropdown content
+  const GENRES_CACHE_TTL_MS = 5 * 60 * 1000;  // 5 min — the library's genre list (the Genres row and drawer)
   const GENRE_MODES = Object.freeze(['whitelist', 'blacklist']);
+  const GENRE_KINDS = Object.freeze(['tag', 'model']);   // random-songs' genreSource values; null = Mixed (both)
+  const GENRE_NAME_MAX = 200;                            // mirrors Joi: genres items are 1-200 chars
+  const GENRE_SOURCE_SINCE = Object.freeze([6, 32, 2]);  // random-songs' genreSource (mStream #1102) shipped in 6.32.2
   // The mood filter's groups and values — mirrors src/api/mood-filter.js,
   // whose schema refuses anything else with a 400.
   const MOOD_SCALES = Object.freeze({
@@ -478,11 +481,22 @@
       // schema rejects unknown values, so a stale LS payload would
       // otherwise 403 every random-songs request until the user
       // re-toggled it from the UI.
+      //
+      // `djGenreEnabled` is no switch any more: setGenreFilter writes it
+      // with the list (on exactly while genres are chosen), and "on" is
+      // genreFilterOn() — the flag AND a list. It stays stored so that a
+      // filter an older client switched off keeps its list, unsent, until
+      // the first change in the Genres drawer.
       djGenreEnabled: !!_read('djGenreEnabled', false),
       djGenreMode:    GENRE_MODES.includes(_read('djGenreMode', null))
         ? _read('djGenreMode', null)
         : 'whitelist',
       djGenres:       Array.isArray(_read('djGenres', null)) ? _read('djGenres', null) : [],
+      // Which genre links the list matches: 'model' (Generated), 'tag'
+      // (Tags), or null for Mixed (every kind, and no key on the wire).
+      // Hardened like djGenreMode, since the route refuses any other value.
+      // A preference: reset() leaves it.
+      djGenreSource:  GENRE_KINDS.includes(_read('djGenreSource', null)) ? _read('djGenreSource', null) : null,
       // Track-length window. Stored in SECONDS to match the wire units
       // (tracks.duration is REAL seconds and so is metadata.duration);
       // the panel renders and edits minutes and converts at the edge.
@@ -1073,9 +1087,13 @@
 
   // ── Genre filter ────────────────────────────────────────────────
   //
-  // List-of-genres + mode-toggle pair. Match semantics live in
-  // songBlocked above (overlap test, inverted under blacklist mode);
-  // the helpers here marshal the list with the same shape as the
+  // List-of-genres + mode pair, plus the kind of genre link the list
+  // matches (djGenreSource). Match semantics live in songBlocked above
+  // (overlap test, inverted under blacklist mode). The Genres row and
+  // drawer (the phone's Genres sheet) read genreValue / genreDraft and
+  // write the whole filter at each change through setGenreFilter; the
+  // filter is on exactly while genres are chosen (genreFilterOn). The
+  // one-field helpers below marshal the list with the same shape as the
   // keyword filter (add with dedup + cap, remove exact-match, clear,
   // read a copy) plus a small mode getter/setter pair.
   //
@@ -1124,6 +1142,107 @@
     if (!GENRE_MODES.includes(mode)) { return false; }
     setState({ djGenreMode: mode });
     return true;
+  }
+
+  // Genre names in the order the Genres row and drawer show them: by their
+  // lowercase code units — the phone's comparator, not locale collation.
+  function compareGenreNames(a, b) {
+    const x = String(a).toLowerCase();
+    const y = String(b).toLowerCase();
+    return x < y ? -1 : (x > y ? 1 : 0);
+  }
+
+  // Whether the genre filter is on: exactly while genres are chosen. The
+  // flag is written with the list (setGenreFilter); an older client's "on,
+  // nothing chosen" or "off, with a list" reads off. [s]: a state (default:
+  // this one).
+  function genreFilterOn(s) {
+    const st = s || state;
+    return st.djGenreEnabled === true && Array.isArray(st.djGenres) && st.djGenres.length > 0;
+  }
+
+  // The Genres row's value: null while the filter is off, else the chosen
+  // genres sorted (a copy) and whether they are skipped. [s]: as
+  // genreFilterOn.
+  function genreValue(s) {
+    const st = s || state;
+    if (!genreFilterOn(st)) { return null; }
+    return { names: [...st.djGenres].sort(compareGenreNames), skip: st.djGenreMode === 'blacklist' };
+  }
+
+  // What the Genres drawer opens on (the phone's draft): the mode, the
+  // chosen genres — none for a filter that is off, whose stored list stays
+  // until the first change — and the kind. Copies.
+  function genreDraft() {
+    return {
+      mode: state.djGenreMode,
+      genres: genreFilterOn() ? [...state.djGenres] : [],
+      source: state.djGenreSource,
+    };
+  }
+
+  // The genre filter, written whole at each change in the Genres drawer:
+  // Only ('whitelist') or Skip ('blacklist'; anything else keeps the stored
+  // mode), the genres in tick order — strings of 1–200 characters, one per
+  // name whatever its case (the first kept), at most 200: what the server's
+  // Joi takes — on exactly while some are chosen, and the kind ('tag' |
+  // 'model'; anything else is Mixed). One setState, so the four keys never
+  // disagree. Returns what was stored (copies).
+  function setGenreFilter(f) {
+    const o = f && typeof f === 'object' ? f : {};
+    const mode = GENRE_MODES.includes(o.mode) ? o.mode : state.djGenreMode;
+    const genres = [];
+    const taken = new Set();
+    for (const name of (Array.isArray(o.genres) ? o.genres : [])) {
+      if (genres.length >= GENRE_LIST_LIMIT) { break; }
+      if (typeof name !== 'string' || name === '' || name.length > GENRE_NAME_MAX) { continue; }
+      const lc = name.toLowerCase();
+      if (taken.has(lc)) { continue; }
+      taken.add(lc);
+      genres.push(name);
+    }
+    const source = GENRE_KINDS.includes(o.source) ? o.source : null;
+    setState({ djGenreMode: mode, djGenres: genres, djGenreEnabled: genres.length > 0, djGenreSource: source });
+    return { mode, genres: [...genres], source };
+  }
+
+  // A genres answer's `sources` (how many genres of each kind the server
+  // has; absent from a server older than the kinds). Without both kinds
+  // there is no choice to show, so a stored Generated or Tags goes back to
+  // Mixed: it can't go on narrowing picks with no switch to show it (the
+  // phone's Done rule, applied as the answer arrives). True when both kinds
+  // are there.
+  function noteGenreSources(sources) {
+    const both = !!sources && typeof sources === 'object'
+      && Number(sources.tag) > 0 && Number(sources.model) > 0;
+    if (!both && state.djGenreSource !== null) { setState({ djGenreSource: null }); }
+    return both;
+  }
+
+  // Whether [server] ({ version }: /api/'s or a peer's federation health
+  // `server`) takes random-songs' `genreSource`: an upstream number (an
+  // optional leading v, major.minor[.patch], nothing after) at or above
+  // 6.32.2. Unknown, or a fork's or pre-release's numbering (a -suffix),
+  // can't be compared: false — a refused key would 400 every pick, and
+  // nothing here learns from a refusal.
+  function takesGenreSource(server) {
+    const raw = server && typeof server === 'object' ? server.version : undefined;
+    if (typeof raw !== 'string') { return false; }
+    const m = /^v?(\d+)\.(\d+)(?:\.(\d+))?$/.exec(raw.trim());
+    if (!m) { return false; }
+    const got = [Number(m[1]), Number(m[2]), m[3] === undefined ? 0 : Number(m[3])];
+    for (let i = 0; i < GENRE_SOURCE_SINCE.length; i++) {
+      if (got[i] !== GENRE_SOURCE_SINCE[i]) { return got[i] > GENRE_SOURCE_SINCE[i]; }
+    }
+    return true;
+  }
+
+  // The kind of genre link to send [server]: the stored one while the filter
+  // is on and narrowed to it, and the server takes the key; else null (Mixed:
+  // every kind matches).
+  function genreSourceFor(server) {
+    if (!genreFilterOn() || !GENRE_KINDS.includes(state.djGenreSource)) { return null; }
+    return takesGenreSource(server) ? state.djGenreSource : null;
   }
 
   // ── Track-length window ──────────────────────────────────────────
@@ -1184,19 +1303,24 @@
 
   // ── Genres-list fetch cache ─────────────────────────────────────
   //
-  // The popover/dropdown content (the SET of genres in the library)
-  // is fetched from /api/v1/db/genres on first panel open. Module-
-  // scoped, NOT persisted via setState — the cache is ephemeral and
-  // ought to refresh when the user reloads (e.g. after a rescan).
+  // The SET of genres in the library (every kind: the Mixed list) and
+  // how many genres of each kind the server has (the answer's
+  // `sources`), fetched from /api/v1/db/genres as the Auto DJ panel
+  // opens. It feeds the Genres row's off state (a list that is empty or
+  // failed to load) and the Genres drawer's Mixed list and its
+  // Generated | Tags | Mixed offer. Module-scoped, NOT persisted via
+  // setState — the cache is ephemeral and ought to refresh when the
+  // user reloads (e.g. after a rescan).
   //
   // 5-minute TTL: covers the "open panel, browse elsewhere, come
   // back" round-trip without making the user wait twice; short enough
   // that a rescan-during-session stale window is bounded.
   //
-  // Returned arrays are copies — mutating the result doesn't poison
-  // the cache. invalidateGenresCache() is exported for tests and as
-  // a manual refresh hook (e.g. a future post-rescan event).
-  let _genresListCache = null;  // { fetchedAt: number, items: string[] } | null
+  // Returned arrays and objects are copies — mutating the result
+  // doesn't poison the cache. invalidateGenresCache() is exported for
+  // tests and as a manual refresh hook (e.g. a future post-rescan
+  // event).
+  let _genresListCache = null;  // { fetchedAt: number, items: string[], sources: { tag, model } | null } | null
 
   function _isGenresCacheFresh() {
     return _genresListCache != null
@@ -1207,9 +1331,22 @@
     return _isGenresCacheFresh() ? [..._genresListCache.items] : null;
   }
 
-  function setCachedGenresList(items) {
+  // [sources]: the answer's { tag, model } counts, kept beside the names
+  // as numbers; absent (a server older than the kinds) or not an object,
+  // null.
+  function setCachedGenresList(items, sources) {
     if (!Array.isArray(items)) { return; }
-    _genresListCache = { fetchedAt: Date.now(), items: [...items] };
+    const kinds = sources && typeof sources === 'object' && !Array.isArray(sources)
+      ? { tag: Number(sources.tag) || 0, model: Number(sources.model) || 0 }
+      : null;
+    _genresListCache = { fetchedAt: Date.now(), items: [...items], sources: kinds };
+  }
+
+  // The cached answer's { tag, model }: a copy while the cache is fresh,
+  // else null — and null when that answer carried none.
+  function getCachedGenreSources() {
+    if (!_isGenresCacheFresh() || !_genresListCache.sources) { return null; }
+    return { ..._genresListCache.sources };
   }
 
   function invalidateGenresCache() {
@@ -2832,15 +2969,28 @@
     clearFilterWords,
     getFilterWords,
 
-    // Genre filter (toggle on state.djGenreEnabled, mode on
-    // state.djGenreMode, list on state.djGenres — helpers here
-    // marshal each).
+    // Genre filter (mode on state.djGenreMode, list on state.djGenres,
+    // kind on state.djGenreSource; state.djGenreEnabled is written with
+    // the list — the filter is on exactly while genres are chosen). The
+    // Genres row and drawer read genreValue / genreDraft and write the
+    // whole filter through setGenreFilter; the wire asks genreSourceFor;
+    // GENRES_MAX is the cap the drawer shows and the server enforces. The
+    // one-field helpers stay.
     addGenre,
     removeGenre,
     clearGenres,
     getGenres,
     getGenreMode,
     setGenreMode,
+    compareGenreNames,
+    genreFilterOn,
+    genreValue,
+    genreDraft,
+    setGenreFilter,
+    noteGenreSources,
+    takesGenreSource,
+    genreSourceFor,
+    GENRES_MAX: GENRE_LIST_LIMIT,
 
     // Track-length window (toggle on state.djDurationEnabled, unknown
     // policy on state.djAllowUnknownDuration — both plain setState
@@ -2854,9 +3004,11 @@
     LIMIT_MAX: DJ_LIMIT_MAX,
 
     // Library genres-list cache (5-min TTL; populated by m.js's
-    // panel-open lifecycle from /api/v1/db/genres).
+    // panel-open lifecycle and the Genres drawer from /api/v1/db/genres;
+    // the answer's kinds ride with the names).
     getCachedGenresList,
     setCachedGenresList,
+    getCachedGenreSources,
     invalidateGenresCache,
 
     // Test-only internals — namespaced under `_internals` so they're
@@ -2876,6 +3028,9 @@
       GENRE_LIST_LIMIT,
       GENRES_CACHE_TTL_MS,
       GENRE_MODES,
+      GENRE_KINDS,
+      GENRE_NAME_MAX,
+      GENRE_SOURCE_SINCE,
       DURATION_MAX_SECONDS,
       DJ_LIMIT_MAX,
       SEEDS,

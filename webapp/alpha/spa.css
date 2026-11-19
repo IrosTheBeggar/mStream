@@ -1733,8 +1733,8 @@ select {
   outline-offset: 2px;
 }
 
-/* Skip words and Genres chips — the vpath-pill shape with a built-in ×
-   button, above their editor's field. */
+/* Skip words chips — the vpath-pill shape with a built-in × button,
+   above their editor's field. */
 .dj-filter-tags {
   display: flex;
   flex-wrap: wrap;
@@ -1795,12 +1795,10 @@ select {
   cursor: not-allowed;
 }
 
-/* Genre filter — segmented mode toggle (whitelist/blacklist) and
-   suggestion dropdown wrapper. Reuses .dj-filter-* for the chip
-   list + outer input field; the additions below are limited to
-   the two new pieces. */
+/* The Genres page's Tags | Generated | Both switch (#genre_source): a
+   segmented control, the pressed kind in the accent. */
 
-.dj-genre-mode, .genre-source {
+.genre-source {
   display: inline-flex;
   margin-top: 6px;
   border: 1px solid #444c56;
@@ -1809,7 +1807,7 @@ select {
   background: #1a1d23;
   align-self: flex-start;  /* don't stretch full width on the column flex */
 }
-.dj-genre-mode-btn, .genre-source-btn {
+.genre-source-btn {
   appearance: none;
   background: transparent;
   border: none;
@@ -1820,27 +1818,21 @@ select {
   line-height: 1.4;
   transition: background-color .12s ease, color .12s ease;
 }
-.dj-genre-mode-btn + .dj-genre-mode-btn, .genre-source-btn + .genre-source-btn {
+.genre-source-btn + .genre-source-btn {
   border-left: 1px solid #444c56;
 }
-.dj-genre-mode-btn[aria-pressed="true"], .genre-source-btn[aria-pressed="true"] {
+.genre-source-btn[aria-pressed="true"] {
   background: #fa832b;
   color: #111;
 }
-.dj-genre-mode-btn:hover:not([aria-pressed="true"]):not(:disabled),
 .genre-source-btn:hover:not([aria-pressed="true"]) {
   background: #2a2f37;
 }
-.dj-genre-mode-btn:focus-visible, .genre-source-btn:focus-visible {
+.genre-source-btn:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: -2px;
 }
-.dj-genre-mode-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-/* The Genres panel's tags / generated / both switch shares the look
-   above; it sits in the browse bar, beside the search icon. */
+/* It sits in the browse bar, beside the search icon. */
 .genre-source {
   margin: 0 4px 0 6px;
   align-self: center;
@@ -1974,45 +1966,6 @@ select {
   border-radius: 0;
 }
 
-/* Anchor for the suggestion dropdown — keep it relative so the
-   absolutely-positioned panel sticks to the input. */
-.dj-genre-combo {
-  position: relative;
-}
-.dj-genre-suggest {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: 2px;
-  max-height: 240px;
-  overflow-y: auto;
-  z-index: 5;
-  background: #1a1d23;
-  border: 1px solid #444c56;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-.dj-genre-suggest[hidden] { display: none; }
-.dj-genre-suggest-row {
-  padding: 6px 10px;
-  font-size: 13px;
-  color: #b8bcc6;
-  cursor: pointer;
-}
-.dj-genre-suggest-row:hover,
-.dj-genre-suggest-row[aria-selected="true"] {
-  background: #fa832b;
-  color: #111;
-}
-.dj-genre-suggest-empty,
-.dj-genre-suggest-more {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #8a8f99;
-  font-style: italic;
-}
-
 /* Length's editor — two minute fields side by side (a caption over
    each), then the "include unknown length" switch row. Reuses
    .dj-filter-input for the field chrome. */
@@ -2100,16 +2053,20 @@ select {
 .dj-seeds-row:disabled .dj-seeds-tiles { opacity: .4; }
 .dj-seeds-row:disabled .dj-seeds-chev { color: #8c919a; }
 
-/* The editors (Smart filters, Genres, Length, Skip words): kit d15
-   fields, and 44px targets for their buttons */
+/* Genres: a value row in the Seeds row's look — its label, its value on one
+   line in the value's tone (Any, or the chosen genres: the accent), the
+   chevron */
+.dj-genres-row .dj-seeds-row-label { flex: 0 0 auto; }
+.dj-genres-value { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; color: #b8bcc6; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-genres-value.is-set { color: #fa832b; }
+.dj-genres-row:disabled .dj-genres-value { color: #8c919a; }
+
+/* The editors (Smart filters, Length, Skip words): kit d15 fields, and
+   44px targets for their buttons */
 .dj-editor .dj-filter-tags { margin-top: 0; }
 .dj-editor .dj-filter-tags:empty { display: none; }
 .dj-editor .dj-filter-input { height: 44px; margin: 0; padding: 0 12px; border-radius: 6px; font-size: 13px; color-scheme: dark; }
 .dj-editor .dj-filter-input::placeholder { color: #a0a7b3; opacity: 1; }
-.dj-editor .dj-genre-mode { margin-top: 0; }
-.dj-editor .dj-genre-mode-btn { height: 44px; padding: 0 12px; line-height: 18px; }
-.dj-editor .dj-genre-mode-btn[aria-pressed="true"] { font-weight: 600; }
-.dj-editor .dj-genre-mode-btn:not([aria-pressed="true"]):focus { background-color: transparent; }
 .dj-moods .mood-seg-btn, .dj-moods .mood-chip, .dj-moods .mood-clear { height: 44px; }
 .dj-moods .mood-seg, .dj-moods .mood-chip { border-radius: 22px; }
 
@@ -2249,6 +2206,31 @@ select {
 @keyframes dj-seeds-in { from { transform: translateX(100%); } to { transform: none; } }
 .dj-seeds { animation: dj-seeds-in .18s ease-out; }
 @media (prefers-reduced-motion: reduce) { .dj-seeds { animation: none; } }
+
+/* Auto DJ genres drawer */
+/* m.js autoDjGenresOpen: the Seeds drawer's shell and kit (its scrim,
+   drawer, Close, head, title, body, segmented control, box and search
+   field, worn with the Genres drawer's own ids) and the rules below: the
+   cap's "200 max" beside the title (the phone's title row), Generated |
+   Tags | Mixed under Only | Skip, the search, one box per genre, and the
+   list's states. A kind's label stays on one line, cut short inside its
+   own segment where a translation is longer than a third of the drawer. */
+.dj-genres-head { display: flex; align-items: baseline; gap: 8px; }
+.dj-genres-max { font-size: 14px; font-weight: 600; line-height: 20px; color: #f5a05b; white-space: nowrap; }
+.dj-genres-kind-box:empty { display: none; }
+.dj-genres-kind { margin-top: 10px; }
+.dj-genres-kind .dj-seeds-mode-btn { padding: 0 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-genres-search { margin-top: 10px; }
+.dj-genres-list { margin-top: 8px; }
+.dj-genres-rows { list-style: none; margin: 0; padding: 0; }
+.dj-genres-rows > li + li { border-top: 1px solid #3a4149; }
+.dj-genres-item { overflow-wrap: anywhere; }
+.dj-genres-item.is-off { color: #8c919a; cursor: default; }
+.dj-genres-item.is-off input[type="checkbox"] + .dj-check-box { border-color: #5c6370; cursor: default; }
+.dj-genres-state { margin: 0; padding: 16px; text-align: center; font-size: 14px; line-height: 20px; color: #a0a7b3; }
+.dj-genres-state:not(:only-child) { padding: 4px 16px 8px; }
+.dj-genres-state.is-error { color: #ec8a90; }
+.dj-genres-state .spinner { width: 32px; height: 32px; }
 
 /* Now-playing BPM/key pills — sit alongside the existing metadata
    card "Year:" line. Compact pill row that only renders when at

@@ -419,10 +419,11 @@ function setBrowserRootPanel(panelName, showBar) {
   // Add from YouTube's panel is a Vue instance in #filelist: it goes with
   // the column (its draft stays for the next visit).
   if (typeof YTDLUI !== 'undefined') { YTDLUI.unmountPanel(); }
-  // The Seeds drawer belongs to the Auto DJ page: a view that takes the
-  // column under it (a toast's Details, say: toasts sit above its scrim)
-  // closes it, the keyboard left where it is.
+  // The Auto DJ page's drawers (Seeds, Genres) belong to it: a view that
+  // takes the column under one (a toast's Details, say: toasts sit above
+  // its scrim) closes it, the keyboard left where it is.
   if (typeof autoDjSeedsClose === 'function') { autoDjSeedsClose({ noFocus: true }); }
+  if (typeof autoDjGenresClose === 'function') { autoDjGenresClose({ noFocus: true }); }
 
   if(showBar === false) {
     document.getElementById('directory_bar').style.display = 'none';
@@ -842,6 +843,10 @@ async function init() {
         const feats = info && info.features;
         MSTREAMAPI.currentServer.discoveryReady = feats && typeof feats === 'object' && 'discoveryReady' in feats ? feats.discoveryReady === true : undefined;
         const admin = !!(info && info.user && info.user.admin === true);
+        // The server's version (/api/'s `server`): Auto DJ narrows the genre
+        // filter to one kind only on a server known to take it. Unknown
+        // without it.
+        MSTREAMAPI.currentServer.version = info && typeof info.server === 'string' ? info.server : undefined;
         MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
         VUEPLAYERCORE.setAdmin(admin);
         // The account's name ('mstream-user' in public mode): Add from
@@ -851,6 +856,7 @@ async function init() {
       })
       .catch(() => {
         MSTREAMAPI.currentServer.discoveryReady = undefined;
+        MSTREAMAPI.currentServer.version = undefined;
         MSTREAMAPI.currentServer.admin = false;
         VUEPLAYERCORE.setAdmin(false);
         MSTREAMAPI.currentServer.username = ytdlTokenUser();
@@ -6369,10 +6375,12 @@ function sonicPathPanel() {
 // amount on a second line while it is on and its indented sub-items —
 // Learn from skips, Seeds and, on a federated server, Play from federated
 // servers — then Beat matching, Harmonic mixing and Similar artists).
-// A filter's switch is its on/off: its editor shows only while it is on,
-// and turning it off keeps the values. Sonic similarity off dims its
-// sub-items and keeps both seed lists. No hero, status or hint lines: the
-// Start/Stop label (and the player bar's lit DJ glyph) carries the state.
+// Genres is a value row that opens the Genres drawer (the filter is on
+// exactly while genres are chosen); every other filter's switch is its
+// on/off: its editor shows only while it is on, and turning it off keeps
+// the values. Sonic similarity off dims its sub-items and keeps both seed
+// lists. No hero, status or hint lines: the Start/Stop label (and the
+// player bar's lit DJ glyph) carries the state.
 //
 // The builders are pure: they draw from one ctx that autoDjPanel reads
 // ({ state, server, vpaths, includedSet, lastfmAvailable, genres: { list,
@@ -6402,15 +6410,22 @@ function autoDjSecToMin(s) {
   return String(Math.round((n / 60) * 100) / 100);
 }
 
-// A filter's chips — Skip words' words ([kind] 'word') or Genres' genres
-// ('genre') — each with its ×.
-function autoDjChipsHtml(values, kind) {
-  const genre = kind === 'genre';
-  const attr = genre ? 'data-genre' : 'data-word';
+// Skip words' chips, each with its ×.
+function autoDjChipsHtml(values) {
   return (values || []).map((v) => {
-    const label = genre ? t('autoDJ.genreTagRemove', { genre: v }) : t('autoDJ.keywordFilterTagRemove', { word: v });
-    return `<span class="dj-filter-tag" role="listitem">${escapeHtml(v)}<button type="button" class="dj-filter-tag-rm" ${attr}="${escapeHtml(v)}" aria-label="${escapeHtml(label)}">×</button></span>`;
+    const label = t('autoDJ.keywordFilterTagRemove', { word: v });
+    return `<span class="dj-filter-tag" role="listitem">${escapeHtml(v)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(v)}" aria-label="${escapeHtml(label)}">×</button></span>`;
   }).join('');
+}
+
+// The Genres row's value (the phone's): "Any" while nothing is chosen, else
+// the chosen genres sorted and joined " · " — "Skip …" under Skip. [set]:
+// the filter is on (the row's active tone).
+function autoDjGenresValue(state) {
+  const v = AUTODJ.genreValue(state);
+  if (!v) { return { text: t('autoDJ.genresAny'), set: false }; }
+  const list = v.names.join(' · ');
+  return { text: v.skip ? t('autoDJ.genresSkipValue', { genres: list }) : list, set: true };
 }
 
 // One switch row (kit d4): the label, then the switch, and the whole row
@@ -6516,18 +6531,17 @@ function autoDjPanelHtml(ctx) {
       editor('dj-mood-editor', moodOn, `<div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...s.djMoods, level: s.djMoodLevel })}</div>`))
     : '';
 
-  // Genres: off (and its editor away) while the library's genre list is
-  // empty or failed to load — the suggestions come from it.
+  // Genres: a value row (the phone's) that opens the Genres drawer. Off (no
+  // press) while the library's genre list is empty or failed to load and
+  // nothing is chosen; with genres chosen it stays live, so they can always
+  // be let go.
   const genresOff = ctx.genres.loadState !== 'ready' || ctx.genres.list.length === 0;
-  const genreOn = s.djGenreEnabled === true;
-  const genres = block(autoDjSwitchRowHtml({ id: 'dj-genre-on', label: t('autoDJ.genresLabel'), checked: genreOn, disabled: genresOff }),
-    editor('dj-genre-editor', genreOn && !genresOff,
-      `<div class="dj-genre-mode" role="group" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">`
-      + `<button type="button" class="dj-genre-mode-btn" data-mode="whitelist" aria-pressed="${s.djGenreMode === 'whitelist'}">${escapeHtml(t('autoDJ.genreModeWhitelist'))}</button>`
-      + `<button type="button" class="dj-genre-mode-btn" data-mode="blacklist" aria-pressed="${s.djGenreMode === 'blacklist'}">${escapeHtml(t('autoDJ.genreModeBlacklist'))}</button></div>`
-      + `<div class="dj-filter-tags" id="dj-genre-tags" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${autoDjChipsHtml(s.djGenres, 'genre')}</div>`
-      + `<div class="dj-genre-combo"><input type="text" class="dj-filter-input browser-default" id="dj-genre-input" placeholder="${escapeHtml(t('autoDJ.genrePlaceholder'))}" autocomplete="off" aria-autocomplete="list" aria-controls="dj-genre-suggest" aria-label="${escapeHtml(t('autoDJ.genreInputLabel'))}">`
-      + '<div class="dj-genre-suggest" id="dj-genre-suggest" role="listbox" hidden></div></div>'));
+  const genresValue = autoDjGenresValue(s);
+  const genres = block(`<button type="button" id="dj-genres-btn" class="dj-seeds-row dj-genres-row" aria-haspopup="dialog" aria-expanded="false"${genresOff && !AUTODJ.genreFilterOn(s) ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-row-label">${escapeHtml(t('autoDJ.genresLabel'))}</span>`
+    + `<span class="dj-genres-value${genresValue.set ? ' is-set' : ''}" id="dj-genres-value">${escapeHtml(genresValue.text)}</span>`
+    + '<svg class="dj-seeds-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>'
+    + '</button>', '');
 
   // Rating: 0..10 in half stars, 0 = Any (the server's scale).
   let ratings = `<option value="0"${s.djMinRating === 0 ? ' selected' : ''}>${escapeHtml(t('autoDJ.ratingAny'))}</option>`;
@@ -6552,7 +6566,7 @@ function autoDjPanelHtml(ctx) {
   const skipOn = s.djFilterEnabled === true;
   const skipWords = block(autoDjSwitchRowHtml({ id: 'dj-filter-on', label: t('autoDJ.skipWordsLabel'), checked: skipOn }),
     editor('dj-filter-editor', skipOn,
-      `<div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${autoDjChipsHtml(s.djFilterWords, 'word')}</div>`
+      `<div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${autoDjChipsHtml(s.djFilterWords)}</div>`
       + `<input type="text" class="dj-filter-input browser-default" id="dj-filter-input" placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}" aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">`));
 
   // Sonic similarity: the switch, and the amount (the raw cosine floor
@@ -6637,9 +6651,11 @@ function autoDjRenderToggle() {
 // ending with Add song), and "Clear pins when the queue is cleared". Add
 // song is its second step: "Pick a song from the library" (the library
 // pick: Sonic Path's capture mode), the search, then Up next, Skipped (Less
-// like only) and Recently played. The scrim is a .dmodal-shadow on body,
-// so the player's hotkeys and YouTube paste stay off under it and the
-// panel's own redraws leave it be. The seeds, the song, the queue and the
+// like only) and Recently played. Its shell is the one the Genres drawer
+// shares (autoDjDrawer*, after the library pick): the scrim, a
+// .dmodal-shadow on body, so the player's hotkeys and YouTube paste stay
+// off under it and the panel's own redraws leave it be; Close; Tab and Esc;
+// a press on the scrim. The seeds, the song, the queue and the
 // Skipped ring redraw it in place, the keyboard kept on its control by the
 // row's key (never by a selector built from it: a path may hold a quote or
 // a bracket). Every title, artist and path is escaped where it is drawn.
@@ -6977,7 +6993,7 @@ function autoDjSeedsRender() {
     ui.menuUp = false;
   }
   if (ui.drawn !== ui.step) {
-    dialog.innerHTML = `<button type="button" class="dj-seeds-close" data-dj-act="close" aria-label="${escapeHtml(t('modal.close'))}">${AUTODJ_SEEDS_ICONS.close}</button>`
+    dialog.innerHTML = autoDjDrawerCloseHtml()
       + (ui.step === 'add' ? autoDjAddSongHtml(ui) : autoDjSeedsStepHtml(view, autoDjSeedsCtx(view)));
     dialog.setAttribute('aria-labelledby', ui.step === 'add' ? 'dj-add-title' : 'dj-seeds-title');
     ui.drawn = ui.step;
@@ -7062,20 +7078,12 @@ function autoDjSeedsOpen(opts) {
   if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return false; }
   const list = o.list === 'more' || o.list === 'less' ? o.list : null;
   if (!ui.open) {
-    const shade = document.createElement('div');
-    shade.className = 'dmodal-shadow dj-seeds-shade';
-    shade.id = 'dj-seeds-shade';
-    shade.innerHTML = '<div class="dj-seeds" id="dj-seeds-drawer" role="dialog" aria-modal="true" aria-labelledby="dj-seeds-title" tabindex="-1"></div>';
-    shade.addEventListener('mousedown', onAutoDjSeedsShadeDown);
-    shade.addEventListener('touchstart', onAutoDjSeedsShadeDown, { passive: true });
-    shade.addEventListener('click', onAutoDjSeedsShadeClick);
-    const dialog = shade.querySelector('.dj-seeds');
-    dialog.addEventListener('click', onAutoDjSeedsClick);
-    dialog.addEventListener('keydown', onAutoDjSeedsMenuKey);
-    dialog.addEventListener('input', onAutoDjSeedsInput);
-    dialog.addEventListener('change', onAutoDjSeedsInput);
-    document.body.appendChild(shade);
-    document.addEventListener('keydown', onAutoDjSeedsKey);
+    autoDjDrawerMount({
+      shade: 'dj-seeds-shade', dialog: 'dj-seeds-drawer', title: 'dj-seeds-title',
+      onShadeDown: onAutoDjSeedsShadeDown, onShadeClick: onAutoDjSeedsShadeClick,
+      onClick: onAutoDjSeedsClick, onKeydown: onAutoDjSeedsMenuKey, onInput: onAutoDjSeedsInput,
+      onDocKey: onAutoDjSeedsKey,
+    });
     ui.open = true;
     ui.drawn = null;
     ui.offSeeds = AUTODJ.seeds.subscribe(() => { autoDjSeedsRender(); });
@@ -7085,19 +7093,10 @@ function autoDjSeedsOpen(opts) {
       })
       : null;
   }
-  const btn = document.getElementById('dj-seeds-btn');
-  if (btn) {
-    btn.setAttribute('aria-expanded', 'true');
-    btn.setAttribute('aria-controls', 'dj-seeds-drawer');
-  }
+  autoDjDrawerOpener('dj-seeds-btn', 'dj-seeds-drawer', true, false);
   const back = list && o.focus === 'add';
   autoDjSeedsShowLists(back ? list : null);
-  if (!back) {
-    // (Close is always in view: no scroll while the drawer slides in)
-    const dialog = document.getElementById('dj-seeds-drawer');
-    const close = dialog ? dialog.querySelector('.dj-seeds-close') : null;
-    if (close) { close.focus({ preventScroll: true }); }
-  }
+  if (!back) { autoDjDrawerFocusClose('dj-seeds-drawer'); }
   return true;
 }
 
@@ -7118,9 +7117,7 @@ function autoDjSeedsClose(opts) {
   if (ui.offPlayer) { ui.offPlayer(); }
   ui.offSeeds = null;
   ui.offPlayer = null;
-  document.removeEventListener('keydown', onAutoDjSeedsKey);
-  const shade = document.getElementById('dj-seeds-shade');
-  if (shade) { shade.remove(); }
+  autoDjDrawerUnmount('dj-seeds-shade', onAutoDjSeedsKey);
   ui.step = 'lists';
   ui.list = null;
   ui.menuKey = null;
@@ -7134,12 +7131,7 @@ function autoDjSeedsClose(opts) {
   ui.drawn = null;
   ui.drawnPart = '';
   ui.shadeDown = false;
-  const btn = document.getElementById('dj-seeds-btn');
-  if (btn) {
-    btn.setAttribute('aria-expanded', 'false');
-    btn.removeAttribute('aria-controls');
-    if (!o.noFocus) { btn.focus(); }
-  }
+  autoDjDrawerOpener('dj-seeds-btn', 'dj-seeds-drawer', false, !o.noFocus);
   return true;
 }
 
@@ -7332,22 +7324,7 @@ function onAutoDjSeedsInput(e) {
 // it, and Esc closes it from either step (an open menu takes its own Esc
 // first). An IME's keys are its own.
 function onAutoDjSeedsKey(e) {
-  const ui = autoDjSeedsUi;
-  const dialog = ui.open ? document.getElementById('dj-seeds-drawer') : null;
-  if (!dialog || e.isComposing || e.keyCode === 229) { return; }
-  if (e.key === 'Tab') {
-    if (typeof VUEPLAYERCORE === 'undefined' || typeof VUEPLAYERCORE.dmTabbables !== 'function') { return; }
-    const to = VUEPLAYERCORE.dmTrapTarget(VUEPLAYERCORE.dmTabbables(dialog), document.activeElement, e.shiftKey);
-    if (to) {
-      e.preventDefault();
-      to.focus();
-    }
-    return;
-  }
-  if (e.key === 'Escape') {
-    e.preventDefault();
-    autoDjSeedsClose();
-  }
+  autoDjDrawerKey(e, autoDjSeedsUi.open ? document.getElementById('dj-seeds-drawer') : null, autoDjSeedsClose);
 }
 
 // A press on the scrim closes the drawer only when it both began and ended
@@ -7358,7 +7335,7 @@ function onAutoDjSeedsKey(e) {
 // menu, in place.
 function onAutoDjSeedsShadeDown(e) {
   const ui = autoDjSeedsUi;
-  ui.shadeDown = e.target === e.currentTarget && !(e.detail > 1);
+  ui.shadeDown = autoDjDrawerPressStart(e);
   if (ui.menuKey === null) { return; }
   const menu = document.getElementById('dj-seeds-menu');
   const row = autoDjSeedsRowEl(ui.menuKey);
@@ -7369,7 +7346,7 @@ function onAutoDjSeedsShadeDown(e) {
 
 function onAutoDjSeedsShadeClick(e) {
   const ui = autoDjSeedsUi;
-  const outside = ui.shadeDown && e.target === e.currentTarget;
+  const outside = autoDjDrawerPressEnd(e, ui.shadeDown);
   ui.shadeDown = false;
   if (outside) { autoDjSeedsClose(); }
 }
@@ -7441,6 +7418,530 @@ function autoDjSeedsPickFromLibrary(list) {
   changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
 }
 
+// ── The Auto DJ page's drawers: one shell (Seeds, Genres) ───────────────
+//
+// A modal drawer from the right (kit d13b) on its own scrim, a .dmodal-shadow
+// on body — so the player's hotkeys and YouTube paste stay off under it and
+// the panel's redraws leave it be — both wearing the Seeds drawer's .dj-seeds*
+// kit (spa.css). The shell builds and removes the scrim and its listeners,
+// marks the opener row, draws Close, holds the keyboard (Tab wraps, Esc
+// closes) and tells a press on the scrim from a drag out of the drawer or a
+// multi-click's later press.
+
+// The scrim and its empty dialog on body, the drawer's listeners on them and
+// its key listener on the document. d = { shade, dialog, title (the ids of
+// the scrim, the dialog and the heading that names it), onShadeDown,
+// onShadeClick, onClick, onKeydown?, onInput?, onDocKey }. Returns the
+// dialog.
+function autoDjDrawerMount(d) {
+  const shade = document.createElement('div');
+  shade.className = 'dmodal-shadow dj-seeds-shade';
+  shade.id = d.shade;
+  shade.innerHTML = `<div class="dj-seeds" id="${d.dialog}" role="dialog" aria-modal="true" aria-labelledby="${d.title}" tabindex="-1"></div>`;
+  shade.addEventListener('mousedown', d.onShadeDown);
+  shade.addEventListener('touchstart', d.onShadeDown, { passive: true });
+  shade.addEventListener('click', d.onShadeClick);
+  const dialog = shade.querySelector('.dj-seeds');
+  dialog.addEventListener('click', d.onClick);
+  if (d.onKeydown) { dialog.addEventListener('keydown', d.onKeydown); }
+  if (d.onInput) {
+    dialog.addEventListener('input', d.onInput);
+    dialog.addEventListener('change', d.onInput);
+  }
+  document.body.appendChild(shade);
+  document.addEventListener('keydown', d.onDocKey);
+  return dialog;
+}
+
+// The scrim [shadeId] and every listener gone.
+function autoDjDrawerUnmount(shadeId, onDocKey) {
+  document.removeEventListener('keydown', onDocKey);
+  const shade = document.getElementById(shadeId);
+  if (shade) { shade.remove(); }
+}
+
+// The row a drawer opens from says whether it is open, and which; closing
+// with [focus] gives it the keyboard back (looked up again: the panel may
+// have redrawn).
+function autoDjDrawerOpener(btnId, dialogId, open, focus) {
+  const btn = document.getElementById(btnId);
+  if (!btn) { return; }
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) { btn.setAttribute('aria-controls', dialogId); } else { btn.removeAttribute('aria-controls'); }
+  if (focus) { btn.focus(); }
+}
+
+// Close, a drawer's first child.
+function autoDjDrawerCloseHtml() {
+  return `<button type="button" class="dj-seeds-close" data-dj-act="close" aria-label="${escapeHtml(t('modal.close'))}">${AUTODJ_SEEDS_ICONS.close}</button>`;
+}
+
+// The keyboard on Close as a drawer opens (Close is always in view: no
+// scroll while the drawer slides in).
+function autoDjDrawerFocusClose(dialogId) {
+  const dialog = document.getElementById(dialogId);
+  const close = dialog ? dialog.querySelector('.dj-seeds-close') : null;
+  if (close) { close.focus({ preventScroll: true }); }
+}
+
+// A key while a drawer is open (the house window's way: VUEPLAYERCORE
+// .dmTabbables / dmTrapTarget): Tab and Shift+Tab wrap inside [dialog], Esc
+// runs [close]. An IME's keys are its own.
+function autoDjDrawerKey(e, dialog, close) {
+  if (!dialog || e.isComposing || e.keyCode === 229) { return; }
+  if (e.key === 'Tab') {
+    if (typeof VUEPLAYERCORE === 'undefined' || typeof VUEPLAYERCORE.dmTabbables !== 'function') { return; }
+    const to = VUEPLAYERCORE.dmTrapTarget(VUEPLAYERCORE.dmTabbables(dialog), document.activeElement, e.shiftKey);
+    if (to) {
+      e.preventDefault();
+      to.focus();
+    }
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    close();
+  }
+}
+
+// A press on the scrim closes a drawer only when it began there and was no
+// later press of a multi-click (a double-click on the opener row lands its
+// second press on the new scrim; a touch's detail is 0) …
+function autoDjDrawerPressStart(e) {
+  return e.target === e.currentTarget && !(e.detail > 1);
+}
+
+// … and ended there too (a drag out of a field is no press outside: ytdl's
+// windows).
+function autoDjDrawerPressEnd(e, started) {
+  return started === true && e.target === e.currentTarget;
+}
+
+// ── The Genres drawer ───────────────────────────────────────────────────
+//
+// The Genres row's drawer (the phone's Genres sheet) in the Seeds drawer's
+// shell: "Genres" ("200 max" beside it while the list is full), Only |
+// Skip, Generated | Tags | Mixed (only where the server has genres of both
+// kinds and is known to take the kind), the search, and one box per genre
+// of the kind shown — the chosen ones first, pinned as the drawer opened
+// and grown at each kind change, so a tick never moves a row and a genre
+// the server no longer reports can still be let go. Every change applies
+// at once (AUTODJ.setGenreFilter) and redraws the row's value; closing
+// writes nothing. A filter that is off opens with nothing ticked, its
+// stored list kept until the first change. Every name is escaped where it
+// is drawn and found again by comparing data-genre, never by a selector
+// built from it (a name may hold a quote or a bracket).
+
+// The drawer's one state: open or not, the filter as edited (written
+// through at each change), the typed search, each kind's list once it
+// answered ('both' | 'tag' | 'model' → names), the asks still out and the
+// ones that failed, how many genres of each kind the latest answer said
+// the server has (null: none yet, or a server that sends none), whether
+// the server is known to take the kind (/api/'s version, read as the
+// drawer opens and at each answer), the names that lead the list, this
+// open's ask (an answer for another is dropped), the list's last markup
+// and a press that began on the scrim.
+const autoDjGenresUi = {
+  open: false,
+  draft: null,
+  query: '',
+  lists: {},
+  loading: {},
+  failed: {},
+  sources: null,
+  takes: false,
+  pinned: [],
+  ask: 0,
+  drawnList: '',
+  shadeDown: false,
+};
+
+// The Genres row's value in place, after a change in the drawer: its text
+// and its tone. False once the panel is gone.
+function autoDjGenresRenderValue() {
+  const el = document.getElementById('dj-genres-value');
+  if (!el) { return false; }
+  const v = autoDjGenresValue(AUTODJ.state);
+  if (el.textContent !== v.text) { el.textContent = v.text; }
+  el.classList.toggle('is-set', v.set);
+  return true;
+}
+
+// The names that lead the list: the chosen ones, one per name whatever its
+// case (the first kept), sorted as the row's value is. Strings only (one
+// left in storage by hand is never a row; the first change drops it), and
+// no rule on length: a stored name stays a row to let go.
+function autoDjGenresPinned(names) {
+  const seen = new Set();
+  const out = [];
+  for (const name of Array.isArray(names) ? names : []) {
+    if (typeof name !== 'string' || seen.has(name.toLowerCase())) { continue; }
+    seen.add(name.toLowerCase());
+    out.push(name);
+  }
+  return out.sort(AUTODJ.compareGenreNames);
+}
+
+// One kind's list from a genres answer's names: read as the pinned ones
+// are, and no blank name.
+function autoDjGenresSorted(names) {
+  return autoDjGenresPinned(names).filter((name) => name !== '');
+}
+
+// Whether Generated | Tags | Mixed is offered: the latest answer says the
+// server has genres of both kinds, and the server is known to take the
+// kind (/api/'s version) — read as the drawer opens and at each answer,
+// where its list may change kind. So a drawer opened before /api/ answered
+// shows no switch until its next answer or open: the list drawn stays, and
+// a change stores what it shows.
+function autoDjGenresOffered() {
+  const s = autoDjGenresUi.sources;
+  return !!s && s.tag > 0 && s.model > 0 && autoDjGenresUi.takes;
+}
+
+// The kind the list shows: the chosen one where the switch is offered,
+// every kind ('both') where it isn't.
+function autoDjGenresShown() {
+  const source = autoDjGenresUi.draft ? autoDjGenresUi.draft.source : null;
+  return autoDjGenresOffered() && source ? source : 'both';
+}
+
+// What the list holds now (the phone's order of checks): 'loading' while
+// the shown kind's list is out; 'error' or 'none' with nothing pinned or
+// chosen and a failed or empty list (decided before the search, so typing
+// never turns one into the other); 'error' or 'nomatch' when the search
+// leaves no row; else the rows — the pinned ones matching the search, then
+// the kind's others — each ticked when the edited filter holds its name in
+// any case. [failed]: the shown kind's list failed (its line goes above the
+// pinned rows); [full]: 200 are chosen.
+function autoDjGenresView() {
+  const ui = autoDjGenresUi;
+  const kind = autoDjGenresShown();
+  const list = ui.lists[kind];
+  const failed = ui.failed[kind] === true;
+  const draft = ui.draft.genres.filter((g) => typeof g === 'string');
+  const full = ui.draft.genres.length >= AUTODJ.GENRES_MAX;
+  const out = (state, rows) => ({ state, failed, full, rows: rows || [] });
+  if (ui.loading[kind] || (!list && !failed)) { return out('loading'); }
+  if (ui.pinned.length === 0 && draft.length === 0) {
+    if (failed) { return out('error'); }
+    if (!list || list.length === 0) { return out('none'); }
+  }
+  const chosen = new Set(draft.map((g) => g.toLowerCase()));
+  const pinned = new Set(ui.pinned.map((g) => g.toLowerCase()));
+  const q = ui.query.trim().toLowerCase();
+  const matches = (name) => q === '' || name.toLowerCase().includes(q);
+  const names = [...ui.pinned.filter(matches), ...(list || []).filter((name) => !pinned.has(name.toLowerCase()) && matches(name))];
+  if (names.length === 0) { return out(failed ? 'error' : 'nomatch'); }
+  return out('rows', names.map((name) => ({ name, on: chosen.has(name.toLowerCase()) })));
+}
+
+// The list's markup for [view]: a spinner, a line, or the rows (under the
+// error line when the kind's list failed), one box each — an unticked one
+// off while 200 are chosen.
+function autoDjGenresListHtml(view) {
+  if (view.state === 'loading') { return `<div class="dj-genres-state">${getLoadingSvg()}</div>`; }
+  const line = (key, error) => `<p class="dj-genres-state${error ? ' is-error' : ''}">${escapeHtml(t(key))}</p>`;
+  if (view.state === 'error') { return line('autoDJ.genresLoadError', true); }
+  if (view.state === 'none') { return line('autoDJ.genresNone'); }
+  if (view.state === 'nomatch') { return line('autoDJ.genresNoMatches'); }
+  const rows = view.rows.map((row) => {
+    const off = !row.on && view.full;
+    return `<li><label class="dj-check dj-genres-item${off ? ' is-off' : ''}"><span class="dj-check-ctl">`
+      + `<input type="checkbox" data-genre="${escapeHtml(row.name)}"${row.on ? ' checked' : ''}${off ? ' disabled' : ''}>`
+      + `<span class="dj-check-box" aria-hidden="true">${AUTODJ_SEEDS_ICONS.check}</span></span>${escapeHtml(row.name)}</label></li>`;
+  }).join('');
+  return (view.failed ? line('autoDJ.genresLoadError', true) : '')
+    + `<ul class="dj-genres-rows" aria-labelledby="dj-genres-title">${rows}</ul>`;
+}
+
+// Generated | Tags | Mixed (the phone's order), pressed by the kind shown.
+function autoDjGenresKindHtml() {
+  const shown = autoDjGenresShown();
+  const btn = (kind, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="kind" data-kind="${kind}" aria-pressed="${shown === kind ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  return `<div class="dj-seeds-mode dj-genres-kind" role="group" aria-label="${escapeHtml(t('genres.sourceLabel'))}">`
+    + btn('model', 'genres.sourceGenerated') + btn('tag', 'genres.sourceTags') + btn('both', 'autoDJ.genresMixed')
+    + '</div>';
+}
+
+// Under Close: the head ("200 max" goes into its live region while the
+// list is full), then Only | Skip, the kind's box (autoDjGenresRender fills
+// it while the switch is offered), the search, and the list's box.
+function autoDjGenresStepHtml() {
+  const mode = (m, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="mode" data-mode="${m}" aria-pressed="${autoDjGenresUi.draft.mode === m ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  const search = escapeHtml(t('tooltip.search'));
+  return '<div class="dj-seeds-head dj-genres-head">'
+    + `<h2 class="dj-seeds-title" id="dj-genres-title">${escapeHtml(t('autoDJ.genresLabel'))}</h2>`
+    + '<span class="dj-genres-max" id="dj-genres-max" aria-live="polite"></span></div>'
+    + '<div class="dj-seeds-body" id="dj-genres-body">'
+    + `<div class="dj-seeds-mode" role="group" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">${mode('whitelist', 'autoDJ.genresOnly')}${mode('blacklist', 'autoDJ.genresSkip')}</div>`
+    + '<div class="dj-genres-kind-box" id="dj-genres-kind-box"></div>'
+    + `<label class="dj-add-search dj-genres-search">${AUTODJ_SEEDS_ICONS.search}<input type="search" id="dj-genres-search" class="dj-filter-input browser-default" placeholder="${search}" aria-label="${search}" autocomplete="off" value=""></label>`
+    + '<div class="dj-genres-list" id="dj-genres-list"></div>'
+    + '</div>';
+}
+
+// The list's box as [html], unless it holds it already (a redraw that
+// changes nothing leaves the boxes, and a press on one, where they are).
+// The keyboard on a box comes back to the box of the same name.
+function autoDjGenresDrawList(el, html) {
+  const ui = autoDjGenresUi;
+  if (!el || ui.drawnList === html) { return false; }
+  const a = document.activeElement;
+  const at = a && a !== el && el.contains(a) && typeof a.getAttribute === 'function' ? a.getAttribute('data-genre') : null;
+  el.innerHTML = html;
+  ui.drawnList = html;
+  if (at !== null) {
+    const box = Array.from(el.querySelectorAll('input[data-genre]')).find((b) => b.getAttribute('data-genre') === at);
+    if (box) { box.focus(); }
+  }
+  return true;
+}
+
+// The boxes and the head in place, no redraw (a tick keeps the keyboard and
+// the scroll): each box ticked while the edited filter holds its name in
+// any case, an unticked one off while 200 are chosen, and "200 max" in the
+// head while they are.
+function autoDjGenresSyncTicks() {
+  const ui = autoDjGenresUi;
+  const dialog = document.getElementById('dj-genres-drawer');
+  if (!ui.open || !dialog) { return; }
+  const chosen = new Set(ui.draft.genres.filter((g) => typeof g === 'string').map((g) => g.toLowerCase()));
+  const full = ui.draft.genres.length >= AUTODJ.GENRES_MAX;
+  dialog.querySelectorAll('input[data-genre]').forEach((box) => {
+    const on = chosen.has(String(box.getAttribute('data-genre')).toLowerCase());
+    const off = !on && full;
+    box.checked = on;
+    box.disabled = off;
+    const label = box.closest('label');
+    if (label) { label.classList.toggle('is-off', off); }
+  });
+  const max = document.getElementById('dj-genres-max');
+  const text = full ? t('autoDJ.genresMax', { count: AUTODJ.GENRES_MAX }) : '';
+  if (max && max.textContent !== text) { max.textContent = text; }
+}
+
+// Draws the open drawer in place: Only | Skip and the kind pressed, the
+// kind's switch drawn only as it comes or goes (a pressed kind keeps the
+// keyboard; one that goes with the keyboard on it gives it to the pressed
+// Only | Skip), then the list and its boxes.
+function autoDjGenresRender() {
+  const ui = autoDjGenresUi;
+  if (!ui.open) { return false; }
+  const dialog = document.getElementById('dj-genres-drawer');
+  if (!dialog) {
+    // its scrim went some other way: let go of the listeners too
+    autoDjGenresClose({ noFocus: true });
+    return false;
+  }
+  dialog.querySelectorAll('[data-dj-act="mode"]').forEach((b) => {
+    b.setAttribute('aria-pressed', b.getAttribute('data-mode') === ui.draft.mode ? 'true' : 'false');
+  });
+  const box = document.getElementById('dj-genres-kind-box');
+  if (box) {
+    const offered = autoDjGenresOffered();
+    if (offered !== (box.querySelector('[data-dj-act="kind"]') !== null)) {
+      const held = box.contains(document.activeElement);
+      box.innerHTML = offered ? autoDjGenresKindHtml() : '';
+      if (held && !offered) {
+        const pressed = dialog.querySelector('[data-dj-act="mode"][aria-pressed="true"]');
+        if (pressed) { pressed.focus(); }
+      }
+    }
+    const shown = autoDjGenresShown();
+    box.querySelectorAll('[data-dj-act="kind"]').forEach((b) => {
+      b.setAttribute('aria-pressed', b.getAttribute('data-kind') === shown ? 'true' : 'false');
+    });
+  }
+  autoDjGenresDrawList(document.getElementById('dj-genres-list'), autoDjGenresListHtml(autoDjGenresView()));
+  autoDjGenresSyncTicks();
+  return true;
+}
+
+// Writes the edited filter whole and redraws the row's value. Once an
+// answer is in and the switch isn't offered, the list shows every kind, so
+// the change stores Mixed (what the list showed is what the filter
+// matches); before any answer the stored kind stays.
+function autoDjGenresApply() {
+  const ui = autoDjGenresUi;
+  if (ui.sources !== null && !autoDjGenresOffered()) { ui.draft.source = null; }
+  const stored = AUTODJ.setGenreFilter(ui.draft);
+  ui.draft = { ...stored };
+  autoDjGenresRenderValue();
+}
+
+// Asks for [kind]'s list ('both': every kind) unless it is in or out
+// already; a failed one is asked again. The answer, when it is still this
+// open's: whether the server takes the kind (/api/ may have answered
+// since), the list, how many genres of each kind the server has (an answer
+// without both kinds takes a stored Generated or Tags back to Mixed) and,
+// for every kind, the panel's cache too; then the kind the list now shows
+// is asked for, if it is another one, and the drawer redraws.
+function autoDjGenresLoad(kind) {
+  const ui = autoDjGenresUi;
+  if (ui.lists[kind] || ui.loading[kind]) { return; }
+  ui.loading[kind] = true;
+  delete ui.failed[kind];
+  const ask = ui.ask;
+  Promise.resolve()
+    .then(() => MSTREAMAPI.getGenres(kind === 'both' ? undefined : kind))
+    .catch(() => ({ status: 'error' }))
+    .then((res) => {
+      if (ask !== ui.ask || !ui.open) { return; }
+      delete ui.loading[kind];
+      ui.takes = AUTODJ.takesGenreSource(MSTREAMAPI.currentServer);
+      if (res && res.status === 'ok') {
+        ui.lists[kind] = autoDjGenresSorted(res.value);
+        ui.sources = res.sources || null;
+        if (kind === 'both') { AUTODJ.setCachedGenresList(res.value, res.sources); }
+        AUTODJ.noteGenreSources(res.sources);
+        ui.draft.source = AUTODJ.state.djGenreSource;
+      } else {
+        ui.failed[kind] = true;
+      }
+      if (autoDjGenresShown() !== kind) { autoDjGenresLoad(autoDjGenresShown()); }
+      autoDjGenresRender();
+    });
+}
+
+// The Genres drawer, the Genres row's one way in: the keyboard on Close.
+// Its Mixed list is the panel's cached answer while fresh, else asked for;
+// a stored kind opens on its own list. Its scrim lives on body, so a redraw
+// of the column's markup leaves it be; a view that takes the column closes
+// it (setBrowserRootPanel).
+function autoDjGenresOpen() {
+  const ui = autoDjGenresUi;
+  if (typeof AUTODJ === 'undefined' || typeof AUTODJ.setGenreFilter !== 'function') { return false; }
+  if (ui.open) { return true; }
+  const dialog = autoDjDrawerMount({
+    shade: 'dj-genres-shade', dialog: 'dj-genres-drawer', title: 'dj-genres-title',
+    onShadeDown: onAutoDjGenresShadeDown, onShadeClick: onAutoDjGenresShadeClick,
+    onClick: onAutoDjGenresClick, onInput: onAutoDjGenresInput, onDocKey: onAutoDjGenresKey,
+  });
+  ui.open = true;
+  ui.ask++;
+  ui.draft = AUTODJ.genreDraft();
+  ui.query = '';
+  ui.lists = {};
+  ui.loading = {};
+  ui.failed = {};
+  ui.drawnList = '';
+  ui.shadeDown = false;
+  ui.pinned = autoDjGenresPinned(ui.draft.genres);
+  const cached = AUTODJ.getCachedGenresList();
+  if (cached) { ui.lists.both = autoDjGenresSorted(cached); }
+  ui.sources = cached ? AUTODJ.getCachedGenreSources() : null;
+  ui.takes = AUTODJ.takesGenreSource(MSTREAMAPI.currentServer);
+  dialog.innerHTML = autoDjDrawerCloseHtml() + autoDjGenresStepHtml();
+  autoDjDrawerOpener('dj-genres-btn', 'dj-genres-drawer', true, false);
+  autoDjGenresLoad(autoDjGenresShown());
+  autoDjGenresRender();
+  autoDjDrawerFocusClose('dj-genres-drawer');
+  return true;
+}
+
+// Closes the drawer, writing nothing: the scrim and its listeners go, an
+// answer still out is dropped, and the keyboard goes back to the Genres
+// row (looked up again: the panel may have redrawn). opts.noFocus: a view
+// that takes the column.
+function autoDjGenresClose(opts) {
+  const ui = autoDjGenresUi;
+  if (!ui.open) { return false; }
+  ui.open = false;
+  ui.ask++;
+  autoDjDrawerUnmount('dj-genres-shade', onAutoDjGenresKey);
+  ui.draft = null;
+  ui.query = '';
+  ui.lists = {};
+  ui.loading = {};
+  ui.failed = {};
+  ui.sources = null;
+  ui.takes = false;
+  ui.pinned = [];
+  ui.drawnList = '';
+  ui.shadeDown = false;
+  autoDjDrawerOpener('dj-genres-btn', 'dj-genres-drawer', false, !(opts && opts.noFocus));
+  return true;
+}
+
+// The drawer's presses (one delegated listener; data-dj-act): Close, Only |
+// Skip and the kind. Pressing the pressed one changes nothing; a press
+// keeps the keyboard. A new kind keeps the chosen genres ticked and in view
+// (they join the pinned rows) and asks for its list.
+function onAutoDjGenresClick(e) {
+  const ui = autoDjGenresUi;
+  const el = ui.open && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-dj-act]') : null;
+  if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') { return; }
+  const act = el.getAttribute('data-dj-act');
+  if (act === 'close') {
+    autoDjGenresClose();
+  } else if (act === 'mode') {
+    const mode = el.getAttribute('data-mode');
+    if ((mode !== 'whitelist' && mode !== 'blacklist') || mode === ui.draft.mode) { return; }
+    ui.draft.mode = mode;
+    autoDjGenresApply();
+    autoDjGenresRender();
+    el.focus();
+  } else if (act === 'kind') {
+    const kind = el.getAttribute('data-kind');
+    if (!['model', 'tag', 'both'].includes(kind) || kind === autoDjGenresShown()) { return; }
+    ui.draft.source = kind === 'both' ? null : kind;
+    ui.pinned = autoDjGenresPinned([...ui.pinned, ...ui.draft.genres]);
+    autoDjGenresApply();
+    autoDjGenresLoad(kind);
+    autoDjGenresRender();
+    el.focus();
+  }
+}
+
+// The search (each keystroke narrows the list; no ask) and the boxes: a
+// tick adds its genre unless one of that name in any case is chosen or 200
+// are, an untick lets go of every case of it, and the boxes then show what
+// was stored. (A box fires input too: only its change counts.)
+function onAutoDjGenresInput(e) {
+  const ui = autoDjGenresUi;
+  const el = e.target;
+  if (!ui.open || !el || typeof el.getAttribute !== 'function') { return; }
+  if (el.id === 'dj-genres-search') {
+    if (e.type !== 'input') { return; }
+    ui.query = String(el.value || '');
+    autoDjGenresRender();
+    return;
+  }
+  const name = el.getAttribute('data-genre');
+  if (name === null || e.type !== 'change') { return; }
+  const lc = name.toLowerCase();
+  const same = (g) => typeof g === 'string' && g.toLowerCase() === lc;
+  const held = ui.draft.genres.some(same);
+  if (el.checked && !held && ui.draft.genres.length < AUTODJ.GENRES_MAX) {
+    ui.draft.genres = [...ui.draft.genres, name];
+    autoDjGenresApply();
+  } else if (!el.checked && held) {
+    ui.draft.genres = ui.draft.genres.filter((g) => !same(g));
+    autoDjGenresApply();
+  }
+  autoDjGenresSyncTicks();
+}
+
+// The drawer holds the keyboard while it is open: Tab and Shift+Tab wrap
+// inside it, Esc closes it (from the search too). An IME's keys are its own.
+function onAutoDjGenresKey(e) {
+  autoDjDrawerKey(e, autoDjGenresUi.open ? document.getElementById('dj-genres-drawer') : null, autoDjGenresClose);
+}
+
+// A press on the scrim closes the drawer only when it began and ended
+// there, and was no later press of a multi-click (autoDjDrawerPressStart).
+function onAutoDjGenresShadeDown(e) {
+  autoDjGenresUi.shadeDown = autoDjDrawerPressStart(e);
+}
+
+function onAutoDjGenresShadeClick(e) {
+  const ui = autoDjGenresUi;
+  const outside = autoDjDrawerPressEnd(e, ui.shadeDown);
+  ui.shadeDown = false;
+  if (outside) { autoDjGenresClose(); }
+}
+
 let _autoDjPanelAbortController = null;
 
 // The Auto DJ page. opts = { seeds: 'more' | 'less' } when it comes back
@@ -7468,16 +7969,21 @@ async function autoDjPanel(opts) {
   const lastfm = await _fetchLastfmStatus();
   const lastfmAvailable = !!lastfm.serverEnabled;
 
-  // Library genres list — feeds the Genres editor's suggestions. Cached
-  // for 5 min (see AUTODJ.getCachedGenresList); a stale cache returns null
-  // so we re-fetch transparently. A failed load is non-blocking: the panel
-  // still renders, with Genres off.
+  // The library's genre list (every kind) and how many genres of each kind
+  // the server has — the Genres row's off state, and the Genres drawer's
+  // Mixed list and its Generated | Tags | Mixed offer. Cached for 5 min (see
+  // AUTODJ.getCachedGenresList); a stale cache returns null so we re-fetch
+  // transparently. An answer without genres of both kinds takes a stored
+  // Generated or Tags back to Mixed (AUTODJ.noteGenreSources). A failed
+  // load is non-blocking: the panel still renders, the Genres row off
+  // unless genres are chosen.
   let genresListLoadState = 'ready';   // 'ready' | 'auth' | 'error'
   let cachedGenresList = AUTODJ.getCachedGenresList();
   if (!cachedGenresList) {
     const res = await MSTREAMAPI.getGenres();
     if (res.status === 'ok') {
-      AUTODJ.setCachedGenresList(res.value);
+      AUTODJ.setCachedGenresList(res.value, res.sources);
+      AUTODJ.noteGenreSources(res.sources);
       cachedGenresList = AUTODJ.getCachedGenresList();
     } else {
       genresListLoadState = res.code === 401 ? 'auth' : 'error';
@@ -7624,113 +8130,13 @@ async function autoDjPanel(opts) {
 
   // ── Genres ─────────────────────────────────────────────────────
   //
-  // The switch flips djGenreEnabled and shows or hides the editor (it is
-  // disabled, with no handler, while the library's genre list is empty or
-  // failed to load). In the editor: Whitelist | Blacklist, the chips (an
-  // event-delegated ×), and the input, which filters the suggestions from
-  // the cached genre list. Free-text adds are allowed (Enter / comma
-  // commits whatever's typed) so a scanner-produced odd genre name can
-  // still be targeted.
-  const genreEditor = document.getElementById('dj-genre-editor');
-  const genreTagsEl = document.getElementById('dj-genre-tags');
-  const genreInpEl = document.getElementById('dj-genre-input');
-  const genreOnEl = document.getElementById('dj-genre-on');
-  const genreSuggEl = document.getElementById('dj-genre-suggest');
-  const genreModeBtns = genreEditor.querySelectorAll('.dj-genre-mode-btn');
-  const _renderGenreTags = () => { genreTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getGenres(), 'genre'); };
-
-  // The suggestions: the cached list filtered case-insensitively by the
-  // input, minus the genres already chosen, at most 50 rows with a "+N
-  // more" footer.
-  const SUGGEST_VISIBLE_LIMIT = 50;
-  function _renderGenreSuggest() {
-    if (!AUTODJ.state.djGenreEnabled) {
-      genreSuggEl.setAttribute('hidden', '');
-      return;
-    }
-    const q = String(genreInpEl.value || '').trim().toLowerCase();
-    if (!q) {
-      genreSuggEl.setAttribute('hidden', '');
-      genreSuggEl.innerHTML = '';
-      return;
-    }
-    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
-    const matches = cachedGenresList
-      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
-    if (matches.length === 0) {
-      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${escapeHtml(t('autoDJ.genreNoMatchesHint'))}</div>`;
-      genreSuggEl.removeAttribute('hidden');
-      return;
-    }
-    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
-    const extra = matches.length - visible.length;
-    genreSuggEl.innerHTML = visible.map((g, i) => `
-      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
-    `).join('') + (extra > 0
-      ? `<div class="dj-genre-suggest-more">${escapeHtml(t('autoDJ.genreMoreSuggestions', { n: extra }))}</div>`
-      : '');
-    genreSuggEl.removeAttribute('hidden');
-  }
-
-  if (genreOnEl && !genreOnEl.disabled) {
-    genreOnEl.onchange = (e) => {
-      const on = !!e.target.checked;
-      AUTODJ.setState({ djGenreEnabled: on });
-      genreEditor.hidden = !on;
-      if (!on) { genreSuggEl.setAttribute('hidden', ''); }
-    };
-  }
-
-  // Whitelist | Blacklist: flips djGenreMode and aria-pressed on both.
-  genreModeBtns.forEach((btn) => {
-    btn.onclick = () => {
-      const mode = btn.dataset.mode;
-      if (!AUTODJ.setGenreMode(mode)) { return; }
-      genreModeBtns.forEach((b) => {
-        b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
-      });
-    };
-  });
-
-  genreInpEl.oninput = () => { _renderGenreSuggest(); };
-  // Enter / comma commit; Esc closes the suggestions; Tab and blur are
-  // the browser's.
-  genreInpEl.onkeydown = (e) => {
-    if (e.key === 'Escape') {
-      genreSuggEl.setAttribute('hidden', '');
-      return;
-    }
-    if (e.key !== 'Enter' && e.key !== ',') { return; }
-    e.preventDefault();
-    if (AUTODJ.addGenre(genreInpEl.value)) {
-      genreInpEl.value = '';
-      _renderGenreTags();
-      _renderGenreSuggest();
-    }
-    // Silent no-op on dup / empty / cap-hit — same UX as Skip words.
+  // The row opens the Genres drawer (no press while the row is off: the
+  // library's genre list can't load and nothing is chosen).
+  const genresBtn = document.getElementById('dj-genres-btn');
+  genresBtn.onclick = () => {
+    if (genresBtn.disabled) { return; }
+    if (typeof autoDjGenresOpen === 'function') { autoDjGenresOpen(); }
   };
-  // A suggestion: mousedown, not click, so the blur below doesn't hide the
-  // list before the click lands.
-  genreSuggEl.addEventListener('mousedown', (e) => {
-    const row = e.target.closest('.dj-genre-suggest-row');
-    if (!row) { return; }
-    e.preventDefault();
-    AUTODJ.addGenre(row.dataset.genre);
-    genreInpEl.value = '';
-    _renderGenreTags();
-    _renderGenreSuggest();
-    genreInpEl.focus();
-  }, { signal: _autoDjPanelSignal });
-  // Blur hides the list; the 150ms grace lets the mousedown above land.
-  genreInpEl.onblur = () => {
-    setTimeout(() => { genreSuggEl.setAttribute('hidden', ''); }, 150);
-  };
-  genreTagsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dj-filter-tag-rm');
-    if (!btn) { return; }
-    AUTODJ.removeGenre(btn.dataset.genre);
-    _renderGenreTags();
-  }, { signal: _autoDjPanelSignal });
 
   // ── Length ─────────────────────────────────────────────────────
   //
@@ -7782,7 +8188,7 @@ async function autoDjPanel(opts) {
   // field. The switch shows and hides the editor; the words survive it.
   const filterTagsEl = document.getElementById('dj-filter-tags');
   const filterInpEl = document.getElementById('dj-filter-input');
-  const _renderFilterTags = () => { filterTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getFilterWords(), 'word'); };
+  const _renderFilterTags = () => { filterTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getFilterWords()); };
   document.getElementById('dj-filter-on').onchange = (e) => {
     const on = !!e.target.checked;
     AUTODJ.setState({ djFilterEnabled: on });

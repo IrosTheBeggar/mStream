@@ -24,6 +24,11 @@
  *   • ignoreList passthrough
  *   • resetAnchors() clears both BPM history and Camelot anchor
  *     (but NOT artist history — that's a separate session concept)
+ *   • The Genres drawer's filter — the kind (djGenreSource), the filter
+ *     written whole (setGenreFilter), on exactly while genres are chosen,
+ *     the row's value and the drawer's draft, a genres answer's kinds
+ *     (noteGenreSources, the cache), and the server version gate
+ *     (takesGenreSource, genreSourceFor)
  */
 
 import { describe, test, beforeEach } from 'node:test';
@@ -1530,6 +1535,262 @@ describe('genre filter — persistence', () => {
   });
 });
 
+// The Genres drawer's filter (the phone's Genres sheet): the kind of genre
+// link, the filter written whole, the row's value, and the version gate.
+
+describe('genre kind (djGenreSource)', () => {
+  const KEY = 'mstream-dj-djGenreSource';
+
+  test('defaults to null (Mixed)', () => {
+    assert.equal(AUTODJ.state.djGenreSource, null);
+  });
+
+  test("hydrates 'tag' and 'model'", () => {
+    for (const kind of ['tag', 'model']) {
+      localStorage.setItem(KEY, JSON.stringify(kind));
+      AUTODJ._internals.rehydrate();
+      assert.equal(AUTODJ.state.djGenreSource, kind);
+    }
+  });
+
+  test('anything else reads null: the route refuses any other value', () => {
+    for (const junk of ['both', 'Tag', 'tags', 42, {}, [], true]) {
+      localStorage.setItem(KEY, JSON.stringify(junk));
+      AUTODJ._internals.rehydrate();
+      assert.equal(AUTODJ.state.djGenreSource, null, JSON.stringify(junk));
+    }
+    localStorage.setItem(KEY, '{not json');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djGenreSource, null, 'unparseable');
+  });
+
+  test('setState writes it; null removes the key', () => {
+    AUTODJ.setState({ djGenreSource: 'model' });
+    assert.equal(localStorage.getItem(KEY), '"model"');
+    AUTODJ._internals.rehydrate();
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+    AUTODJ.setState({ djGenreSource: null });
+    assert.equal(localStorage.getItem(KEY), null);
+    assert.equal(AUTODJ.state.djGenreSource, null);
+  });
+
+  test('a preference: reset() keeps it', () => {
+    AUTODJ.setState({ djGenreSource: 'tag' });
+    AUTODJ.reset();
+    assert.equal(AUTODJ.state.djGenreSource, 'tag');
+  });
+});
+
+describe('genre filter: on exactly while genres are chosen', () => {
+  test('genreFilterOn: the flag and a list, neither alone', () => {
+    assert.equal(AUTODJ.genreFilterOn(), false, 'fresh');
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: ['Jazz'] });
+    assert.equal(AUTODJ.genreFilterOn(), true);
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: [] });
+    assert.equal(AUTODJ.genreFilterOn(), false, "an older client's on, nothing chosen");
+    AUTODJ.setState({ djGenreEnabled: false, djGenres: ['Jazz'] });
+    assert.equal(AUTODJ.genreFilterOn(), false, "an older client's off, with a list");
+  });
+
+  test('genreFilterOn reads a given state object', () => {
+    assert.equal(AUTODJ.genreFilterOn({ djGenreEnabled: true, djGenres: ['Rock'] }), true);
+    assert.equal(AUTODJ.genreFilterOn({ djGenreEnabled: 1, djGenres: ['Rock'] }), false, 'only an explicit true');
+    assert.equal(AUTODJ.genreFilterOn({ djGenreEnabled: true, djGenres: 'Rock' }), false, 'a list, not a string');
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: ['Rock'] });
+    assert.equal(AUTODJ.genreFilterOn({ djGenreEnabled: false, djGenres: ['Rock'] }), false, 'the given state, not the live one');
+  });
+
+  test('genreValue: null while off', () => {
+    assert.equal(AUTODJ.genreValue(), null);
+    AUTODJ.setState({ djGenreEnabled: false, djGenres: ['Jazz'] });
+    assert.equal(AUTODJ.genreValue(), null);
+  });
+
+  test('genreValue: the chosen genres sorted by their lowercase code units, not by locale', () => {
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: ['b', 'A', 'a2'] });
+    assert.deepEqual(AUTODJ.genreValue(), { names: ['A', 'a2', 'b'], skip: false });
+    AUTODJ.setState({ djGenres: ['Été', 'Zydeco'] });
+    assert.deepEqual(AUTODJ.genreValue().names, ['Zydeco', 'Été'], "'z' (U+007A) before 'é' (U+00E9)");
+    assert.deepEqual(AUTODJ.state.djGenres, ['Été', 'Zydeco'], 'the stored order is left alone');
+  });
+
+  test('genreValue: skip under blacklist, and a copy', () => {
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: ['Rock'], djGenreMode: 'blacklist' });
+    const v = AUTODJ.genreValue();
+    assert.deepEqual(v, { names: ['Rock'], skip: true });
+    v.names.push('Jazz');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Rock'], 'mutating the value leaves state');
+    assert.deepEqual(AUTODJ.genreValue({ djGenreEnabled: true, djGenres: ['x'], djGenreMode: 'whitelist' }),
+      { names: ['x'], skip: false }, 'a given state');
+  });
+
+  test('compareGenreNames: case-insensitive, by code units', () => {
+    assert.equal(AUTODJ.compareGenreNames('a', 'B'), -1);
+    assert.equal(AUTODJ.compareGenreNames('B', 'a'), 1);
+    assert.equal(AUTODJ.compareGenreNames('Rock', 'rock'), 0);
+    assert.equal(AUTODJ.compareGenreNames('Zydeco', 'Été'), -1);
+  });
+});
+
+describe('genre filter: genreDraft', () => {
+  test('a filter that is off opens with nothing chosen, its stored list left as stored', () => {
+    AUTODJ.setState({ djGenreEnabled: false, djGenres: ['Jazz', 'Funk'], djGenreMode: 'blacklist', djGenreSource: 'tag' });
+    assert.deepEqual(AUTODJ.genreDraft(), { mode: 'blacklist', genres: [], source: 'tag' });
+    assert.deepEqual(AUTODJ.state.djGenres, ['Jazz', 'Funk']);
+    assert.equal(localStorage.getItem('mstream-dj-djGenres'), '["Jazz","Funk"]');
+  });
+
+  test('a filter that is on opens on a copy of its genres, in their stored order', () => {
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: ['Jazz', 'Funk'], djGenreSource: 'model' });
+    const d = AUTODJ.genreDraft();
+    assert.deepEqual(d, { mode: 'whitelist', genres: ['Jazz', 'Funk'], source: 'model' });
+    d.genres.push('Rock');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Jazz', 'Funk'], 'mutating the draft leaves state');
+  });
+});
+
+describe('genre filter: setGenreFilter writes it whole', () => {
+  const ls = (k) => localStorage.getItem('mstream-dj-' + k);
+
+  test('mode, genres in tick order, on, and the kind: all four keys from one call, and what it stored', () => {
+    const out = AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Rock', 'Ambient'], source: 'model' });
+    assert.deepEqual(out, { mode: 'blacklist', genres: ['Rock', 'Ambient'], source: 'model' });
+    assert.equal(AUTODJ.state.djGenreMode, 'blacklist');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Rock', 'Ambient'], 'tick order, not sorted');
+    assert.equal(AUTODJ.state.djGenreEnabled, true);
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+    assert.equal(ls('djGenreMode'), '"blacklist"');
+    assert.equal(ls('djGenres'), '["Rock","Ambient"]');
+    assert.equal(ls('djGenreEnabled'), 'true');
+    assert.equal(ls('djGenreSource'), '"model"');
+    assert.equal(AUTODJ.genreFilterOn(), true);
+    out.genres.push('x');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Rock', 'Ambient'], 'a copy');
+  });
+
+  test('an empty list turns it off and replaces a stored one', () => {
+    AUTODJ.setState({ djGenreEnabled: false, djGenres: ['Jazz'] });
+    assert.deepEqual(AUTODJ.setGenreFilter({ mode: 'whitelist', genres: [], source: null }),
+      { mode: 'whitelist', genres: [], source: null });
+    assert.deepEqual(AUTODJ.state.djGenres, []);
+    assert.equal(AUTODJ.state.djGenreEnabled, false);
+    assert.equal(ls('djGenreEnabled'), 'false');
+    AUTODJ.setGenreFilter({ genres: ['Jazz'] });
+    assert.equal(AUTODJ.state.djGenreEnabled, true, 'a tick turns it on');
+    AUTODJ.setGenreFilter({ genres: [] });
+    assert.equal(AUTODJ.state.djGenreEnabled, false, 'letting the last one go turns it off');
+    assert.equal(AUTODJ.genreFilterOn(), false);
+  });
+
+  test("only what the server's Joi takes: strings of 1-200 characters, one per name whatever its case, at most 200", () => {
+    const long = 'x'.repeat(AUTODJ._internals.GENRE_NAME_MAX + 1);
+    const edge = 'y'.repeat(AUTODJ._internals.GENRE_NAME_MAX);
+    const out = AUTODJ.setGenreFilter({ genres: ['Hip Hop', null, 42, '', long, edge, 'hip hop', 'HIP HOP', { name: 'Rock' }, 'Rock'] });
+    assert.deepEqual(out.genres, ['Hip Hop', edge, 'Rock'], 'the first of each name kept');
+    assert.deepEqual(AUTODJ.state.djGenres, ['Hip Hop', edge, 'Rock']);
+    assert.equal(AUTODJ.GENRES_MAX, 200);
+    const many = Array.from({ length: 205 }, (_, i) => `g${i}`);
+    assert.equal(AUTODJ.setGenreFilter({ genres: many }).genres.length, AUTODJ.GENRES_MAX);
+    assert.deepEqual(AUTODJ.state.djGenres, many.slice(0, 200));
+    assert.deepEqual(AUTODJ.setGenreFilter({ genres: ['', ...many.slice(0, 199), 'G0', 'last', 'more'] }).genres,
+      [...many.slice(0, 199), 'last'], 'only the names kept count toward the cap');
+    assert.deepEqual(AUTODJ.setGenreFilter({ genres: 'Rock' }).genres, [], 'not a list: none');
+  });
+
+  test('a junk mode keeps the stored one; a kind other than tag or model is Mixed', () => {
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Rock'] });
+    assert.equal(AUTODJ.setGenreFilter({ mode: 'blocklist', genres: ['Rock'] }).mode, 'blacklist');
+    assert.equal(AUTODJ.setGenreFilter({ genres: ['Rock'] }).mode, 'blacklist', 'no mode: the stored one');
+    assert.equal(AUTODJ.state.djGenreMode, 'blacklist');
+    for (const junk of ['both', 'Tag', undefined, null, 1, {}]) {
+      AUTODJ.setState({ djGenreSource: 'tag' });
+      assert.equal(AUTODJ.setGenreFilter({ genres: ['Rock'], source: junk }).source, null, String(junk));
+      assert.equal(AUTODJ.state.djGenreSource, null);
+      assert.equal(ls('djGenreSource'), null, 'Mixed is no key');
+    }
+    assert.equal(AUTODJ.setGenreFilter({ genres: ['Rock'], source: 'tag' }).source, 'tag');
+  });
+});
+
+describe('genre kinds: noteGenreSources (a genres answer\'s sources)', () => {
+  test('both kinds there: true, and a stored kind is kept', () => {
+    AUTODJ.setState({ djGenreSource: 'model' });
+    assert.equal(AUTODJ.noteGenreSources({ tag: 2, model: 3 }), true);
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+    assert.equal(AUTODJ.noteGenreSources({ tag: '2', model: '3' }), true, 'numeric strings count');
+    assert.equal(AUTODJ.state.djGenreSource, 'model');
+  });
+
+  test('without both kinds: false, and a stored Generated or Tags goes back to Mixed', () => {
+    for (const sources of [{ tag: 2, model: 0 }, { tag: 0, model: 3 }, { tag: 0, model: 0 }, {}, null, undefined, 'x', { tag: 'a', model: 'b' }]) {
+      AUTODJ.setState({ djGenreSource: 'model' });
+      assert.equal(AUTODJ.noteGenreSources(sources), false, JSON.stringify(sources));
+      assert.equal(AUTODJ.state.djGenreSource, null, JSON.stringify(sources));
+      assert.equal(localStorage.getItem('mstream-dj-djGenreSource'), null, 'the key is gone');
+    }
+  });
+
+  test('Mixed stays Mixed: nothing is written', () => {
+    const writes = [];
+    const { setItem, removeItem } = localStorage;
+    localStorage.setItem = (k, v) => { writes.push(k); setItem(k, v); };
+    localStorage.removeItem = (k) => { writes.push(k); removeItem(k); };
+    try {
+      assert.equal(AUTODJ.noteGenreSources({ tag: 1, model: 0 }), false);
+      assert.equal(AUTODJ.noteGenreSources({ tag: 1, model: 1 }), true);
+    } finally {
+      localStorage.setItem = setItem;
+      localStorage.removeItem = removeItem;
+    }
+    assert.deepEqual(writes, []);
+    assert.equal(AUTODJ.state.djGenreSource, null);
+  });
+});
+
+describe('server version gate: takesGenreSource, genreSourceFor', () => {
+  const v = (version) => ({ version });
+
+  test('an upstream 6.32.2 or later takes genreSource', () => {
+    for (const version of ['6.32.2', '6.33.1', '7.0.0', 'v6.32.2', ' 6.32.2 ', '6.100.0', '6.33', '10.0.0']) {
+      assert.equal(AUTODJ.takesGenreSource(v(version)), true, version);
+    }
+    assert.deepEqual(AUTODJ._internals.GENRE_SOURCE_SINCE, [6, 32, 2]);
+  });
+
+  test("older, unknown, or a fork's or pre-release's numbering does not", () => {
+    for (const version of ['6.32.1', '6.32', '6.9.10', '5.99.99', '6.33.1-velvet', '6.34.0-rc1', '6.33.1 beta', '', 'six', '6', undefined, null, 6.33, {}, []]) {
+      assert.equal(AUTODJ.takesGenreSource(v(version)), false, String(version));
+    }
+    for (const server of [null, undefined, '6.33.1', {}]) {
+      assert.equal(AUTODJ.takesGenreSource(server), false, String(server));
+    }
+  });
+
+  test('genreSourceFor: the stored kind, while the filter is on and narrowed, to a server that takes it', () => {
+    AUTODJ.setGenreFilter({ mode: 'whitelist', genres: ['Jazz'], source: 'model' });
+    assert.equal(AUTODJ.genreSourceFor(v('6.33.1')), 'model');
+    AUTODJ.setGenreFilter({ mode: 'blacklist', genres: ['Jazz'], source: 'tag' });
+    assert.equal(AUTODJ.genreSourceFor(v('6.32.2')), 'tag');
+    for (const server of [v('6.32.1'), v(undefined), v('6.33.1-velvet'), null, undefined]) {
+      assert.equal(AUTODJ.genreSourceFor(server), null, JSON.stringify(server));
+    }
+  });
+
+  test('genreSourceFor: null under Mixed, while off, or for a junk stored kind', () => {
+    const now = v('6.33.1');
+    AUTODJ.setGenreFilter({ genres: ['Jazz'], source: null });
+    assert.equal(AUTODJ.genreSourceFor(now), null, 'Mixed');
+    AUTODJ.setState({ djGenreSource: 'model', djGenreEnabled: false, djGenres: ['Jazz'] });
+    assert.equal(AUTODJ.genreSourceFor(now), null, 'off, with a list');
+    AUTODJ.setState({ djGenreEnabled: true, djGenres: [] });
+    assert.equal(AUTODJ.genreSourceFor(now), null, 'on, nothing chosen');
+    AUTODJ.setState({ djGenres: ['Jazz'], djGenreSource: 'both' });
+    assert.equal(AUTODJ.genreSourceFor(now), null, 'a junk stored kind');
+    AUTODJ.setState({ djGenreSource: 'tag' });
+    assert.equal(AUTODJ.genreSourceFor(now), 'tag');
+  });
+});
+
 describe('mood filter', () => {
   test('cleanMoods keeps known values only, tags in the server order', () => {
     assert.deepEqual(
@@ -1635,6 +1896,55 @@ describe('genres-list cache', () => {
     AUTODJ.setCachedGenresList('Jazz');
     AUTODJ.setCachedGenresList({ genres: ['Jazz'] });
     assert.equal(AUTODJ.getCachedGenresList(), null);
+  });
+});
+
+describe("genres-list cache: the answer's kinds ride with the names", () => {
+  test('setCachedGenresList(items, sources) keeps the counts as numbers; getCachedGenreSources hands back a copy', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(['Jazz', 'Funk'], { tag: 2, model: '3', extra: 1 });
+    assert.deepEqual(AUTODJ.getCachedGenresList(), ['Jazz', 'Funk']);
+    const sources = AUTODJ.getCachedGenreSources();
+    assert.deepEqual(sources, { tag: 2, model: 3 });
+    sources.tag = 99;
+    assert.deepEqual(AUTODJ.getCachedGenreSources(), { tag: 2, model: 3 }, 'a copy');
+    AUTODJ.setCachedGenresList(['Jazz'], { tag: 'x' });
+    assert.deepEqual(AUTODJ.getCachedGenreSources(), { tag: 0, model: 0 });
+  });
+
+  test('without sources (one argument, null, junk) the kinds are null; the names still cache', () => {
+    for (const sources of [undefined, null, 'both', 3, ['tag']]) {
+      AUTODJ.invalidateGenresCache();
+      AUTODJ.setCachedGenresList(['Jazz'], sources);
+      assert.deepEqual(AUTODJ.getCachedGenresList(), ['Jazz']);
+      assert.equal(AUTODJ.getCachedGenreSources(), null, String(sources));
+    }
+    AUTODJ.setCachedGenresList(['Jazz'], { tag: 1, model: 1 });
+    AUTODJ.setCachedGenresList(['Funk']);
+    assert.equal(AUTODJ.getCachedGenreSources(), null, 'a later answer without them replaces them');
+  });
+
+  test('null before any set, past the TTL, and after invalidate', () => {
+    AUTODJ.invalidateGenresCache();
+    assert.equal(AUTODJ.getCachedGenreSources(), null);
+    AUTODJ.setCachedGenresList(['Jazz'], { tag: 1, model: 1 });
+    const realNow = Date.now;
+    Date.now = () => realNow() + AUTODJ._internals.GENRES_CACHE_TTL_MS + 1;
+    try {
+      assert.equal(AUTODJ.getCachedGenreSources(), null);
+    } finally {
+      Date.now = realNow;
+    }
+    assert.deepEqual(AUTODJ.getCachedGenreSources(), { tag: 1, model: 1 });
+    AUTODJ.invalidateGenresCache();
+    assert.equal(AUTODJ.getCachedGenreSources(), null);
+  });
+
+  test('a names list that is no array still caches nothing', () => {
+    AUTODJ.invalidateGenresCache();
+    AUTODJ.setCachedGenresList(null, { tag: 1, model: 1 });
+    assert.equal(AUTODJ.getCachedGenresList(), null);
+    assert.equal(AUTODJ.getCachedGenreSources(), null);
   });
 });
 

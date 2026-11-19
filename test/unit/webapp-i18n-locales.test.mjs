@@ -15,9 +15,12 @@
  *     are in no file, and no value names "Youtube DL"; every Add from
  *     YouTube key (ytdl.*, its sidenav, panel and button words) is in all
  *     twelve files, none empty; so is every Auto DJ key (autoDJ.*,
- *     moods.*, the pick banner's Cancel and the peer refusal), the
- *     redone panel's retired words are in no file, and the seeds'
- *     own words read exactly as the boards have them;
+ *     moods.*, the pick banner's Cancel and the peer refusal), and every
+ *     genre kind word (genres.source*: the Genres page's switch and the
+ *     Genres drawer's); the redone panel's retired words, the old inline
+ *     genre editor's among them, are in no file; the seeds' own words
+ *     read exactly as the boards have them, and the Genres drawer's as
+ *     the phone has them;
  *   - plural objects: each carries every form its own language's
  *     Intl.PluralRules picks for a whole number, plus `other`, and no form
  *     that language never picks (no `two` in Russian or Polish); a form
@@ -205,7 +208,7 @@ describe('the locale files', () => {
 
   test('Auto DJ is translated everywhere: every autoDJ.* and moods.* key en.json has, and the pick banner\'s Cancel and the peer refusal, is in all twelve files, not empty', () => {
     const adj = Object.keys(EN).filter((k) => k.startsWith('autoDJ.'));
-    assert.equal(adj.length, 75, 'en.json has the redone panel\'s words: 42 kept, 33 new');
+    assert.equal(adj.length, 76, 'en.json has the panel\'s and drawers\' words: 67 kept, 9 new (the Genres drawer)');
     const keys = Object.keys(EN).filter((k) => k.startsWith('autoDJ.') || k.startsWith('moods.')).concat(['sonicPath.cancelPick', 'sonicPath.federatedTrack']);
     keys.forEach((k) => assert.ok(hasOwn(EN, k), `en.json ${k}`));
     const blank = (v) => formsOf(v).some((s) => typeof s !== 'string' || !s.trim());
@@ -215,15 +218,29 @@ describe('the locale files', () => {
     });
   });
 
-  test('the redone Auto DJ panel took its old words with it: the hero, status, hints, anchor, seed song and old labels are in no file', () => {
+  test('the genre kind words (the Genres page\'s switch and the Genres drawer\'s) are in all twelve files, not empty', () => {
+    const keys = ['genres.sourceLabel', 'genres.sourceTags', 'genres.sourceGenerated', 'genres.sourceBoth'];
+    keys.forEach((k) => assert.ok(hasOwn(EN, k), `en.json ${k}`));
+    const blank = (v) => formsOf(v).some((s) => typeof s !== 'string' || !s.trim());
+    LANGS.forEach((l) => {
+      assert.deepEqual(keys.filter((k) => !hasOwn(DICTS[l], k)), [], `${l}.json lacks these genre kind keys`);
+      assert.deepEqual(keys.filter((k) => blank(DICTS[l][k])), [], `${l}.json has these genre kind keys empty`);
+    });
+  });
+
+  test('the redone Auto DJ panel took its old words with it: the hero, status, hints, anchor, seed song, old labels and the inline genre editor are in no file', () => {
     const retired = ['heroDescription', 'statusOn', 'statusOff', 'sectionContinuity', 'sectionSonic', 'sourcesHint', 'limitLabel', 'limitHint',
       'minRating', 'similarHint', 'similarHintNoKey', 'bpmContinuityLabel', 'bpmContinuityHint', 'harmonicMixingHint', 'keywordFilterLabel',
       'keywordFilterHint', 'genreFilterLabel', 'genreFilterHint', 'genreHintEmpty', 'genreHintAuth', 'genreHintError', 'moodFilterLabel',
       'durationFilterLabel', 'durationFilterHint', 'durationUnknownHint', 'sonicHint', 'sonicHintNoDiscovery', 'sonicSimValue',
       'sonicSimAdventurous', 'sonicSimBalanced', 'sonicSimFocused', 'sonicSimLockedIn', 'sonicAnchorLabel', 'sonicAnchorRolling',
       'sonicAnchorLocked', 'sonicAnchorRollingHint', 'sonicAnchorLockedHint', 'sonicSeedLabel', 'sonicSeedHint', 'sonicSeedNone',
-      'sonicSeedRemove', 'federatedHint', 'genreNoMatches', 'sonicSeedNeededTitle', 'sonicSeedNeeded'].map((k) => `autoDJ.${k}`);
-    assert.equal(new Set(retired).size, 45);
+      'sonicSeedRemove', 'federatedHint', 'genreNoMatches', 'sonicSeedNeededTitle', 'sonicSeedNeeded',
+      // the inline genre editor (Whitelist | Blacklist, its chips and its
+      // "Type to filter…" suggestions), gone for the Genres drawer
+      'genreModeWhitelist', 'genreModeBlacklist', 'genrePlaceholder', 'genreInputLabel', 'genreTagsLabel', 'genreTagRemove',
+      'genreMoreSuggestions', 'genreNoMatchesHint'].map((k) => `autoDJ.${k}`);
+    assert.equal(new Set(retired).size, 53);
     LANGS.forEach((l) => assert.deepEqual(retired.filter((k) => hasOwn(DICTS[l], k)), [], `${l}.json`));
   });
 
@@ -236,6 +253,18 @@ describe('the locale files', () => {
     assert.equal(EN['autoDJ.seedPickBannerLess'], 'Picking a song for Less like — click any song in your library.');
     assert.equal(EN['autoDJ.seedPin'], 'Pin {{title}}');
     assert.equal(EN['autoDJ.seedMore'], 'More for {{title}}');
+  });
+
+  test('the Genres drawer\'s words, exactly (the phone\'s)', () => {
+    assert.equal(EN['autoDJ.genresAny'], 'Any');
+    assert.equal(EN['autoDJ.genresSkipValue'], 'Skip {{genres}}');
+    assert.equal(EN['autoDJ.genresMax'], '{{count}} max');
+    assert.equal(EN['autoDJ.genresOnly'], 'Only');
+    assert.equal(EN['autoDJ.genresSkip'], 'Skip');
+    assert.equal(EN['autoDJ.genresMixed'], 'Mixed');
+    assert.equal(EN['autoDJ.genresNone'], 'No genres');
+    assert.equal(EN['autoDJ.genresNoMatches'], 'No matches');
+    assert.equal(EN['autoDJ.genresLoadError'], 'Could not load genres');
   });
 
   test('every translation uses en\'s {{placeholders}}, form by form', () => {

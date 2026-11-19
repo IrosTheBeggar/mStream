@@ -437,9 +437,10 @@ const MSTREAMPLAYER = (() => {
     }
 
     // Genre filter — server-applied via the EXISTS / NOT EXISTS
-    // subquery the buildGenreFilter helper emits. Only sent when the
-    // toggle is on AND the user has selected at least one genre;
-    // empty list is a no-op server-side, but skipping the field
+    // subquery the buildGenreFilter helper emits. Only sent while the
+    // filter is on: the Genres drawer writes the flag with the list, so
+    // that is exactly while genres are chosen (AUTODJ.genreFilterOn);
+    // an empty list is a no-op server-side, but skipping the field
     // entirely keeps the payload tidy.
     if (autodjLoaded
         && AUTODJ.state.djGenreEnabled
@@ -447,6 +448,11 @@ const MSTREAMPLAYER = (() => {
         && AUTODJ.state.djGenres.length > 0) {
       body.genres = [...AUTODJ.state.djGenres];
       body.genreMode = AUTODJ.state.djGenreMode;
+      // Which genre links the list matches (Generated 'model' | Tags 'tag'):
+      // only while it is narrowed to one kind and this server is known to
+      // take the key (6.32.2+, /api/'s version). Absent, every kind (Mixed).
+      const kind = AUTODJ.genreSourceFor(MSTREAMAPI.currentServer);
+      if (kind) { body.genreSource = kind; }
     }
 
     // Track-length window — server-applied as an always-on base
@@ -582,8 +588,13 @@ const MSTREAMPLAYER = (() => {
   // velvet's design), so this is the only place it gets applied.
   // Genre + track-length are defence-in-depth against the server's pick:
   // the server already enforces both, this catches a rescan changing the
-  // row between the server's SELECT and our read.
-  function _autoDjSongBlocked(metadata, refBpm, refNeighbours) {
+  // row between the server's SELECT and our read. [kindSent]: the answer
+  // was asked under one genre kind (`genreSource`). A song's
+  // metadata.genres holds its links of both kinds, so such an answer is
+  // not checked on genres again: under Skip it would drop a song the
+  // server rightly kept (skipping the model's Rock keeps a song tagged
+  // Rock).
+  function _autoDjSongBlocked(metadata, refBpm, refNeighbours, kindSent) {
     if (typeof AUTODJ === 'undefined' || !AUTODJ.songBlocked) { return false; }
     return AUTODJ.songBlocked(metadata, {
       bpmContinuity: AUTODJ.state.bpmContinuity,
@@ -593,7 +604,7 @@ const MSTREAMPLAYER = (() => {
       refNeighbours,
       filterEnabled: AUTODJ.state.djFilterEnabled,
       filterWords: AUTODJ.state.djFilterWords,
-      genreEnabled: AUTODJ.state.djGenreEnabled,
+      genreEnabled: AUTODJ.state.djGenreEnabled && !kindSent,
       genreMode: AUTODJ.state.djGenreMode,
       genres: AUTODJ.state.djGenres,
       durationEnabled: AUTODJ.state.djDurationEnabled,
@@ -622,10 +633,11 @@ const MSTREAMPLAYER = (() => {
   // unchanged: switching this on can never leave the queue empty where it
   // would otherwise have filled.
   //
-  // Peers and their model id are learned through the browse proxy (GET
-  // federation/health is allowlisted) and cached for a few minutes; a peer
-  // that still answers a model-space 400 is dropped for the session.
-  let _fedPeersCache = null; // { at, peers: [{ id, name, modelId|null }] }
+  // Peers, their model id and their version are learned through the browse
+  // proxy (GET federation/health is allowlisted) and cached for a few
+  // minutes; a peer that still answers a model-space 400 is dropped for the
+  // session.
+  let _fedPeersCache = null; // { at, peers: [{ id, name, modelId|null, version|null }] }
   const FED_PEERS_TTL_MS = 5 * 60 * 1000;
 
   async function _federatedPeers() {
@@ -641,10 +653,13 @@ const MSTREAMPLAYER = (() => {
         try {
           const health = await MSTREAMAPI.peer.health(p.id);
           const modelId = health && health.discovery && health.discovery.modelId;
-          return { id: p.id, name: p.name, modelId: modelId || null };
+          // Its version (health's `server`) says whether it takes
+          // random-songs' `genreSource` (AUTODJ.takesGenreSource).
+          const version = health && typeof health.server === 'string' ? health.server : null;
+          return { id: p.id, name: p.name, modelId: modelId || null, version };
         } catch (_e) {
           // Unreachable, or too old to answer: sits this session out.
-          return { id: p.id, name: p.name, modelId: null };
+          return { id: p.id, name: p.name, modelId: null, version: null };
         }
       }));
     _fedPeersCache = { at: Date.now(), peers };
@@ -686,6 +701,13 @@ const MSTREAMPLAYER = (() => {
     // Continuity, filters and our ignoreList; the local `similarTo` is
     // optional here (every anchor may live on a peer).
     const { body, refBpm, refNeighbours } = await _buildAutoDjBody({ ignoreList: AUTODJ.getIgnoreList(), sonicOptional: true });
+    // Each peer's genre kind, read with the body (nothing the user does
+    // runs between its genre block and here): so its ask, and whether its
+    // answer is re-checked on genres, follow the filter the round went out
+    // with, as the local ask's do — a Genres change made while the round is
+    // out never marks an answer asked without a kind as asked under one,
+    // and a kind never rides without genres.
+    const peerKinds = new Map(peers.map((p) => [String(p.id), body.genres ? AUTODJ.genreSourceFor(p) : null]));
 
     // The anchors' vectors, each from its own server. The session's model
     // space is whatever answers first (the local server, when it holds an
@@ -730,7 +752,10 @@ const MSTREAMPLAYER = (() => {
     // server: the filepath seed (the vector replaces it), ignoreVPaths (OUR
     // library names), minRating (OUR user's stars) and lessLike (paths of
     // OUR songs, which the local ask alone carries back); each peer gets
-    // its own ignoreList. Every server is asked at once — a session that
+    // its own ignoreList. `genres` and `genreMode` go to every server, the
+    // genre kind (`genreSource`) only to each one known to take it: the
+    // local ask when the body has it (this server's version), a peer by its
+    // own version. Every server is asked at once — a session that
     // waited for each in turn would stall the queue on the slowest one.
     //
     // A server answers with random rows from its pool, so when every
@@ -745,8 +770,11 @@ const MSTREAMPLAYER = (() => {
     // for the whole batch (`limit` rides along in `shared`) and the best
     // `want` cosines overall are queued, so one server with the closest
     // matches can supply the entire batch.
-    const { similarTo, ignoreVPaths, minRating, ignoreList, lessLike, ...shared } = body;
-    const localOnly = lessLike ? { lessLike } : {};
+    const { similarTo, ignoreVPaths, minRating, ignoreList, lessLike, genreSource, ...shared } = body;
+    const localOnly = { ...(lessLike ? { lessLike } : {}), ...(genreSource ? { genreSource } : {}) };
+    // A peer gets the genre kind only when its own version takes the key
+    // (federation health's `server`): an older one would refuse the whole ask.
+    const peerKind = (p) => peerKinds.get(String(p.id)) || null;
     const eligible = peers.filter(p => p.modelId === modelId);
     const retryLists = new Map([['local', ignoreList]]);
     for (const p of eligible) { retryLists.set(String(p.id), AUTODJ.getPeerIgnoreList(p.id)); }
@@ -761,7 +789,7 @@ const MSTREAMPLAYER = (() => {
         MSTREAMAPI.getRandomSong({ ...shared, ignoreVPaths, minRating, ignoreList: retryLists.get('local'), ...localOnly, ...vectorSeed }, { signal })
           .then(res => ({ peer: null, res }), err => ({ peer: null, err })),
         ...eligible.filter(p => !AUTODJ.isPeerExcluded(p.id)).map(p =>
-          _askPeerRandomSongs(p, { ...shared, ignoreList: retryLists.get(String(p.id)), ...vectorSeed })
+          _askPeerRandomSongs(p, { ...shared, ignoreList: retryLists.get(String(p.id)), ...(peerKind(p) ? { genreSource: peerKind(p) } : {}), ...vectorSeed })
             .then(res => ({ peer: p, res }), err => ({ peer: p, err }))),
       ];
       const answers = await Promise.all(asks);
@@ -800,7 +828,8 @@ const MSTREAMPLAYER = (() => {
             song,
             res: a.res,
             similarity: sim,
-            blocked: _autoDjSongBlocked(song.metadata, refBpm, refNeighbours),
+            // Not re-checked on genres when asked under a kind.
+            blocked: _autoDjSongBlocked(song.metadata, refBpm, refNeighbours, a.peer ? !!peerKind(a.peer) : !!genreSource),
             avoided: avoided[i] === true,
           });
         });
@@ -993,10 +1022,11 @@ const MSTREAMPLAYER = (() => {
       // in degraded fallback cases (step 5, step 10) a candidate
       // can still be off-target. Retry-on-blocked closes the gap.
       // Songs with NULL bpm/key pass through (server already
-      // exhausted the tagged options). A batch keeps whatever part
+      // exhausted the tagged options). An answer asked under a genre
+      // kind is not re-checked on genres. A batch keeps whatever part
       // of it passes, never the quick-skipped blend; only an answer
       // blocked in full is retried.
-      const accepted = songs.filter((s) => !_autoDjSongBlocked(s.metadata, refBpm, refNeighbours)
+      const accepted = songs.filter((s) => !_autoDjSongBlocked(s.metadata, refBpm, refNeighbours, !!body.genreSource)
         && !_isSkippedBlend(s, skippedBlend));
       if (accepted.length > 0) { picked = accepted; break; }
     }
