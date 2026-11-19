@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "Kein Platz",
   "peerRecs.noPeers": "Noch keine Peers",
   "peerRecs.nothingNew": "Nichts Neues",
+  "peerRecs.settingUp": "Die Verbindung zum P2P-Netzwerk wird eingerichtet. Es kann einige Minuten dauern, bis Empfehlungen eintreffen.",
   "peerRecs.preview": "Hörprobe",
   "peerRecs.previewAll": "Alle anhören",
   "peerRecs.copyList": "Liste kopieren",

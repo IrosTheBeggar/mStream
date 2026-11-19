@@ -710,6 +710,7 @@
   "peerRecs.noRoom": "Нет места",
   "peerRecs.noPeers": "Пиров пока нет",
   "peerRecs.nothingNew": "Ничего нового",
+  "peerRecs.settingUp": "Настраивается подключение к сети P2P. Получение рекомендаций может занять несколько минут.",
   "peerRecs.preview": "Фрагмент",
   "peerRecs.previewAll": "Прослушать все",
   "peerRecs.copyList": "Копировать список",

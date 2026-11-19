@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "Spazio esaurito",
   "peerRecs.noPeers": "Ancora nessun peer",
   "peerRecs.nothingNew": "Niente di nuovo",
+  "peerRecs.settingUp": "Configurazione della connessione alla rete P2P. L’arrivo dei consigli può richiedere alcuni minuti.",
   "peerRecs.preview": "Anteprima",
   "peerRecs.previewAll": "Ascolta tutti",
   "peerRecs.copyList": "Copia elenco",

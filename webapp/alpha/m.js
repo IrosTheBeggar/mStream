@@ -5825,6 +5825,11 @@ const peerRecsView = {
                       // 'failed' | 'unavailable' | 'form', name, description (the
                       // fields as typed), from (as the server had them), busy,
                       // error (the server's words), acts (Turn on, as last written) }
+  settingUp: false,   // this page turned the network on in this load: until leads
+                      // come, an endless bar and one line stand in for loading,
+                      // "No peers yet" and "Nothing new" (peerRecsSetupHtml), and a
+                      // shelf that grows asks again. A reload, or the network going
+                      // off, drops it.
 };
 
 const PREC_ICONS = { network: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5.5" r="2.2"/><circle cx="5.5" cy="17.5" r="2.2"/><circle cx="18.5" cy="17.5" r="2.2"/><path d="M10.9 7.4 6.6 15.6M13.1 7.4l4.3 8.2M7.7 17.5h8.6"/></svg>', plus: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>', alert: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 6v8"/><circle cx="12" cy="18" r="1.1" fill="currentColor"/></svg>', play: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', pause: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>', next: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6l9 6-9 6zM16.5 6H19v12h-2.5z"/></svg>', close: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
@@ -6028,12 +6033,15 @@ function peerRecsTakePeers(answer, n) {
   const p = peerRecsView;
   const land = PEERRECS.landed(p.peers, answer, p.posted, peerRecsNoPeers());
   const emptied = PEERRECS.emptied(p.peers, answer);
+  // setting up (no leads yet): every snapshot that lands may bring the first
+  const more = p.settingUp && p.peers !== null && peerRecsSearchable(answer) > peerRecsSearchable(p.peers);
   for (const id of land.ids.concat(land.failed)) { p.posted.delete(id); }
   p.peers = answer;
   const strip = peerRecsStrip(n);
   p.local = strip.local;
+  const reask = land.reask || emptied || more;
   // the shelf moved under the batch: no tab's answer stands
-  if (land.reask || emptied) { p.answers = new Map(); }
+  if (reask) { p.answers = new Map(); }
   if (strip.fallback) { p.selected = null; }
   peerRecsPatchStrip();
   if (strip.fallback) {
@@ -6044,9 +6052,15 @@ function peerRecsTakePeers(answer, n) {
     } else {
       redoDiscovery({ batch: true });
     }
-  } else if (land.reask || emptied) {
+  } else if (reask) {
     peerRecsReask();
   }
+}
+
+// A peers answer's searchable snapshots (0 for none, or no answer).
+function peerRecsSearchable(answer) {
+  const n = answer && answer.shelf ? Number(answer.shelf.searchable) : 0;
+  return Number.isFinite(n) ? n : 0;
 }
 
 // R4's re-ask: the tab on the batch — once the clip is over (the list
@@ -6176,6 +6190,8 @@ async function peerRecsOff(source) {
     }
     return;
   }
+  // off: no network is setting up any more
+  p.settingUp = false;
   if (entry === 'turnOn') {
     if (peerRecsOnScreen()) { discoveryPanel({ page: 'peerRecs' }); }
     return;
@@ -6339,6 +6355,8 @@ async function peerRecsTurnOnSubmit() {
     discoveryRefocus('[data-dp="precTurnOn"]');
     return;
   }
+  // on: peers are found and their snapshots fetched over the next minutes
+  p.settingUp = true;
   const warn = (key) => iziToast.warning({ title: escapeHtml(t(key)), position: 'topCenter', timeout: 6000 });
   if (name !== o.from.name.trim()) {
     await MSTREAMAPI.discoveryP2pSetName(name).catch(() => warn('peerRecs.turnOn.nameNotSaved'));
@@ -6540,8 +6558,16 @@ function peerRecsArt(tileKey) {
   return peerRecsHttps(url) ? url : null;
 }
 
+// While the network sets up after this page turned it on (settingUp): an
+// endless bar and one line, named for the screen reader by that line.
+function peerRecsSetupHtml() {
+  return '<div class="prec-setup"><div class="prec-setup-bar" role="progressbar" aria-labelledby="prec-setup-text"><i></i></div>'
+    + `<p class="prec-setup-text" id="prec-setup-text">${escapeHtml(t('peerRecs.settingUp'))}</p></div>`;
+}
+
 // The page under the bar (renderDiscovery): the strip, then the state —
-// Discover's scan-pending card, "Try again", "No peers yet", "Nothing new"
+// Discover's scan-pending card, "Try again", the setup bar (settingUp, in
+// place of loading and of the two below), "No peers yet", "Nothing new"
 // with New seeds — or the acts line and the leads. Loading: two columns of
 // skeleton rows; an ask with an answer on screen dims it (.dpage-busy).
 function peerRecsBodyHtml(res, st) {
@@ -6556,6 +6582,7 @@ function peerRecsBodyHtml(res, st) {
   if (st.state === 'failed' || s.status === 'failed') {
     return html + `<div class="prec-retry"><button type="button" class="dpage-btn" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
   }
+  if (p.settingUp && (s.status === 'loading' || s.status === 'empty')) { return html + peerRecsSetupHtml(); }
   if (s.status === 'loading') {
     return html + `<div class="dpage-songs dpage-songs-solo prec-songs" aria-busy="true"><div class="dpage-rows dpage-flow" style="--dpage-per:8">${discoverySkelHtml('rows', 16)}</div></div>`;
   }
@@ -6566,6 +6593,8 @@ function peerRecsBodyHtml(res, st) {
   }
   if (s.status !== 'ready') { return html; }
   const rows = D.networkRows(res).rows;
+  // the first leads: the network is set up
+  if (rows.length > 0) { p.settingUp = false; }
   discoveryView.shown.network = rows;
   p.cells = rows.map((r, i) => peerRecsPlayHtml(r, i));
   p.acts = peerRecsActsHtml();

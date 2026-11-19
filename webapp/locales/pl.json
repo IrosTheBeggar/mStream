@@ -710,6 +710,7 @@
   "peerRecs.noRoom": "Brak miejsca",
   "peerRecs.noPeers": "Brak peerów",
   "peerRecs.nothingNew": "Nic nowego",
+  "peerRecs.settingUp": "Konfigurowanie połączenia z siecią P2P. Pobieranie poleceń może potrwać kilka minut.",
   "peerRecs.preview": "Fragment",
   "peerRecs.previewAll": "Odsłuchaj wszystkie",
   "peerRecs.copyList": "Kopiuj listę",

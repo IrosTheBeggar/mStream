@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "Sem espaço",
   "peerRecs.noPeers": "Ainda sem pares",
   "peerRecs.nothingNew": "Nada de novo",
+  "peerRecs.settingUp": "Configurando a conexão com a rede P2P. Obter recomendações pode levar vários minutos.",
   "peerRecs.preview": "Prévia",
   "peerRecs.previewAll": "Ouvir todas",
   "peerRecs.copyList": "Copiar lista",

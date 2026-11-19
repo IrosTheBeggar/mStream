@@ -4450,6 +4450,117 @@ describe('W7: switched off (R7) with the page up', () => {
   });
 });
 
+describe('W7: while the network sets up after Turn on', () => {
+  const SETUP = '<div class="prec-setup"><div class="prec-setup-bar" role="progressbar" aria-labelledby="prec-setup-text"><i></i></div>'
+    + '<p class="prec-setup-text" id="prec-setup-text">peerRecs.settingUp</p></div>';
+  const emptyShelf = prAnswer([], { network: { results: [], searched: { peers: 0, tracks: 0 }, reason: 'empty-shelf' } });
+  const nothingNew = prAnswer([]);
+  // Turn on from the form, the network finding nothing yet.
+  const turnOn = async (box) => {
+    await openPage(box);
+    box.click({ 'data-dp': 'precTurnOn' });
+    await settle();
+  };
+
+  test('Turn on: the endless bar and its line under the strip, in place of "No peers yet" and of "Nothing new"', async () => {
+    for (const [label, taste, shelf] of [['empty shelf', emptyShelf, []], ['nothing new', nothingNew, PR_SHELF]]) {
+      const box = onBox({ taste: () => taste, peers: () => peersOf({ shelf }) });
+      await turnOn(box);
+      const html = box.S.html();
+      assert.ok(html.includes('data-prec-strip'), `${label}: the strip stays`);
+      assert.ok(html.includes(SETUP), `${label}: ${html}`);
+      for (const gone of ['peerRecs.noPeers', 'peerRecs.nothingNew', 'data-dp="refresh"']) { assert.ok(!html.includes(gone), `${label}: ${gone}`); }
+      assert.equal(box.S.prec.settingUp, true);
+    }
+  });
+
+  test('its first ask still out: the bar, not the skeleton rows', async () => {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let n = 0;
+    const box = onBox({ taste: () => (++n === 1 ? gate.then(() => emptyShelf) : emptyShelf), peers: () => peersOf({ shelf: [] }) });
+    await turnOn(box);
+    const html = box.S.html();
+    assert.ok(html.includes(SETUP), html);
+    assert.ok(!html.includes('dpage-skel-row'));
+    release();
+    await settle();
+    assert.ok(box.S.html().includes(SETUP));
+  });
+
+  test('every snapshot that lands asks again; the first leads end it, and an empty shelf after that says "No peers yet"', async () => {
+    let shelf = [];
+    let taste = emptyShelf;
+    const box = onBox({ taste: () => taste, peers: () => peersOf({ shelf }) });
+    await turnOn(box);
+    const asks = () => tasteCalls(box.calls).length;
+    const n = asks();
+
+    // one peer lands, with nothing new for this library: asked again, the bar stays
+    shelf = [prHeld(KITCHEN, 'Kitchen Radio')];
+    taste = nothingNew;
+    box.runTimers();
+    await settle();
+    assert.equal(asks(), n + 1);
+    assert.ok(box.S.html().includes(SETUP));
+
+    // a second lands: asked again (more than 0 → 1), and its leads end it
+    shelf = PR_SHELF;
+    taste = prAnswer();
+    box.runTimers();
+    await settle();
+    assert.equal(asks(), n + 2, 'setting up, any snapshot that lands may bring the first leads');
+    assert.equal(drawnRows(box.S.html()).length, 5);
+    assert.ok(!box.S.html().includes('prec-setup'));
+    assert.equal(box.S.prec.settingUp, false);
+
+    // the leads came once: the page as it always is
+    shelf = [];
+    taste = emptyShelf;
+    box.runTimers();
+    await settle();
+    assert.ok(box.S.html().includes('<div class="dpage-hint">peerRecs.noPeers</div>'));
+    assert.ok(!box.S.html().includes('prec-setup'));
+  });
+
+  test('a reload, or a network already on when the page opened: no bar — "No peers yet" as before, and a filling shelf moves only the strip', async () => {
+    const reload = prBox({ taste: () => nothingNew, peers: () => peersOf({ shelf: [prHeld(KITCHEN, 'Kitchen Radio')] }) });
+    await openPage(reload);
+    assert.ok(!reload.S.html().includes('prec-setup'));
+    assert.ok(reload.S.html().includes('peerRecs.nothingNew'));
+    const already = onBox({ adminStatus: () => ON_STATUS({ enabled: true }), taste: () => emptyShelf, peers: () => peersOf({ shelf: [] }) });
+    await openPage(already);
+    await settle();
+    assert.ok(already.S.html().includes('<div class="dpage-hint">peerRecs.noPeers</div>'), 'turned on elsewhere: not this page\'s set-up');
+    assert.ok(!already.S.html().includes('prec-setup'));
+  });
+
+  test('"Try again" and the scan card still say what they say', async () => {
+    const failed = onBox({ taste: () => Promise.reject(new Error('boom')), peers: () => peersOf({ shelf: [] }) });
+    await turnOn(failed);
+    assert.ok(failed.S.html().includes('data-dp="retry"'));
+    assert.ok(!failed.S.html().includes('prec-setup'));
+    const scan = onBox({ taste: () => ({ ...emptyShelf, notAnalyzed: true }), peers: () => peersOf({ shelf: [] }) });
+    await turnOn(scan);
+    assert.ok(!scan.S.html().includes('prec-setup'), 'the scan card says why nothing comes');
+  });
+
+  test('the network switched off while it sets up: the form, and no bar after turning on elsewhere', async () => {
+    const refusal = Object.assign(new Error('off'), { status: 403 });
+    let off = false;
+    const ping = { ...ON_PING }; // what the server says when asked: on, then off
+    const box = onBox({ ping, taste: () => emptyShelf, peers: () => { if (off) { throw refusal; } return peersOf({ shelf: [] }); } });
+    await turnOn(box);
+    assert.equal(box.S.prec.settingUp, true);
+    off = true;
+    ping.discoveryP2p = false;
+    box.runTimers();
+    await settle();
+    assert.ok(turnOnBtn(box.S.html()), 'the form');
+    assert.equal(box.S.prec.settingUp, false);
+  });
+});
+
 describe('W7: wiring', () => {
   const css = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.css'), 'utf8').replace(/\r\n/g, '\n');
   const API_SRC = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'api.js'), 'utf8').replace(/\r\n/g, '\n');
@@ -4495,6 +4606,14 @@ describe('W7: wiring', () => {
     const own = Object.keys(en).filter((k) => k.startsWith('peerRecs.turnOn.')).sort();
     assert.deepEqual(drawn, own);
     assert.equal(own.length, 9);
+  });
+
+  test('the set-up line: en.json has it word for word and m.js draws it; spa.css: the endless bar, a calm pulse under reduced motion', () => {
+    assert.equal(en['peerRecs.settingUp'], 'Setting up the P2P network connection. Pulling in recommendations can take several minutes.');
+    assert.ok(SRC.includes("t('peerRecs.settingUp')"));
+    assert.match(css, /\.prec-setup \{ box-sizing: border-box; width: calc\(100% - 32px\); max-width: 440px; margin: 32px auto 0 auto; \}/, 'centred, fits 390 px');
+    assert.match(css, /\.prec-setup-bar i \{[^}]*animation: prec-indet 1\.4s ease-in-out infinite; \}/);
+    assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{\n {2}\.prec-setup-bar i \{ width: 100%; animation: prec-setup-calm 2\.4s ease-in-out infinite; \}\n\}/);
   });
 
   test('spa.css: one centred block that fits 390 px, the house fields, 44 px targets on touch', () => {

@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "Geen ruimte",
   "peerRecs.noPeers": "Nog geen peers",
   "peerRecs.nothingNew": "Niets nieuws",
+  "peerRecs.settingUp": "De verbinding met het P2P-netwerk wordt ingesteld. Het ophalen van aanbevelingen kan enkele minuten duren.",
   "peerRecs.preview": "Fragment",
   "peerRecs.previewAll": "Alles beluisteren",
   "peerRecs.copyList": "Lijst kopiëren",

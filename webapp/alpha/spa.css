@@ -4229,6 +4229,16 @@ a.prec-band-credit:hover { color: #dfe3ea; }
 .prec-on-input[type="text"]:focus { outline: none; border-color: #4fb8a8; box-shadow: none; }
 .prec-on-input:disabled { opacity: .6; }
 .prec-on-acts { margin-top: 16px; }
+/* the network setting up after the page turned it on: an endless bar and its line */
+.prec-setup { box-sizing: border-box; width: calc(100% - 32px); max-width: 440px; margin: 32px auto 0 auto; }
+.prec-setup-bar { height: 4px; background: #262b33; border-radius: 2px; overflow: hidden; }
+.prec-setup-bar i { display: block; width: 35%; height: 100%; background: #4fb8a8; border-radius: 2px; animation: prec-indet 1.4s ease-in-out infinite; }
+@keyframes prec-indet { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+.prec-setup-text { margin: 12px 0 0 0; font-size: 13px; line-height: 1.5; color: #b8bcc6; text-align: center; }
+@media (prefers-reduced-motion: reduce) {
+  .prec-setup-bar i { width: 100%; animation: prec-setup-calm 2.4s ease-in-out infinite; }
+}
+@keyframes prec-setup-calm { 0%, 100% { opacity: .35; } 50% { opacity: .9; } }
 .prec-on-btn { min-width: 96px; }
 .prec-on .dpage-btn.pri:focus { background-color: #657ee4; }
 .prec-on-btn:disabled, .prec-on-btn:disabled:hover, .prec-on-btn[aria-disabled="true"], .prec-on-btn[aria-disabled="true"]:hover { opacity: .5; background-color: #657ee4; border-color: #657ee4; cursor: default; }

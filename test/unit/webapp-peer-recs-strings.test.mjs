@@ -28,6 +28,7 @@ const NEW = {
   'peerRecs.noRoom': 'No room',
   'peerRecs.noPeers': 'No peers yet',
   'peerRecs.nothingNew': 'Nothing new',
+  'peerRecs.settingUp': 'Setting up the P2P network connection. Pulling in recommendations can take several minutes.',
   'peerRecs.preview': 'Preview',
   'peerRecs.previewAll': 'Preview all',
   'peerRecs.copyList': 'Copy list',

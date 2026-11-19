@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "空きがありません",
   "peerRecs.noPeers": "ピアはまだありません",
   "peerRecs.nothingNew": "新しい曲はありません",
+  "peerRecs.settingUp": "P2P ネットワークへの接続を設定しています。おすすめが届くまで数分かかることがあります。",
   "peerRecs.preview": "試聴",
   "peerRecs.previewAll": "すべて試聴",
   "peerRecs.copyList": "リストをコピー",

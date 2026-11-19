@@ -694,6 +694,7 @@
   "peerRecs.noRoom": "空间不足",
   "peerRecs.noPeers": "暂无节点",
   "peerRecs.nothingNew": "没有新内容",
+  "peerRecs.settingUp": "正在设置 P2P 网络连接。获取推荐可能需要几分钟。",
   "peerRecs.preview": "试听",
   "peerRecs.previewAll": "全部试听",
   "peerRecs.copyList": "复制列表",
