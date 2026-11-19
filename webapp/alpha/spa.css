@@ -1510,36 +1510,17 @@ select {
   color: #F5F7FA;
 }
 
-.autodj-hero {
-  text-align: center;
-  margin-bottom: 24px;
-}
-.autodj-hero .autodj-icon {
-  font-size: 40px;
-  line-height: 1;
-  margin-bottom: 8px;
-}
-.autodj-hero h2 {
-  font-size: 22px;
-  font-weight: 600;
-  margin: 0 0 4px;
-}
-.autodj-hero-desc {
-  font-size: 13px;
-  color: #b8bcc6;
-  margin: 0;
-}
-
-/* Big primary toggle button. On = orange filled, Off = outlined.
-   Reuses Materialize's `.btn` resets but overrides the colour/size
-   to make it the clear primary action of the panel. */
+/* Big primary toggle button. On = orange filled, Off = outlined. The
+   page's first control (no hero or status line around it); its label
+   carries the DJ's state. */
 .autodj-toggle {
   display: block;
   width: 100%;
-  margin: 16px 0 8px;
+  margin: 0 0 24px;
   padding: 14px 20px;
   font-size: 15px;
   font-weight: 600;
+  line-height: 22px;
   letter-spacing: .4px;
   text-transform: uppercase;
   background: transparent;
@@ -1554,15 +1535,9 @@ select {
   background: #fa832b;
   color: #111;
 }
-
-.autodj-status {
-  text-align: center;
-  font-size: 12px;
-  color: #b8bcc6;
-  margin-bottom: 24px;
-  min-height: 16px;
-}
-.autodj-status.on { color: #fa832b; }
+/* Materialize paints a focused button teal (button:focus). */
+.autodj-toggle:focus { background: transparent; color: #fa832b; }
+.autodj-toggle.on:focus, .autodj-toggle:hover:focus { background: #fa832b; color: #111; }
 
 /* Settings card */
 .autodj-opts {
@@ -1577,6 +1552,7 @@ select {
 .autodj-section-heading {
   font-size: 11px;
   font-weight: 700;
+  line-height: 16px;
   letter-spacing: .6px;
   text-transform: uppercase;
   color: #b8bcc6;
@@ -1587,77 +1563,75 @@ select {
 .autodj-section-heading:first-of-type {
   border-top: none;
   padding-top: 0;
+  margin-top: 12px;
 }
 
-.autodj-opt-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 0;
-  border-bottom: 1px solid #383c47;
-  gap: 16px;
-}
-.autodj-opt-row:last-child { border-bottom: none; }
-
-.autodj-opt-row.autodj-opt-col {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-
-.autodj-opt-row.autodj-opt-disabled .autodj-opt-label,
-.autodj-opt-row.autodj-opt-disabled .autodj-opt-hint {
-  opacity: 0.45;
-}
-
+/* Sonic Path's field captions (m.js sonicPathPanel). */
 .autodj-opt-label {
   font-size: 14px;
   font-weight: 500;
   color: #F5F7FA;
 }
-.autodj-opt-hint {
-  font-size: 12px;
-  color: #8c919a;
-  margin-top: 2px;
-  line-height: 1.4;
-}
-.autodj-opt-hint em {
-  font-style: italic;
-  color: #b8bcc6;
-}
 
-/* Native select restyled to fit the dark card */
+/* Native select (Rating) and the Batch field, restyled to fit the dark
+   card. Materialize's `select` sets width 100% and 3rem, and its
+   `select:focus` a teal outline. */
 .autodj-select {
   background: #1a1d23;
   color: #F5F7FA;
   border: 1px solid #444c56;
   border-radius: 4px;
+  width: auto;
+  min-width: 140px;
+  height: 44px;
+  box-sizing: border-box;
   padding: 6px 10px;
   font-size: 14px;
+  color-scheme: dark;
   cursor: pointer;
-  min-width: 100px;
 }
 .autodj-select:focus {
   outline: none;
+}
+.autodj-select:focus-visible {
+  outline: 2px solid #fa832b;
+  outline-offset: 0;
   border-color: #fa832b;
 }
 
-/* Vpath pills — pill-shaped buttons, click to toggle inclusion. */
+/* Vpath pills — pill-shaped buttons, click to toggle inclusion. A 30px
+   face (kit d8) in a 44px target: the ::before reaches 7px above and
+   below, and the 7px margins keep wrapped lines 14px apart. */
 .dj-vpath-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 0 6px;
 }
 .dj-vpath-pill {
   appearance: none;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  margin: 7px 0;
+  padding: 0 12px;
+  box-sizing: border-box;
   background: #1a1d23;
   color: #b8bcc6;
   border: 1px solid #444c56;
-  border-radius: 14px;
-  padding: 5px 12px;
+  border-radius: 15px;
   font-size: 12px;
+  line-height: 16px;
   cursor: pointer;
   transition: background-color .12s ease, color .12s ease, border-color .12s ease;
+}
+.dj-vpath-pill::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -7px;
+  bottom: -7px;
 }
 .dj-vpath-pill:hover {
   background: #2a2e38;
@@ -1668,10 +1642,13 @@ select {
   border-color: #fa832b;
   color: #111;
 }
+.dj-vpath-pill:focus { background: #1a1d23; }
+.dj-vpath-pill.on:focus { background: #fa832b; }
 
 /* Toggle switch — lifted from velvet/webapp/style.css:1369-1374,
-   recoloured for alpha's orange accent.
-   Markup: <label class="toggle-sw"><input type="checkbox"><span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></label> */
+   recoloured for alpha's orange accent. Its row's <label> wraps it, so
+   the whole row is the target (m.js autoDjSwitchRowHtml).
+   Markup: <span class="toggle-sw"><input type="checkbox" role="switch"><span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></span> */
 .toggle-sw {
   position: relative;
   display: inline-flex;
@@ -1711,7 +1688,7 @@ select {
 }
 .toggle-sw input:disabled ~ .toggle-sw-track {
   opacity: 0.4;
-  cursor: not-allowed;
+  cursor: default;
 }
 /* Suppress Materialize's checkbox decorations bleeding onto the
    .toggle-sw-track <span>:
@@ -1748,56 +1725,16 @@ select {
   outline: 2px solid #fa832b;
   outline-offset: 2px;
 }
-/* Same treatment for the vpath pills + slider — give keyboard
+/* Same treatment for the vpath pills and Start/Stop — give keyboard
    users a visible focus indicator without changing mouse-hover UX. */
 .dj-vpath-pill:focus-visible,
-.autodj-slider:focus-visible,
 .autodj-toggle:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: 2px;
 }
 
-/* BPM tolerance slider — native range input restyled to fit the card. */
-.autodj-slider {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 140px;
-  height: 4px;
-  background: #444c56;
-  border-radius: 2px;
-  outline: none;
-  cursor: pointer;
-}
-.autodj-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fa832b;
-  border: none;
-  cursor: pointer;
-}
-.autodj-slider::-moz-range-thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fa832b;
-  border: none;
-  cursor: pointer;
-}
-
-/* Keyword filter — toggle row sits across the top, tag chips and
-   the text input stack below it (the parent `.autodj-opt-col`
-   already gives us the column layout). Chips reuse the vpath-pill
-   shape but with a built-in × button. */
-.dj-filter-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  width: 100%;
-}
+/* Skip words chips — the vpath-pill shape with a built-in × button,
+   above their editor's field. */
 .dj-filter-tags {
   display: flex;
   flex-wrap: wrap;
@@ -1828,6 +1765,7 @@ select {
   border-radius: 50%;
   transition: background-color .12s ease, color .12s ease;
 }
+.dj-filter-tag-rm:focus { background: transparent; }
 .dj-filter-tag-rm:hover {
   background: #fa832b;
   color: #111;
@@ -1857,12 +1795,10 @@ select {
   cursor: not-allowed;
 }
 
-/* Genre filter — segmented mode toggle (whitelist/blacklist) and
-   suggestion dropdown wrapper. Reuses .dj-filter-* for the chip
-   list + outer input field; the additions below are limited to
-   the two new pieces. */
+/* The Genres page's Tags | Generated | Both switch (#genre_source): a
+   segmented control, the pressed kind in the accent. */
 
-.dj-genre-mode, .genre-source {
+.genre-source {
   display: inline-flex;
   margin-top: 6px;
   border: 1px solid #444c56;
@@ -1871,7 +1807,7 @@ select {
   background: #1a1d23;
   align-self: flex-start;  /* don't stretch full width on the column flex */
 }
-.dj-genre-mode-btn, .genre-source-btn {
+.genre-source-btn {
   appearance: none;
   background: transparent;
   border: none;
@@ -1882,27 +1818,21 @@ select {
   line-height: 1.4;
   transition: background-color .12s ease, color .12s ease;
 }
-.dj-genre-mode-btn + .dj-genre-mode-btn, .genre-source-btn + .genre-source-btn {
+.genre-source-btn + .genre-source-btn {
   border-left: 1px solid #444c56;
 }
-.dj-genre-mode-btn[aria-pressed="true"], .genre-source-btn[aria-pressed="true"] {
+.genre-source-btn[aria-pressed="true"] {
   background: #fa832b;
   color: #111;
 }
-.dj-genre-mode-btn:hover:not([aria-pressed="true"]):not(:disabled),
 .genre-source-btn:hover:not([aria-pressed="true"]) {
   background: #2a2f37;
 }
-.dj-genre-mode-btn:focus-visible, .genre-source-btn:focus-visible {
+.genre-source-btn:focus-visible {
   outline: 2px solid #fa832b;
   outline-offset: -2px;
 }
-.dj-genre-mode-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-/* The Genres panel's tags / generated / both switch shares the look
-   above; it sits in the browse bar, beside the search icon. */
+/* It sits in the browse bar, beside the search icon. */
 .genre-source {
   margin: 0 4px 0 6px;
   align-self: center;
@@ -2017,8 +1947,8 @@ select {
   .mood-filter-btn { width: 44px; height: 44px; }
   .mood-seg-btn, .mood-chip, .mood-clear { height: 44px; }
 }
-/* Auto DJ's Mood row: the same segments and chips, laid out in the row
-   like its other filters' controls; off while the row's toggle is. */
+/* Auto DJ's Smart filters editor: the same segments and chips, laid out
+   like its other filters' controls (shown only while its switch is on). */
 .dj-moods {
   display: flex;
   flex-wrap: wrap;
@@ -2026,7 +1956,6 @@ select {
   gap: 10px 16px;
   width: 100%;
 }
-.dj-moods button:disabled { opacity: .45; cursor: default; pointer-events: none; }
 /* On Discover the panel is part of the bar's gray chrome (#dpage-head),
    like "More options", not a card under it. */
 .mood-filters.dpage-moods {
@@ -2037,49 +1966,9 @@ select {
   border-radius: 0;
 }
 
-/* Anchor for the suggestion dropdown — keep it relative so the
-   absolutely-positioned panel sticks to the input. */
-.dj-genre-combo {
-  position: relative;
-}
-.dj-genre-suggest {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  right: 0;
-  margin-top: 2px;
-  max-height: 240px;
-  overflow-y: auto;
-  z-index: 5;
-  background: #1a1d23;
-  border: 1px solid #444c56;
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-}
-.dj-genre-suggest[hidden] { display: none; }
-.dj-genre-suggest-row {
-  padding: 6px 10px;
-  font-size: 13px;
-  color: #b8bcc6;
-  cursor: pointer;
-}
-.dj-genre-suggest-row:hover,
-.dj-genre-suggest-row[aria-selected="true"] {
-  background: #fa832b;
-  color: #111;
-}
-.dj-genre-suggest-empty,
-.dj-genre-suggest-more {
-  padding: 6px 10px;
-  font-size: 12px;
-  color: #8a8f99;
-  font-style: italic;
-}
-
-/* Track-length window — two minute fields side by side plus an
-   "include unknown length" checkbox. Reuses .dj-filter-input for the
-   field chrome; the additions below are the two-up layout, the
-   per-field caption, and the checkbox row. */
+/* Length's editor — two minute fields side by side (a caption over
+   each), then the "include unknown length" switch row. Reuses
+   .dj-filter-input for the field chrome. */
 .dj-duration-inputs {
   display: flex;
   gap: 12px;
@@ -2088,17 +1977,14 @@ select {
 .dj-duration-field {
   display: flex;
   flex-direction: column;
+  gap: 4px;
   flex: 1 1 0;
   min-width: 0;
 }
 .dj-duration-field-label {
   font-size: 12px;
-  color: #8c919a;
-}
-/* .dj-filter-input carries margin-top for the stacked keyword/genre
-   layout; here the caption above already provides the gap. */
-.dj-duration-num {
-  margin-top: 4px;
+  line-height: 17px;
+  color: #a0a7b3;
 }
 /* Hide the spinner arrows — cramped at this width, and with
    step="any" they'd step by a meaningless 1-minute default. */
@@ -2111,32 +1997,240 @@ select {
   -moz-appearance: textfield;
 }
 
-/* Songs-per-fetch — a short numeric field on the right of its row,
-   dressed as .autodj-select so the two "how much" controls at the top
-   of the panel match. Native spinners stay: step=1 is meaningful here. */
+/* Batch — a short numeric field on the right of its row, dressed as
+   .autodj-select so the panel's two "how much" fields match. Native
+   spinners stay: step=1 is meaningful here. */
 .dj-limit-num {
   width: 5.5em;
   min-width: 0;
   text-align: center;
   cursor: text;
 }
-/* Unknown-length row — same shape as .dj-filter-head (caption left,
-   .toggle-sw switch right) so it reads as one of the panel's toggles
-   rather than a stray control. The switch itself needs no rules here;
-   .toggle-sw already handles sizing and the Materialize suppression. */
-.dj-duration-unknown {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 12px;
-  margin-top: 12px;
-  width: 100%;
-}
-.dj-duration-unknown-label {
-  font-size: 14px;
-  font-weight: 500;
-  color: #F5F7FA;
-}
+
+/* Auto DJ panel (design E) */
+/* m.js autoDjPanelHtml: the card's rows (kit d1–d8). A switch row is a
+   <label> around its .toggle-sw; a filter's editor and an amount line
+   show only while their switch is on (`hidden`); Sonic similarity's
+   sub-items are indented and dim while it is off. Materialize, loaded
+   after this file, restyles labels, headings, fields, sliders and
+   focused buttons: the rules below win by class, and every field carries
+   `browser-default`. */
+.autodj-opts > :last-child { border-bottom: 0; }
+.dj-row { display: flex; align-items: center; gap: 16px; min-height: 48px; margin: 0; padding: 0; box-sizing: border-box; border-bottom: 1px solid #383c47; cursor: pointer; font-size: 14px; color: #f5f7fa; }
+.dj-row-label { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 500; line-height: 20px; color: #f5f7fa; }
+.dj-row.is-disabled { cursor: default; }
+.dj-row.is-disabled .dj-row-label { color: #8c919a; }
+.dj-block { border-bottom: 1px solid #383c47; }
+.dj-block > .dj-row, .dj-sub > .dj-row, .dj-editor .dj-row { border-bottom: 0; }
+.dj-amount { display: flex; align-items: center; gap: 16px; padding: 0 0 6px; }
+.dj-amount-value { flex: 0 0 auto; min-width: 40px; text-align: right; font-size: 14px; line-height: 20px; color: #b8bcc6; }
+.dj-editor { display: flex; flex-direction: column; gap: 10px; padding: 0 0 12px; }
+/* a class's display beats the UA's [hidden] */
+.dj-amount[hidden], .dj-editor[hidden] { display: none; }
+.dj-sources { display: flex; flex-wrap: wrap; align-items: center; gap: 0 16px; min-height: 48px; box-sizing: border-box; border-bottom: 1px solid #383c47; }
+.dj-sources-label { flex: 1 1 auto; font-size: 14px; font-weight: 500; line-height: 20px; color: #f5f7fa; }
+.dj-field { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 48px; padding: 2px 0; box-sizing: border-box; border-bottom: 1px solid #383c47; }
+.dj-field-label { font-size: 14px; font-weight: 500; line-height: 20px; color: #f5f7fa; }
+
+/* Sonic similarity's sub-items: Learn from skips, Seeds, and Play from
+   federated servers (kit d3) */
+.dj-sub { margin-left: 24px; border-bottom: 1px solid #383c47; }
+.dj-sub-row { padding: 10px 0; }
+.dj-sub-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.dj-sub-title { font-size: 14px; font-weight: 500; line-height: 20px; color: #f5f7fa; }
+.dj-sub-desc { font-size: 12px; line-height: 17px; color: #a0a7b3; }
+.dj-sub.is-dim .dj-row { cursor: default; }
+.dj-sub.is-dim .dj-row-label, .dj-sub.is-dim .dj-sub-title, .dj-sub.is-dim .dj-sub-desc { color: #8c919a; }
+.dj-seeds-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; margin: 0; padding: 0; box-sizing: border-box; border: 0; border-radius: 4px; background: transparent; color: #f5f7fa; font: inherit; text-align: left; cursor: pointer; }
+.dj-seeds-row:focus { background: transparent; }
+.dj-seeds-row:focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+.dj-seeds-row-label { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 500; line-height: 20px; }
+.dj-seeds-tiles { flex: 0 0 auto; display: flex; }
+.dj-seeds-tile { display: block; width: 24px; height: 24px; box-sizing: border-box; border: 2px solid #262a33; border-radius: 4px; object-fit: cover; background: #2d333b; }
+.dj-seeds-tile + .dj-seeds-tile { margin-left: -8px; }
+.dj-seeds-chev { flex: 0 0 auto; color: #b8bcc6; }
+.dj-seeds-row:disabled { color: #8c919a; cursor: default; }
+.dj-seeds-row:disabled .dj-seeds-tiles { opacity: .4; }
+.dj-seeds-row:disabled .dj-seeds-chev { color: #8c919a; }
+
+/* Genres: a value row in the Seeds row's look — its label, its value on one
+   line in the value's tone (Any, or the chosen genres: the accent), the
+   chevron */
+.dj-genres-row .dj-seeds-row-label { flex: 0 0 auto; }
+.dj-genres-value { flex: 1 1 auto; min-width: 0; font-size: 14px; line-height: 20px; color: #b8bcc6; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-genres-value.is-set { color: #fa832b; }
+.dj-genres-row:disabled .dj-genres-value { color: #8c919a; }
+
+/* The editors (Smart filters, Length, Skip words): kit d15 fields, and
+   44px targets for their buttons */
+.dj-editor .dj-filter-tags { margin-top: 0; }
+.dj-editor .dj-filter-tags:empty { display: none; }
+.dj-editor .dj-filter-input { height: 44px; margin: 0; padding: 0 12px; border-radius: 6px; font-size: 13px; color-scheme: dark; }
+.dj-editor .dj-filter-input::placeholder { color: #a0a7b3; opacity: 1; }
+.dj-moods .mood-seg-btn, .dj-moods .mood-chip, .dj-moods .mood-clear { height: 44px; }
+.dj-moods .mood-seg, .dj-moods .mood-chip { border-radius: 22px; }
+
+/* The sliders (Sonic similarity's amount, Beat matching's tolerance): a
+   4px track and a 16px thumb in a 44px box. One rule per vendor
+   pseudo-element — an engine drops a whole selector list holding a
+   pseudo-element it doesn't know. */
+.autodj-opts input[type="range"].autodj-slider { -webkit-appearance: none; appearance: none; display: block; flex: 1 1 auto; min-width: 0; width: 100%; height: 44px; margin: 0; padding: 0; border: 0; border-radius: 4px; background: transparent; cursor: pointer; }
+.autodj-opts input[type="range"].autodj-slider::-webkit-slider-runnable-track { height: 4px; border: 0; border-radius: 2px; background: #444c56; }
+.autodj-opts input[type="range"].autodj-slider::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; margin-top: -6px; border: 0; border-radius: 50%; background: #fa832b; box-shadow: none; }
+.autodj-opts input[type="range"].autodj-slider::-moz-range-track { height: 4px; border: 0; border-radius: 2px; background: #444c56; }
+.autodj-opts input[type="range"].autodj-slider::-moz-range-thumb { width: 16px; height: 16px; margin-top: 0; border: 0; border-radius: 50%; background: #fa832b; box-shadow: none; }
+.autodj-opts input[type="range"].autodj-slider:focus { outline: none; }
+.autodj-opts input[type="range"].autodj-slider:focus-visible { outline: 2px solid #fa832b; outline-offset: 2px; }
+
+/* Auto DJ seeds drawer (design B) */
+/* m.js autoDjSeedsOpen: a 420px modal drawer from the right (kit d13b) in
+   the house window's colours, its scrim a .dmodal-shadow (so the player's
+   hotkeys and YouTube paste stay off under it) laid out as a drawer. The
+   lists step: Drift | Stay close (kit d7), More like and Less like rows
+   (kit d11) with their ⋮ menus (kit d12a), Add song, and the box (kit
+   d14). The Add song step: the library row, the search (kit d15) and pick
+   rows. Materialize, loaded after this file, restyles buttons (a teal
+   focused ground), headings, labels, fields and checkboxes: every rule
+   below wins by class, and the field carries `browser-default`. */
+/* clip, not only hidden: a hidden box still scrolls to a focused control,
+   and the drawer takes the keyboard while it slides in from beyond the
+   right edge (that scroll would cancel or offset the slide). Above a pick
+   banner left up (#spath-banner, 9999), which would cover the drawer's
+   head and offer its Cancel under a modal; below the toasts (99999). */
+.dmodal-shadow.dj-seeds-shade { z-index: 10000; align-items: stretch; justify-content: flex-end; padding: 0; overflow: hidden; overflow: clip; }
+.dj-seeds { position: relative; display: flex; flex-direction: column; width: 420px; max-width: 100%; height: 100%; margin: 0; padding: 0; box-sizing: border-box; border-left: 1px solid #444c56; background: #2d333b; color: #dfe3ea; box-shadow: -16px 0 48px rgba(0,0,0,.6); font-size: 13px; line-height: 1.4; text-align: left; }
+.dj-seeds:focus { outline: none; }
+.dj-seeds button { -webkit-appearance: none; appearance: none; margin: 0; font-family: inherit; }
+.dj-seeds :focus-visible { outline: 2px solid #fa832b; outline-offset: -2px; }
+/* this file paints every svg white (svg { fill: #FFF }), over an icon's own
+   fill="none": the drawer's icons get their fills back — none for the
+   stroked ones (an outline pin must not read as pinned), currentColor for
+   the ⋮ and the note */
+.dj-seeds svg { fill: none; }
+.dj-seeds .dj-seed-more svg, .dj-seeds .dj-seed-art.is-none svg { fill: currentColor; }
+/* (and the drawer's opener, the panel's Seeds row: its chevron is a stroke) */
+.dj-seeds-row .dj-seeds-chev { fill: none; }
+.dj-seeds-close { position: absolute; top: 4px; right: 4px; z-index: 2; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: #a0a7b3; cursor: pointer; }
+.dj-seeds-close:focus { background: transparent; color: #a0a7b3; }
+.dj-seeds-close:hover { background: #363d47; color: #f0f2f5; }
+.dj-seeds-head { flex: 0 0 auto; padding: 18px 56px 14px 20px; }
+.dj-seeds-head.is-step { display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 4px 52px 4px 8px; box-sizing: border-box; }
+.dj-seeds-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.25; color: #f0f2f5; }
+.dj-seeds-back { flex: 0 0 auto; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: #dfe3ea; cursor: pointer; }
+.dj-seeds-back:focus { background: transparent; }
+.dj-seeds-back:hover { background: #363d47; color: #f0f2f5; }
+.dj-seeds-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 20px 20px; border-top: 1px solid #3a4149; }
+
+/* Drift | Stay close, and the mode's line */
+.dj-seeds-mode { display: flex; margin: 0; padding: 0; min-width: 0; border: 1px solid #444c56; border-radius: 6px; overflow: hidden; background: #1a1d23; }
+.dj-seeds-mode-btn { flex: 1 1 0; min-width: 0; height: 44px; padding: 0 16px; border: 0; background: transparent; color: #b8bcc6; font-size: 13px; font-weight: 400; line-height: 18px; cursor: pointer; }
+.dj-seeds-mode-btn + .dj-seeds-mode-btn { border-left: 1px solid #444c56; }
+.dj-seeds-mode-btn:focus { background: transparent; }
+.dj-seeds-mode-btn[aria-pressed="true"], .dj-seeds-mode-btn[aria-pressed="true"]:focus { background: #fa832b; color: #111111; font-weight: 600; }
+.dj-seeds-mode-btn:hover:not([aria-pressed="true"]) { background: #2a2f37; }
+.dj-seeds-mode-desc { margin: 8px 0 16px; font-size: 13px; line-height: 18px; color: #a0a7b3; }
+
+/* More like / Less like: the headings, the reason, the rows */
+.dj-seeds-h { margin: 16px 0 4px; font-size: 11px; font-weight: 700; line-height: 16px; letter-spacing: .6px; text-transform: uppercase; color: #b8bcc6; }
+.dj-seeds-reason { margin: 0 0 4px; font-size: 12px; line-height: 17px; color: #a0a7b3; }
+.dj-seeds-list, .dj-pick-list { list-style: none; margin: 0; padding: 0; }
+.dj-seed { position: relative; display: flex; align-items: center; gap: 12px; min-height: 56px; box-sizing: border-box; border-bottom: 1px solid #3a4149; }
+.dj-seed-art { display: block; width: 40px; height: 40px; flex: 0 0 40px; border-radius: 4px; object-fit: cover; }
+.dj-seed-art.is-none { display: flex; align-items: center; justify-content: center; background: rgba(255,255,255,.05); color: #6f7683; }
+.dj-seed-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.dj-seed-title { font-size: 14px; font-weight: 500; line-height: 20px; color: #f5f7fa; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-seed-artist { font-size: 12px; line-height: 17px; color: #b8bcc6; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-seed-acts { flex: 0 0 auto; display: flex; }
+.dj-seed-btn { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 4px; display: inline-flex; align-items: center; justify-content: center; background: transparent; color: #b8bcc6; cursor: pointer; }
+.dj-seed-btn:focus { background: transparent; }
+.dj-seed-pin[aria-pressed="true"] { color: #fa832b; }
+.dj-seed-pin[aria-disabled="true"] { cursor: default; }
+.dj-seed-more:hover, .dj-seed-more[aria-expanded="true"], .dj-seed-more[aria-expanded="true"]:focus { background: #414957; color: #f5f7fa; }
+.dj-seed.is-dim .dj-seed-art { opacity: .45; }
+.dj-seed.is-dim .dj-seed-title, .dj-seed.is-dim .dj-seed-artist { color: #8c919a; }
+.dj-seed.is-dim .dj-seed-pin { opacity: .4; }
+
+/* Add song (each list's last row) and "Pick a song from the library" */
+.dj-seeds-add { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 48px; padding: 0; box-sizing: border-box; border: 0; background: transparent; color: #fa832b; font-size: 14px; font-weight: 600; line-height: 20px; text-align: left; cursor: pointer; }
+.dj-seeds-add:focus { background: transparent; }
+.dj-seeds-add:disabled { color: #8c919a; cursor: default; }
+.dj-seeds-add-ic { width: 40px; flex: 0 0 40px; display: flex; justify-content: center; }
+.dj-seeds-library { margin: 0 0 8px; }
+
+/* A row's ⋮ menu: under its ⋮, right-aligned, over the rows below (up
+   when it would hang past the body) */
+.dj-seeds-menu { position: absolute; z-index: 5; right: 0; top: 52px; min-width: 140px; padding: 4px 0; box-sizing: border-box; background: #2a2a2e; border: 1px solid #444444; border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+.dj-seeds-menu.is-up { top: auto; bottom: 52px; }
+.dj-seeds-menu-item { display: flex; align-items: center; width: 100%; min-height: 44px; padding: 0 14px; box-sizing: border-box; border: 0; background: transparent; color: #dddddd; font-size: 13px; line-height: 19.5px; text-align: left; white-space: nowrap; cursor: pointer; }
+.dj-seeds-menu-item:focus { background: transparent; outline: none; }
+.dj-seeds-menu-item:hover { background: rgba(255,255,255,.1); }
+.dj-seeds-menu-item:focus-visible { background: rgba(255,255,255,.1); box-shadow: inset 0 0 0 2px #fa832b; outline: none; }
+.dj-seeds-menu-item[aria-disabled="true"] { color: #8c919a; cursor: default; }
+
+/* "Clear pins when the queue is cleared": the whole label is the target;
+   Materialize's own box (a span after the input, its ::before / ::after
+   tick) is turned off */
+.dj-seeds-foot { margin-top: 12px; padding-top: 4px; border-top: 1px solid #3a4149; }
+.dj-check { display: flex; align-items: center; gap: 12px; min-height: 44px; margin: 0; cursor: pointer; font-size: 14px; line-height: 20px; color: #f5f7fa; }
+.dj-check-ctl { position: relative; flex: 0 0 auto; width: 18px; height: 18px; }
+.dj-check input[type="checkbox"] { position: absolute; left: 0; top: 0; width: 18px; height: 18px; margin: 0; opacity: 0; }
+.dj-check input[type="checkbox"] + .dj-check-box { position: absolute; left: 0; top: 0; width: 18px; height: 18px; padding: 0; box-sizing: border-box; border: 2px solid #b8bcc6; border-radius: 3px; display: flex; align-items: center; justify-content: center; line-height: normal; font-size: 0; }
+/* (0,4,2): above Materialize's [type="checkbox"]:not(.filled-in) + span:not(.lever)::after (0,3,2), which loads later */
+.dj-check .dj-check-ctl input[type="checkbox"] + .dj-check-box::before { content: none; }
+.dj-check .dj-check-ctl input[type="checkbox"] + .dj-check-box::after { content: none; }
+.dj-check input[type="checkbox"]:checked + .dj-check-box { border-color: #fa832b; background: #fa832b; }
+.dj-check-box svg { visibility: hidden; }
+.dj-check input:checked + .dj-check-box svg { visibility: visible; }
+.dj-check input:focus-visible + .dj-check-box { outline: 2px solid #fa832b; outline-offset: 2px; }
+
+/* Add song's search field (kit d15): it keeps its own ring */
+.dj-add-search { position: relative; display: block; height: 44px; }
+.dj-add-search-ic { position: absolute; left: 12px; top: 13px; pointer-events: none; }
+.dj-add-search .dj-filter-input { display: block; width: 100%; height: 44px; margin: 0; padding: 0 12px 0 40px; border-radius: 6px; font-size: 13px; color-scheme: dark; }
+.dj-add-search .dj-filter-input::placeholder { color: #a0a7b3; opacity: 1; }
+.dj-add-search .dj-filter-input:focus-visible { outline: 2px solid #fa832b; outline-offset: 0; border-color: #fa832b; }
+
+/* Pick rows (Up next, Skipped, Recently played, the hits): the whole row
+   is the button; the song playing is marked as the queue marks its row,
+   without the tint */
+.dj-pick { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 56px; padding: 0 8px; box-sizing: border-box; border: 0; border-bottom: 1px solid #3a4149; background: transparent; color: #dfe3ea; text-align: left; cursor: pointer; }
+.dj-pick:focus { background: transparent; }
+.dj-pick:hover { background: rgba(255,255,255,.05); }
+.dj-pick .dj-seed-title { color: #f0f2f5; }
+.dj-pick[aria-current="true"] { padding-left: 5px; border-left: 3px solid #657ee4; }
+.dj-pick[aria-disabled="true"] { cursor: default; }
+.dj-pick[aria-disabled="true"] .dj-seed-art { opacity: .45; }
+.dj-pick[aria-disabled="true"] .dj-seed-title, .dj-pick[aria-disabled="true"] .dj-seed-artist { color: #8c919a; }
+
+/* It slides in from the right (not under reduced motion) */
+@keyframes dj-seeds-in { from { transform: translateX(100%); } to { transform: none; } }
+.dj-seeds { animation: dj-seeds-in .18s ease-out; }
+@media (prefers-reduced-motion: reduce) { .dj-seeds { animation: none; } }
+
+/* Auto DJ genres drawer */
+/* m.js autoDjGenresOpen: the Seeds drawer's shell and kit (its scrim,
+   drawer, Close, head, title, body, segmented control, box and search
+   field, worn with the Genres drawer's own ids) and the rules below: the
+   cap's "200 max" beside the title (the phone's title row), Generated |
+   Tags | Mixed under Only | Skip, the search, one box per genre, and the
+   list's states. A kind's label stays on one line, cut short inside its
+   own segment where a translation is longer than a third of the drawer. */
+.dj-genres-head { display: flex; align-items: baseline; gap: 8px; }
+.dj-genres-max { font-size: 14px; font-weight: 600; line-height: 20px; color: #f5a05b; white-space: nowrap; }
+.dj-genres-kind-box:empty { display: none; }
+.dj-genres-kind { margin-top: 10px; }
+.dj-genres-kind .dj-seeds-mode-btn { padding: 0 4px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dj-genres-search { margin-top: 10px; }
+.dj-genres-list { margin-top: 8px; }
+.dj-genres-rows { list-style: none; margin: 0; padding: 0; }
+.dj-genres-rows > li + li { border-top: 1px solid #3a4149; }
+.dj-genres-item { overflow-wrap: anywhere; }
+.dj-genres-item.is-off { color: #8c919a; cursor: default; }
+.dj-genres-item.is-off input[type="checkbox"] + .dj-check-box { border-color: #5c6370; cursor: default; }
+.dj-genres-state { margin: 0; padding: 16px; text-align: center; font-size: 14px; line-height: 20px; color: #a0a7b3; }
+.dj-genres-state:not(:only-child) { padding: 4px 16px 8px; }
+.dj-genres-state.is-error { color: #ec8a90; }
+.dj-genres-state .spinner { width: 32px; height: 32px; }
 
 /* Now-playing BPM/key pills — sit alongside the existing metadata
    card "Year:" line. Compact pill row that only renders when at

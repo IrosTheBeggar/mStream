@@ -243,16 +243,20 @@ const MSTREAMAPI = (() => {
     return req('PUT', mstreamModule.currentServer.host + 'api/v1/discovery/collection/destination', { destination });
   };
 
-  // POST /api/v1/db/genres → { genres: [{ name, track_count }] }.
-  // Used by the Auto-DJ panel's genre filter dropdown. POST (not GET)
+  // POST /api/v1/db/genres → { genres: [{ name, track_count }],
+  // sources: { tag, model } }. Used by the Auto DJ panel's Genres row and
+  // its drawer. [source] 'tag' | 'model' asks for that kind's genres
+  // (Tags, Generated); anything else, every kind (Mixed). The answer's
+  // `sources` says how many genres of each kind the server has, whatever
+  // was asked (null from a server older than the kinds). POST (not GET)
   // so callers can pass ignoreVPaths in the body to scope the count;
-  // we don't use that here (the dropdown reflects the full library),
-  // but matching the existing endpoint shape avoids a one-off wrapper.
+  // we don't use that here (the list reflects the full library), but
+  // matching the existing endpoint shape avoids a one-off wrapper.
   //
-  // Returns the discriminated shape `{ status, value, error? }` so the
-  // caller can render distinct error states (401 → "log in", 5xx →
+  // Returns the discriminated shape `{ status, value, sources, code? }` so
+  // the caller can render distinct error states (401 → "log in", 5xx →
   // "couldn't load") without re-checking error.message strings.
-  mstreamModule.getGenres = async () => {
+  mstreamModule.getGenres = async (source) => {
     try {
       const res = await fetch(mstreamModule.currentServer.host + 'api/v1/db/genres', {
         method: 'POST',
@@ -260,14 +264,18 @@ const MSTREAMAPI = (() => {
           'Content-Type': 'application/json',
           'x-access-token': mstreamModule.currentServer.token,
         },
-        body: JSON.stringify({}),
+        body: JSON.stringify(source === 'tag' || source === 'model' ? { source } : {}),
       });
       if (!res.ok) {
         return { status: 'error', value: null, code: res.status };
       }
       const body = await res.json();
       const names = Array.isArray(body?.genres) ? body.genres.map(g => g.name) : [];
-      return { status: 'ok', value: names };
+      const kinds = body?.sources;
+      const sources = kinds && typeof kinds === 'object' && !Array.isArray(kinds)
+        ? { tag: Number(kinds.tag) || 0, model: Number(kinds.model) || 0 }
+        : null;
+      return { status: 'ok', value: names, sources };
     } catch (_) {
       return { status: 'error', value: null, code: 0 };  // 0 = network/parse
     }
