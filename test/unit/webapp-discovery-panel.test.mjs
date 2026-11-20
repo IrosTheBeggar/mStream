@@ -3942,6 +3942,62 @@ describe('Peer Recommendations: wiring', () => {
     assert.match(touch, /\.prec-band-icon \{ width: 44px; height: 44px; \}/);
     assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^}]*\.prec-adding \.prec-circle::after/);
   });
+
+  // The Add state under a strip item's name ("Adding…", "Try again", "No
+  // room"): de "Wird hinzugefügt…" is about 113 px at 12 px / 600, and held
+  // on one line it ran 13 px into each neighbour.
+  test('spa.css: the strip\'s Add state stays inside its 86 px item: it wraps at its spaces, centred, two lines at most, never inside a word', () => {
+    const rule = (sel) => { const m = css.match(new RegExp(`\\n${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{([^}]*)\\}`)); assert.ok(m, sel); return m[1]; };
+    const val = (body, prop) => { const m = body.match(new RegExp(`(?:^|;)\\s*${prop}:\\s*([^;]+);`)); return m ? m[1].trim() : null; };
+    const state = rule('.prec-state');
+    const item = rule('.prec-peer');
+    // the breaking is set on the state itself, so nothing it would inherit
+    // from (the item, the strip, the page) holds it on one line or breaks a word
+    assert.equal(val(state, 'white-space'), 'normal');
+    assert.equal(val(state, 'overflow-wrap'), 'normal');
+    assert.equal(val(state, 'word-break'), 'normal');
+    assert.equal(val(state, 'line-break'), 'auto');
+    assert.equal(val(state, 'hyphens'), 'manual');
+    assert.equal(val(state, 'text-align'), 'center');
+    // each is said once: a second, later value in the same rule would win
+    for (const prop of ['white-space', 'overflow-wrap', 'word-wrap', 'word-break', 'line-break', 'hyphens', 'text-align']) {
+      assert.ok((state.match(new RegExp(`(?:^|[\\s;])${prop}:`, 'g')) || []).length <= 1, `${prop} once`);
+    }
+    // the item's width and two of its lines (the name's cap); a word wider than that ends in "…"
+    assert.equal(val(item, 'width'), '86px');
+    assert.equal(val(state, 'max-width'), val(item, 'width'));
+    assert.equal(parseFloat(val(state, 'max-height')), 2 * parseFloat(val(state, 'line-height')), 'two lines');
+    assert.equal(val(state, 'max-height'), val(rule('.prec-name'), 'max-height'), 'the name\'s cap');
+    assert.equal(val(state, 'overflow'), 'hidden');
+    assert.equal(val(state, 'text-overflow'), 'ellipsis');
+    // no other rule on the state (its colours, anything later), and none on
+    // the item or the strip themselves, sets how a line breaks
+    const rules = [...css.matchAll(/\n *([^{}\n@]*\.prec-[^{}\n]*) \{([^}]*)\}/g)];
+    assert.equal(rules.filter(([, sel]) => sel === '.prec-state').length, 1, 'one base rule');
+    assert.ok(rules.filter(([, sel]) => sel.includes('.prec-state')).length >= 3, 'the state and its failed / no-room colours');
+    const lastOf = (sel) => sel.split(',').map((s) => s.trim().split(/\s*[\s>+~]\s*/).pop());
+    const OWN = /\.prec-(?:state|peer|all|off|add|adding|failed|noroom|strip|strip-row)(?![\w-])/;
+    const BREAKING = /(?:^|[\s;])(?:white-space|overflow-wrap|word-wrap|word-break|hyphens|line-break):/;
+    let own = 0;
+    for (const [, sel, body] of rules) {
+      // a rule ending on the state, the item or the strip, or on a bare
+      // element inside one of them (".prec-peer > span")
+      const reaches = lastOf(sel).some((last) => OWN.test(last) || (/^[a-z*]/i.test(last) && OWN.test(sel)));
+      if (sel === '.prec-state' || !reaches) { continue; }
+      own++;
+      assert.doesNotMatch(body, BREAKING, sel);
+    }
+    assert.ok(own >= 8, `${own} rules on the state, the item and the strip`);
+    // …nor one written on a single line, as inside an @media block
+    const inline = [...css.matchAll(/\.prec-state[^{}\n]*\{([^}]*)\}/g)].map(([, body]) => body).filter((body) => body !== state);
+    for (const body of inline) { assert.doesNotMatch(body, BREAKING, `.prec-state { ${body.trim()} }`); }
+    // the strip keeps its items on their tops: a two-line state makes its
+    // item taller and moves no circle or name
+    const row = rule('.prec-strip-row');
+    assert.equal(val(row, 'display'), 'flex');
+    assert.equal(val(row, 'align-items'), 'flex-start');
+    assert.equal(val(item, 'flex-direction'), 'column');
+  });
 });
 
 // ── W7: turn the network on (docs/peer-recommendations-plan.md §4.1 W7) ──

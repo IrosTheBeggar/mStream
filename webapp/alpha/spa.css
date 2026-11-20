@@ -4082,7 +4082,11 @@ body.on-federated-server .side-nav-note {
 .prec-adding .prec-circle::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid rgba(79, 184, 168, .25); border-top-color: #4fb8a8; animation: prec-spin 1.2s linear infinite; }
 .prec-failed .prec-circle { border: 2px solid #e0616a; color: #ec8a90; }
 .prec-noroom .prec-circle { border: 1.5px solid #444c56; color: #8a919e; }
-.prec-state { display: block; margin-top: -6px; font-size: 12px; line-height: 16px; font-weight: 600; white-space: nowrap; color: #5ec9b9; }
+/* the state under the name, in the item's width: a long one wraps at its
+   spaces onto a second line as the name does, never inside a word; a word
+   wider than the item is cut with an ellipsis. The breaking is set here,
+   not inherited, so no rule on the strip or the page around it changes it */
+.prec-state { display: block; max-width: 86px; max-height: 32px; overflow: hidden; margin-top: -6px; font-size: 12px; line-height: 16px; font-weight: 600; text-align: center; white-space: normal; overflow-wrap: normal; word-break: normal; line-break: auto; hyphens: manual; text-overflow: ellipsis; color: #5ec9b9; }
 .prec-failed .prec-state { color: #ec8a90; }
 .prec-noroom .prec-state { color: #8a919e; }
 /* the acts line: Preview all (the network's teal) · Copy list */
