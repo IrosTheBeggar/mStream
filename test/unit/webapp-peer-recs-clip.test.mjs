@@ -53,7 +53,9 @@ const CLIP_METHODS = ['clipProvider', 'clipToggle', 'clipStart', 'clipHandlers',
   // the window's tile clip, on the same aside (owner 'window'), and the
   // preview answers it shares with the clip
   'playDiscoverPreview', 'stopDiscoverPreview', 'toggleDiscoverPreview', 'discoverPreviewState', 'dmSeedPreviews', 'dmSharePreview',
-  'dmLive', 'dmRecommendation', 'dmFolderFocus', 'dmArt', 'clipProviderCheck'];
+  'dmLive', 'dmRecommendation', 'dmFolderFocus', 'dmArt', 'clipProviderCheck',
+  // a preview whose clip would not play, forgotten on both sides
+  'clipForget', 'dmForgetPreview'];
 
 const DEEZER = { name: 'deezer', title: 'Deezer', capabilities: ['preview'] };
 const ITUNES = { name: 'itunes', title: 'Apple Music', capabilities: ['preview'] };
@@ -667,14 +669,15 @@ describe('api.js: the strip, the Add and the preview calls (plan §3.2, §3.3, �
 // ── one answer per lead: the window's preview tile and the page's clip ───
 // Both ask the preview plug-in's resolve about the same lead; whichever
 // asked first answers for the other (vp.js dmSeedPreviews / dmSharePreview).
-describe('the window and the page share a lead\'s preview answer', () => {
-  // the window as openDiscoverModal leaves it for a network lead
-  const openWindow = (h, track, source = 'p2p') => {
-    h.vm.discover.modal = { open: true, gen: 7, source, track, focus: null, previews: {}, playing: null };
-    if (source === 'p2p') { h.vm.dmSeedPreviews(); }
-  };
-  const resolved = (l) => ({ result: { preview: previewOf(l) } });
+// The window as openDiscoverModal leaves it for a network lead, and the
+// window tile's resolve as it answers.
+const openWindow = (h, track, source = 'p2p') => {
+  h.vm.discover.modal = { open: true, gen: 7, source, track, focus: null, previews: {}, playing: null };
+  if (source === 'p2p') { h.vm.dmSeedPreviews(); }
+};
+const resolved = (l, over) => ({ result: { preview: previewOf(l, over) } });
 
+describe('the window and the page share a lead\'s preview answer', () => {
   test('the page asked first: the window\'s tile starts ready to play, its header has the art, and a press plays without asking again', async () => {
     const h = makeClip({ answers: [ok(SIGNAL)] });
     await h.vm.clipStart(SIGNAL);
@@ -801,5 +804,302 @@ describe('the window and the page share a lead\'s preview answer', () => {
     h.vm.clipProviderCheck('deezer');
     assert.deepEqual(h.c.results, {});
     assert.equal(h.c.art[NIGHT_FERRY], previewOf(SIGNAL).artwork, 'the album\'s art stays');
+  });
+});
+
+// ── a preview whose clip would not play (§5.5) ───────────────────────────
+// Deezer's preview URLs expire, so a preview kept for the visit can stop
+// playing: its answer is forgotten on both sides (vp.js clipForget,
+// dmForgetPreview) while the visit still holds that URL, and the next
+// press asks again. The page's own handlers (m.js peerRecsOnClip and the
+// rest) are sliced out of m.js by name and run over the clip above.
+const M_SRC = readFileSync(new URL('../../webapp/alpha/m.js', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+function mFnSrc(name) {
+  const start = M_SRC.indexOf(`\nfunction ${name}(`);
+  assert.ok(start >= 0, `m.js no longer defines ${name}() — update this test`);
+  const end = M_SRC.indexOf('\n}\n', start);
+  return M_SRC.slice(start + 1, end + 2);
+}
+const PAGE_FNS = ['peerRecsOnClip', 'peerRecsAdvance', 'peerRecsEnd', 'peerRecsClipOf', 'peerRecsPlay', 'peerRecsPreviewAll'];
+// The page over `leads` (one tab), hearing the clip's events as
+// VUEPLAYERCORE.watchClip hands them over.
+function makePage(h, leads) {
+  const view = { provider: DEEZER, seq: null, noPreview: new Set(), pending: false };
+  const toasts = [];
+  const core = {
+    clipToggle: (raw) => Promise.resolve(h.vm.clipToggle(raw)),
+    clipStart: (raw) => h.vm.clipStart(raw),
+    clipStop: (why) => h.vm.clipStop(why),
+    clipState: () => h.vm.clipState(),
+    clipPrefetch: (raw) => h.vm.clipPrefetch(raw),
+    clipResult: (raw) => { const r = h.c.results[PR.leadKey(raw)]; return r ? { status: r.status, preview: r.preview } : null; },
+  };
+  const noop = () => {};
+  const body = `${PAGE_FNS.map(mFnSrc).join('\n')}
+    return { onClip: peerRecsOnClip, play: peerRecsPlay, previewAll: peerRecsPreviewAll, clipOf: peerRecsClipOf };`;
+  const fns = new Function('peerRecsView', 'discoveryView', 'PEERRECS', 'VUEPLAYERCORE', 'iziToast', 'escapeHtml', 't',
+    'peerRecsBandDraw', 'peerRecsBandProgress', 'peerRecsBandHide', 'peerRecsPatchPlay', 'peerRecsPatchArt', 'peerRecsOff', 'peerRecsReask', body)(
+    view, { shown: { network: leads.map((raw) => ({ raw })) } }, PR, core, { info: (o) => toasts.push(o.title) }, (x) => x, (k) => k,
+    noop, noop, noop, noop, noop, noop, noop);
+  h.mod.watchers.push(fns.onClip);
+  return { view, toasts, ...fns };
+}
+
+describe('a preview whose clip would not play is forgotten, and the next press asks again (§5.5)', () => {
+  const key = (l) => PR.leadKey(l);
+  const freshUrl = (l) => `https://cdn.example/${l.exportId}-fresh.mp3`;
+  const fresh = (l) => ok(l, { url: freshUrl(l) });
+  const results = (h) => h.events.filter((e) => e.type === 'result').map((e) => [e.key, e.status]);
+
+  test('the page: a kept answer whose clip will not load is "No preview" for that press and forgotten; the next press asks and plays the fresh one', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL), fresh(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.vm.clipStop('user');
+    await h.vm.clipToggle(SIGNAL);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [1, 'playing', previewOf(SIGNAL).url], 'precondition: the visit\'s answer replays without a call');
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.c.status, key(SIGNAL) in h.c.results, h.mod.aside.owner], ['failed', false, null]);
+    assert.deepEqual(h.events.slice(-2).map((e) => [e.type, e.key, e.status]), [['result', key(SIGNAL), 'forgotten'], ['failed', key(SIGNAL), undefined]],
+      'the page hears the answer is gone, then the press\'s "No preview"');
+    await h.vm.clipToggle(SIGNAL);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [2, 'playing', freshUrl(SIGNAL)]);
+    assert.deepEqual(h.c.results[key(SIGNAL)], { status: 'ready', preview: previewOf(SIGNAL, { url: freshUrl(SIGNAL) }) }, 'the fresh answer is the visit\'s now');
+  });
+
+  test('the page: a clip that breaks part way through is forgotten too; one that played out is kept', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL), fresh(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.el().currentTime = 12;
+    h.el().fire('timeupdate');
+    assert.deepEqual([h.c.status, h.c.at], ['playing', 12]);
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.c.status, key(SIGNAL) in h.c.results], ['failed', false]);
+    await h.vm.clipToggle(SIGNAL);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [2, 'playing', freshUrl(SIGNAL)]);
+    h.el().fire('ended');
+    await h.step();
+    assert.equal(h.c.results[key(SIGNAL)].preview.url, freshUrl(SIGNAL), 'played out: kept');
+    await h.vm.clipToggle(SIGNAL);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status], [2, 'playing'], 'and replayed without a call');
+  });
+
+  test('only the URL that would not play is forgotten: a newer answer kept since stays, and the window\'s tile on the lead agrees', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    // a window open on the lead under the page's clip, its tile from the page's answer
+    openWindow(h, SIGNAL);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'ready', preview: previewOf(SIGNAL) });
+    // a newer answer for the lead is kept meanwhile
+    h.vm.clipRemember(h.c.results, key(SIGNAL), { status: 'ready', preview: previewOf(SIGNAL, { url: freshUrl(SIGNAL) }) });
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.c.status, h.c.results[key(SIGNAL)].preview.url, results(h)], ['failed', freshUrl(SIGNAL), []], 'the newer answer stands: nothing forgotten');
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'idle', preview: null }, 'the tile that held the dead URL is idle again');
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.resolves.length, h.vm.discover.modal.playing, h.el().src], [0, 'deezer', freshUrl(SIGNAL)], 'its press starts from the newer answer');
+    // the window's side: its dead clip leaves a newer answer alone too
+    h.vm.clipRemember(h.c.results, key(SIGNAL), { status: 'ready', preview: previewOf(SIGNAL, { url: 'https://cdn.example/k1-newer.mp3' }) });
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.vm.discover.modal.playing, h.vm.discoverPreviewState('deezer').status, h.c.results[key(SIGNAL)].preview.url, results(h)],
+      [null, 'idle', 'https://cdn.example/k1-newer.mp3', []]);
+    // a window tile that holds a newer answer than the page's dead clip keeps it
+    const t = makeClip({ answers: [ok(SIGNAL)] });
+    await t.vm.clipStart(SIGNAL);
+    await t.step();
+    openWindow(t, SIGNAL);
+    t.vm.discover.modal.previews.deezer = { status: 'ready', preview: previewOf(SIGNAL, { url: freshUrl(SIGNAL) }) };
+    t.el().fire('error');
+    await t.step();
+    assert.deepEqual([key(SIGNAL) in t.c.results, results(t), t.vm.discoverPreviewState('deezer').preview.url], [false, [[key(SIGNAL), 'forgotten']], freshUrl(SIGNAL)]);
+  });
+
+  test('the window: a ready tile whose clip will not play is idle again and its next press asks; another tile or a connected server\'s song forgets only its own', async () => {
+    const h = makeClip({ playing: true, answers: [] });
+    openWindow(h, { ...LONG, filepath: 'x.mp3' }, 'federation');
+    h.resolveQueue.push(resolved(LONG));
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.vm.discover.modal.playing, h.vm.discoverPreviewState('deezer').status, h.player.toggles], ['deezer', 'ready', ['pause']]);
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.vm.discover.modal.playing, h.vm.discoverPreviewState('deezer'), h.mod.aside.owner, h.player.toggles],
+      [null, { status: 'idle', preview: null }, null, ['pause', 'play']], 'idle again, and the main player plays again');
+    assert.deepEqual([h.c.results, results(h)], [{}, []], 'no answer shared with the page');
+    h.resolveQueue.push(resolved(LONG, { url: freshUrl(LONG) }));
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.resolves.length, h.vm.discover.modal.playing, h.el().src], [2, 'deezer', freshUrl(LONG)], 'asked again');
+    // a network lead's tile of another plug-in than the page's: the page's answer stays
+    const o = makeClip({ plugins: [DEEZER, ITUNES], answers: [ok(SIGNAL)] });
+    await o.vm.clipStart(SIGNAL);
+    await o.step();
+    o.vm.clipStop('user');
+    openWindow(o, SIGNAL);
+    o.resolveQueue.push(resolved(SIGNAL, { provider: 'itunes', url: 'https://cdn.example/k1-itunes.m4a' }));
+    await o.vm.toggleDiscoverPreview(ITUNES);
+    await o.step();
+    o.el().fire('error');
+    await o.step();
+    assert.deepEqual([o.vm.discoverPreviewState('itunes').status, o.vm.discoverPreviewState('deezer').status, o.c.results[key(SIGNAL)].preview.url, results(o)],
+      ['idle', 'ready', previewOf(SIGNAL).url, []]);
+  });
+
+  test('the window: a tile whose clip would not play goes idle but its cover stays in the header (only the clip\'s address died); a newer answer\'s cover comes first', () => {
+    const h = makeClip({ answers: [] });
+    // a connected server's song with no art of its own: the header draws the tile's cover
+    h.vm.discover.modal = { open: true, gen: 7, source: 'federation', track: { ...LONG, peer: null }, focus: null, previews: { deezer: { status: 'ready', preview: previewOf(LONG) } }, playing: null };
+    assert.equal(h.vm.dmArt(), previewOf(LONG).artwork);
+    h.vm.dmForgetPreview(7, 'deezer', previewOf(LONG).url);
+    assert.deepEqual([h.vm.discoverPreviewState('deezer'), h.vm.dmArt()], [{ status: 'idle', preview: null }, previewOf(LONG).artwork]);
+    // the next press's answer draws its own cover
+    h.vm.discover.modal.previews = { deezer: { status: 'ready', preview: previewOf(LONG, { url: 'https://cdn.example/k3-new.mp3', artwork: 'https://cdn.example/k3-new.jpg' }) } };
+    assert.equal(h.vm.dmArt(), 'https://cdn.example/k3-new.jpg');
+    // a stale window (another gen) or a newer address keeps its tile, and keeps nothing
+    h.vm.dmForgetPreview(6, 'deezer', previewOf(LONG).url);
+    h.vm.dmForgetPreview(7, 'deezer', previewOf(LONG).url);
+    assert.equal(h.vm.discoverPreviewState('deezer').status, 'ready');
+    // a new window starts with no kept cover
+    h.vm.discover.modal = { open: true, gen: 8, source: 'federation', track: { ...LONG, peer: null }, focus: null, previews: {}, playing: null };
+    assert.equal(h.vm.dmArt(), null);
+  });
+
+  test('the window on a network lead: its dead clip forgets the page\'s answer too, the page hears it, and a new window on the lead is not started from it', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL), fresh(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.vm.clipStop('user');
+    openWindow(h, SIGNAL);
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.resolves.length, h.vm.discover.modal.playing, h.el().src], [0, 'deezer', previewOf(SIGNAL).url], 'precondition: the page\'s answer');
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([key(SIGNAL) in h.c.results, results(h), h.vm.discoverPreviewState('deezer')], [false, [[key(SIGNAL), 'forgotten']], { status: 'idle', preview: null }]);
+    openWindow(h, SIGNAL);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'idle', preview: null }, 'a new window is not started from the dead URL');
+    // the page's next press asks again
+    await h.vm.clipToggle(SIGNAL);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [2, 'playing', freshUrl(SIGNAL)]);
+    // the window asked first: its dead clip forgets what it shared
+    const w = makeClip({ answers: [fresh(LONG)] });
+    openWindow(w, LONG);
+    w.resolveQueue.push(resolved(LONG));
+    await w.vm.toggleDiscoverPreview(DEEZER);
+    await w.step();
+    assert.equal(w.c.results[key(LONG)].preview.url, previewOf(LONG).url);
+    w.el().fire('error');
+    await w.step();
+    assert.deepEqual([key(LONG) in w.c.results, results(w)], [false, [[key(LONG), 'ready'], [key(LONG), 'forgotten']]]);
+    w.vm.stopDiscoverPreview();
+    await w.vm.clipToggle(LONG);
+    await w.step();
+    assert.deepEqual([w.calls.length, w.c.status, w.el().src], [1, 'playing', freshUrl(LONG)]);
+  });
+
+  test('Preview all: a clip that will not play still ends the chain, quietly, and is forgotten; a single press asks again and says "No preview" when it fails', async () => {
+    const h = makeClip({ playing: true, answers: [ok(SIGNAL), ok(HARBOR), fresh(HARBOR)] });
+    const page = makePage(h, [SIGNAL, HARBOR, LONG]);
+    page.previewAll();
+    await h.step();
+    assert.deepEqual([h.c.key, h.c.status], [key(SIGNAL), 'playing']);
+    h.el().fire('ended');
+    await h.step();
+    assert.deepEqual([h.c.key, h.c.status, page.view.seq.mode], [key(HARBOR), 'playing', 'all'], 'it moved on');
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.c.status, page.view.seq, h.calls.length, page.toasts], ['failed', null, 2, []], 'the chain ends there, quietly: Long Exposure is never asked');
+    assert.deepEqual(h.player.toggles, ['pause', 'play'], 'the session ended: the main player plays again');
+    assert.equal(key(HARBOR) in h.c.results, false, 'forgotten');
+    assert.deepEqual([page.clipOf(HARBOR), page.view.noPreview.has(key(HARBOR))], ['idle', false], 'not "No preview": its play icon is idle again');
+    // its play icon asks again and plays
+    page.play(1);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src, page.view.seq.mode], [3, 'playing', freshUrl(HARBOR), 'one']);
+    h.el().fire('error');
+    await h.step();
+    assert.deepEqual([h.c.status, page.toasts, key(HARBOR) in h.c.results], ['failed', ['peerRecs.noPreview'], false], 'a single press says "No preview"');
+    // a forgotten answer takes a lead out of the page's "No preview" set,
+    // whatever the page had marked
+    page.view.noPreview.add(key(LONG));
+    page.onClip({ type: 'result', key: key(LONG), status: 'forgotten', state: h.vm.clipState() });
+    assert.deepEqual([page.view.noPreview.has(key(LONG)), page.clipOf(LONG)], [false, 'idle']);
+  });
+
+  // A play() the browser refuses with NotAllowedError (the autoplay rule,
+  // say Safari on Preview all's hand-off) says nothing of the clip: its
+  // answer stays. A play() refused for its source (NotSupportedError, as
+  // Chrome answers a dead URL, sometimes before the element's error) is
+  // the clip's own.
+  const notAllowed = () => Object.assign(new Error('not allowed'), { name: 'NotAllowedError' });
+  const notSupported = () => Object.assign(new Error('no supported source'), { name: 'NotSupportedError' });
+
+  test('the page: a play the browser only refused is "No preview" for that press and keeps its answer; a play refused for its source forgets it', async () => {
+    const h = makeClip({ playing: true, answers: [ok(SIGNAL), ok(HARBOR), fresh(HARBOR)] });
+    const page = makePage(h, [SIGNAL, HARBOR, LONG]);
+    page.previewAll();
+    await h.step();
+    h.el().refuse = notAllowed();
+    h.el().fire('ended');
+    await h.step();
+    assert.deepEqual([h.c.key, h.c.status, page.view.seq, page.toasts, h.calls.length], [key(HARBOR), 'failed', null, [], 2], 'Preview all\'s hand-off refused: the chain ends there, quietly');
+    assert.deepEqual([h.c.results[key(HARBOR)], results(h), page.clipOf(HARBOR)], [{ status: 'ready', preview: previewOf(HARBOR) }, [], 'idle'], 'the answer stays');
+    page.play(1);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [2, 'playing', previewOf(HARBOR).url], 'its play icon plays it without asking');
+    h.vm.clipStop('user');
+    await h.step();
+    h.el().refuse = notSupported();
+    page.play(1);
+    await h.step();
+    assert.deepEqual([h.c.status, key(HARBOR) in h.c.results, results(h), page.toasts], ['failed', false, [[key(HARBOR), 'forgotten']], ['peerRecs.noPreview']]);
+    page.play(1);
+    await h.step();
+    assert.deepEqual([h.calls.length, h.c.status, h.el().src], [3, 'playing', freshUrl(HARBOR)], 'asked again');
+  });
+
+  test('the window: a play the browser only refused stops and keeps the tile and the page\'s answer; a play refused for its source forgets both, only in the window it played in', async () => {
+    const h = makeClip({ answers: [ok(SIGNAL)] });
+    await h.vm.clipStart(SIGNAL);
+    await h.step();
+    h.vm.clipStop('user');
+    openWindow(h, SIGNAL);
+    h.el().refuse = notAllowed();
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    const kept = { status: 'ready', preview: previewOf(SIGNAL) };
+    assert.deepEqual([h.vm.discover.modal.playing, h.mod.aside.owner, h.vm.discoverPreviewState('deezer'), h.c.results[key(SIGNAL)], results(h)],
+      [null, null, kept, kept, []], 'stopped, and kept');
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.resolves.length, h.vm.discover.modal.playing, h.el().src], [0, 'deezer', previewOf(SIGNAL).url], 'its next press plays it without asking');
+    h.vm.stopDiscoverPreview();
+    h.el().refuse = notSupported();
+    await h.vm.toggleDiscoverPreview(DEEZER);
+    await h.step();
+    assert.deepEqual([h.vm.discover.modal.playing, h.vm.discoverPreviewState('deezer'), key(SIGNAL) in h.c.results, results(h)],
+      [null, { status: 'idle', preview: null }, false, [[key(SIGNAL), 'forgotten']]]);
+    // a window that is no longer the one the clip played in (replaced, or
+    // closed) resets nothing; the one it played in does
+    const gen = h.vm.discover.modal.gen;
+    h.vm.discover.modal.previews.deezer = kept;
+    h.vm.dmForgetPreview(gen - 1, 'deezer', previewOf(SIGNAL).url);
+    h.vm.discover.modal.open = false;
+    h.vm.dmForgetPreview(gen, 'deezer', previewOf(SIGNAL).url);
+    h.vm.discover.modal.open = true;
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), kept);
+    h.vm.dmForgetPreview(gen, 'deezer', previewOf(SIGNAL).url);
+    assert.deepEqual(h.vm.discoverPreviewState('deezer'), { status: 'idle', preview: null });
   });
 });
