@@ -433,7 +433,8 @@ Abbreviations: DP = `webapp/alpha/discovery-page.js`, M = `webapp/alpha/m.js`, V
   - the user's main play stops the clip with no later resume;
   - window and page clips preempt each other; `stopDiscoverPreview` leaves a page clip alone;
   - 429: deezer 5 s, itunes 60 s, one retry; still 429 → transient (the next press asks again); `preview:null` → none for the visit; a prefetch never retries; one resolve in flight, a newer press supersedes;
-  - the gen fence; art only on `artMatches`; the results cache; `clipReset`; 403 → off.
+  - the gen fence; art only on `artMatches`; the results cache; `clipReset`; 403 → off;
+  - a clip that will not play (§5.5), the page's and the window's: on load or part way, it is forgotten only while the visit holds that URL (a newer answer stays, on either side); `result {forgotten}`; the play icon and the tile idle again, and the next press asks; a new window is not seeded with the dead URL; the window's header keeps the idle tile's cover; a clip that played out is kept; Preview all ends there, quietly, over the real `m.js` handlers; a play the browser only refused keeps its answer, one refused for its source forgets it.
 - **MT (W4)**:
   - the gate per flag;
   - open = exactly one taste call with the R1 body + one peers call + `[{state:'peerRecs'}]`;
@@ -821,6 +822,7 @@ See §2 item 10. Source: `preview.artwork`, https only, loaded with `referrerpol
 - At most one prefetch: the next lead, once the live clip passes 20 s, in Preview all only. A prefetch never retries.
 - **429**: wait 5 s (deezer and any provider other than itunes) or 60 s (itunes), then retry once. Still failing → "No preview" for that press only. It is transient: the next press asks again, and Preview all ends the chain instead of skipping into an exhausted limiter.
 - `preview: null`: "No preview" for the visit (muted icon); Preview all skips it.
+- A found preview is kept for the visit, one answer per lead, and the page and the window share it. Deezer's preview URLs expire, so a kept preview can stop playing. A clip that will not play (it fails to load, or breaks part way) is "No preview" for that press, and Preview all ends the chain there, as after a 429. Its answer is then forgotten, but only while the visit still holds that same URL for the lead: a newer answer stored since stays. The lead's play icon is idle again (not "No preview"), a window tile that holds that URL goes back to idle (its cover stays in the window's header: only the clip's address died), and the next press asks again. A new window on the lead does not start from the dead URL. A clip that played out stays kept. A play the browser only refused (`NotAllowedError`, the autoplay rule, as Safari may answer Preview all's hand-off) is "No preview" for that press too, and Preview all ends there, but its answer stays: the preview may be good. A play refused for its source (`NotSupportedError`, as Chrome answers a dead URL) is the clip's own, and is forgotten. The plug-ins cache a resolve for 10 minutes (`src/discovery-plugins/plugins/deezer.js:22`, `itunes.js:24`), so a quick re-ask may answer the same URL; that costs one cached resolve per press. The phone does the same with `PreviewAnswers.forget(leadKey, plugin, url)`.
 - A transport failure is treated like a 429 after its retry.
 - Main player rules: §2 items 13–14. The clip never counts as a play, never scrobbles, and is never queued.
 

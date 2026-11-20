@@ -283,6 +283,9 @@ const VUEPLAYERCORE = (() => {
       links: [],
       error: false,
       previews: {},
+      // a tile's cover kept after its clip would not play and the tile went
+      // idle (dmForgetPreview): the header still draws it (dmArt)
+      keptArt: {},
       playing: null,
       peer: null,
       file: null,
@@ -407,14 +410,20 @@ const VUEPLAYERCORE = (() => {
     return aside.token;
   }
   // play() on the element for a claim; a refusal reaches the owner's
-  // error handler (an AbortError is this aside's own pause or swap).
+  // error handler (an AbortError is this aside's own pause or swap). The
+  // handler hears error(true) when the browser only would not play it now
+  // (NotAllowedError, the autoplay rule): the clip itself may be good. The
+  // element's own error (it would not load, or broke part way) and any
+  // other refusal are error().
   function asideStart(el, token) {
     let p = null;
     try { p = el.play(); } catch (err) { p = Promise.reject(err); }
     if (p && typeof p.catch === 'function') {
       p.catch((err) => {
         if (aside.token !== token || aside.loaded !== token || (err && err.name === 'AbortError')) { return; }
-        if (aside.on && aside.on.error) { aside.on.error(); }
+        if (aside.on && aside.on.error) {
+          if (err && err.name === 'NotAllowedError') { aside.on.error(true); } else { aside.on.error(); }
+        }
       });
     }
   }
@@ -491,7 +500,8 @@ const VUEPLAYERCORE = (() => {
   //   gen      fences every answer, retry and audio event
   //   art      tile key → the artwork a preview earned (§2 item 10)
   //   results  lead key → { status: 'ready' | 'none', preview }: what the
-  //            visit's resolves answered (at most CLIP_RESULTS_MAX)
+  //            visit's resolves answered (at most CLIP_RESULTS_MAX), less a
+  //            preview whose clip would not play (clipForget)
   function blankDiscoverClip() {
     return { key: null, raw: null, tile: null, status: 'idle', preview: null, at: 0, seconds: 30, gen: 0, art: {}, results: {} };
   }
@@ -1404,7 +1414,10 @@ const VUEPLAYERCORE = (() => {
           const tile = dmTileOf(m.track && m.track.tile);
           if (tile && tile.key && this.discover.clip.art[tile.key]) { return this.discover.clip.art[tile.key]; }
         }
-        return shown.length ? shown[0].artwork : null;
+        if (shown.length) { return shown[0].artwork; }
+        // a tile whose clip would not play keeps its cover here
+        const kept = Object.keys(m.keptArt || {}).map((name) => m.keptArt[name]).find(Boolean);
+        return kept || null;
       },
       // The header's one meta line, its parts joined by "·": a connected
       // server's status, the song's format (an album has many: none), and
@@ -2166,7 +2179,8 @@ const VUEPLAYERCORE = (() => {
       // preview plug-in's resolve about the same lead. Opening the window
       // on a lead the page already asked about starts the preview plug-in's
       // tile from that answer (ready to play, or "No preview") instead of
-      // asking again.
+      // asking again. A preview whose clip would not play, on either side,
+      // is forgotten by both (clipForget).
       dmSeedPreviews: function () {
         const m = this.discover.modal;
         const provider = this.clipProvider();
@@ -2196,15 +2210,42 @@ const VUEPLAYERCORE = (() => {
       },
       // One tile's clip in place of whatever the aside played (a tile's,
       // the page's clip): the main player stays paused across the swap.
+      // A clip that would not play (Deezer's preview URLs expire) is no
+      // answer any more: the tile is idle again and asks on its next
+      // press, and a network lead's answer the page shares with it is
+      // forgotten too (clipForget). A play the browser only refused
+      // (refused: the autoplay rule) stops and keeps the answer.
       playDiscoverPreview: function (name, preview) {
-        this.discover.modal.playing = name;
+        const m = this.discover.modal;
+        m.playing = name;
+        const gen = m.gen;
+        const provider = this.clipProvider();
+        const key = m.source === 'p2p' && m.track && provider && provider.name === name ? PEERRECS.leadKey(m.track) : '';
         const done = () => { this.stopDiscoverPreview(); };
         asidePlay('window', preview.url, {
           ended: done,
-          error: done,
+          error: (refused) => {
+            this.stopDiscoverPreview();
+            if (refused) { return; }
+            this.dmForgetPreview(gen, name, preview.url);
+            this.clipForget(key, preview.url);
+          },
           // the page's clip took the aside, or the user started the main player
           stopped: () => { if (this.discover.modal) { this.discover.modal.playing = null; } },
         });
+      },
+      // The window's tile back to idle while it still holds `url` (a
+      // newer answer since stays), and only in the window it played in.
+      dmForgetPreview: function (gen, name, url) {
+        const m = this.discover.modal;
+        const tile = this.dmLive(gen) && m.previews ? m.previews[name] : null;
+        if (!(tile && tile.status === 'ready' && tile.preview && tile.preview.url === url)) { return; }
+        // only the clip's address died: the header keeps the tile's cover
+        if (tile.preview.artwork) {
+          if (!m.keptArt) { this.$set(m, 'keptArt', {}); }
+          this.$set(m.keptArt, name, tile.preview.artwork);
+        }
+        this.$delete(m.previews, name);
       },
       // Stops the window's own tile clip only: a clip the Peer
       // Recommendations page plays goes on under the window.
@@ -2220,8 +2261,11 @@ const VUEPLAYERCORE = (() => {
       // is one), one in flight, a newer press takes a queued one's place; a
       // 429 waits PEERRECS.retryDelayMs and is asked once more, then it is
       // "No preview" for that press only (failed); preview: null is "No
-      // preview" for the visit (none). A 403 is the feature switched off.
-      // Everything async is fenced by clip.gen.
+      // preview" for the visit (none). A found preview is kept for the
+      // visit until its clip will not play: then it is "No preview" for
+      // that press (failed) and forgotten, so the next press asks again
+      // (clipForget); a play the browser only refused keeps it. A 403 is
+      // the feature switched off. Everything async is fenced by clip.gen.
       clipProvider: function () {
         if (!this.discover.plugins.available) { return null; }
         return PEERRECS.previewProvider(this.discover.plugins.list);
@@ -2279,7 +2323,16 @@ const VUEPLAYERCORE = (() => {
             this.clipEmit('ended');
             this.clipEnd(gen);
           },
-          error: () => { if (mine() && CLIP_LIVE.indexOf(c.status) !== -1) { this.clipSettle(gen, 'failed'); } },
+          // the clip would not play, on load (an expired preview URL) or
+          // part way through: "No preview" for this press, and its answer
+          // forgotten so the next press asks again. A play the browser only
+          // refused (refused: the autoplay rule) is "No preview" for this
+          // press too, and its answer is kept: the preview may be good.
+          error: (refused) => {
+            if (!mine() || CLIP_LIVE.indexOf(c.status) === -1) { return; }
+            if (c.preview && !refused) { this.clipForget(c.key, c.preview.url); }
+            if (mine()) { this.clipSettle(gen, 'failed'); }
+          },
           // the aside let go: the window's tile took it ('preempted'), or
           // the user started the main player ('main')
           stopped: (why) => {
@@ -2370,7 +2423,8 @@ const VUEPLAYERCORE = (() => {
         this.clipEmit('playing');
       },
       // No clip for this press: 'none' (the lead has no preview) or
-      // 'failed' (this press only).
+      // 'failed' (this press only: an ask that got no answer, or a clip
+      // that would not play).
       clipSettle: function (gen, status) {
         const c = this.discover.clip;
         c.status = status;
@@ -2464,6 +2518,25 @@ const VUEPLAYERCORE = (() => {
         const keys = Object.keys(results);
         if (!(key in results) && keys.length >= CLIP_RESULTS_MAX) { this.$delete(results, keys[0]); }
         this.$set(results, key, entry);
+      },
+      // A lead's preview whose clip would not play, the page's or a
+      // window tile's: forgotten while the visit still holds that URL for
+      // the lead (a newer answer kept since stays), so the next press on
+      // either side asks again. The page hears result { status:
+      // 'forgotten' }: the lead is not "No preview", its play icon is idle
+      // again. A window open on the lead whose tile holds that URL goes
+      // back to idle too.
+      clipForget: function (key, url) {
+        if (!key || !url) { return; }
+        const c = this.discover.clip;
+        const hit = c.results[key];
+        if (hit && hit.status === 'ready' && hit.preview && hit.preview.url === url) {
+          this.$delete(c.results, key);
+          this.clipEmit('result', { key, status: 'forgotten' });
+        }
+        const m = this.discover.modal;
+        const provider = this.clipProvider();
+        if (m && m.source === 'p2p' && m.track && provider && PEERRECS.leadKey(m.track) === key) { this.dmForgetPreview(m.gen, provider.name, url); }
       },
       // A plain snapshot for the page: { key, raw, tile, status, preview,
       // at, seconds, live }.
@@ -6026,7 +6099,8 @@ const VUEPLAYERCORE = (() => {
   // The artwork a preview earned for a tile key this visit, else null.
   mstreamModule.clipArt = (tileKey) => (typeof tileKey === 'string' && discoverState.clip.art[tileKey]) || null;
   // What the visit's resolves answered for a lead: { status: 'ready' |
-  // 'none', preview }, else null (never asked, or only failed).
+  // 'none', preview }, else null (never asked, only failed, or a preview
+  // whose clip would not play, forgotten).
   mstreamModule.clipResult = (raw) => {
     const r = raw && typeof raw === 'object' ? discoverState.clip.results[PEERRECS.leadKey(raw)] : null;
     return r ? { status: r.status, preview: r.preview } : null;
@@ -6034,9 +6108,10 @@ const VUEPLAYERCORE = (() => {
   // Call fn(event) on every clip event: { type, key, state, …extra } —
   // resolving · waiting { ms } · playing · paused · time · art { tileKey,
   // url } · ended · none · failed · stopped { why: user | preempted | main
-  // | reset | … } · reset · off · result { key, status: ready | none } (the
-  // window answered for a lead: clipResult has it now). → the unwatch
-  // function.
+  // | reset | … } · reset · off · result { key, status: ready | none |
+  // forgotten } (the window answered for a lead: clipResult has it now; or
+  // a clip of the lead's would not play, and its answer is gone). → the
+  // unwatch function.
   mstreamModule.watchClip = (fn) => {
     if (typeof fn !== 'function') { return () => {}; }
     clipWatchers.push(fn);

@@ -6501,8 +6501,9 @@ function peerRecsOnClip(ev) {
   } else if (ev.type === 'result') {
     // the window's preview tile answered for a lead: the page knows it now
     // (Preview all and ⏭ pass a lead with no preview by), and its play icon
-    // follows
-    if (ev.status === 'none') { p.noPreview.add(ev.key); } else if (ev.status === 'ready') { p.noPreview.delete(ev.key); }
+    // follows. A forgotten answer (a clip of the lead's would not play) is
+    // no "No preview": the icon is idle again, and its next press asks.
+    if (ev.status === 'none') { p.noPreview.add(ev.key); } else { p.noPreview.delete(ev.key); }
     peerRecsPatchPlay();
   } else if (ev.type === 'ended') {
     if (!(all && peerRecsAdvance())) { peerRecsEnd(); }
