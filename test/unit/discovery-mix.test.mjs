@@ -4,7 +4,9 @@
  * order's artist spread, the skip-word matcher, and the staged near-dup
  * test — plus the lock that keeps Auto DJ's song filters on both routes:
  * every SONG_FILTER_KEYS key, with its own schema, in random-songs' schema
- * and in the mix's (Joi describe()), so a filter added there reaches both.
+ * and in the mix's (Joi describe()), so a filter added there reaches both;
+ * and every other random-songs key named as its own, so one added straight
+ * to random-songs is placed.
  */
 
 import { describe, test } from 'node:test';
@@ -300,5 +302,14 @@ describe('SONG_FILTER_KEYS lock', () => {
       assert.ok(!(k in mix), k);
     }
     assert.deepEqual(Object.keys(mix).sort(), ['from', 'limit', 'skipWords', ...Object.keys(random.SONG_FILTER_KEYS)].sort());
+  });
+
+  test("random-songs' every other key is named as its own, so a key added there is placed, never missed", async () => {
+    // A song filter goes in SONG_FILTER_KEYS (and ships as a new instantMix
+    // generation); a waterfall's or a session's key joins this list.
+    const own = ['artists', 'bpmRangesWide', 'ignoreArtists', 'ignoreList', 'lessLike', 'lessLikeModelId', 'lessLikeVectors', 'limit',
+      'minSimilarity', 'similarTo', 'similarToModelId', 'similarToVector'];
+    const keys = Object.keys((await randomSongsSchema()).describe().keys);
+    assert.deepEqual(keys.filter((k) => !(k in random.SONG_FILTER_KEYS)).sort(), own);
   });
 });

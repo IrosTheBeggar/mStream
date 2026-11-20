@@ -411,7 +411,7 @@ const FNS = ['escapeHtml', 'peerAttr', 'peerOf', 'browseApi', 'localIgnoreVPaths
   'browsingListMetadata', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'moodSortHtml', 'ratingOptionsHtml', 'autoDjChipsHtml', 'filterChipsHtml', 'genreSuggestHtml',
   'hideMoodFilters', 'discoveryHideHead', 'discoverySkelHtml', 'discoveryArtHtml',
   'browseHeadTile', 'popFHeadHtml', 'popFPlaylistHtml', 'createPopper3', 'createMusicFileHtml', 'renderFileWithMetadataHtml', 'renderSearchRow',
-  'renderDiscoverDownloadRow', 'setBrowserRootPanel', 'getAlbumSongs', 'getArtistsAlbums', 'onPlaylistClick', 'onBackButton',
+  'renderDiscoverDownloadRow', 'setBrowserRootPanel', 'getAlbumSongs', 'getArtistsAlbums', 'onPlaylistClick', 'getFileExplorerPath', 'onFilePlaylistClick', 'onBackButton',
   'openSavePlaylistModal', 'savePlaylistFromModal', ...MIX_FNS];
 
 const NAV = makeEl('div', { class: 'side-nav-item', 'data-panel': 'allAlbums' });
@@ -423,7 +423,7 @@ function makeSandbox({ server = {}, playlist = [], position = -1, playing = fals
   const doc = makeDoc();
   for (const id of ['instant_mix_btn', 'search_folders', 'browse-head', 'dpage-head', 'mood_filter_btn', 'mood_filters']) { doc.els.get(id).classList.add('super-hide'); }
   doc.els.get('pop-d-mix').style.display = 'none';
-  const calls = { asked: [], lookups: [], queued: [], cleared: 0, trimmed: 0, toasts: [], modal: [], saved: [], loaded: [], albumSongs: [], artistAlbums: [], views: [], panels: [], senddir: [], popper: [], failures: [] };
+  const calls = { asked: [], lookups: [], queued: [], cleared: 0, trimmed: 0, toasts: [], modal: [], saved: [], loaded: [], albumSongs: [], artistAlbums: [], views: [], panels: [], senddir: [], m3u: [], popper: [], failures: [] };
   const timers = [];
   const box = { calls, doc, timers, respond: () => answer([DOLO, ELEVATION, SWING]), meta: {}, playlistSongs: [], albumSongs: [], artistAlbums: [] };
   const player = {
@@ -440,6 +440,7 @@ function makeSandbox({ server = {}, playlist = [], position = -1, playing = fals
     getGenres: () => Promise.resolve({ status: 'ok', value: ['Hip Hop', 'Jazz'] }),
     lookupMetadata: (fp) => { calls.lookups.push(fp); return Promise.resolve({ filepath: fp, metadata: box.meta[fp] || null }); },
     loadPlaylist: (name) => { calls.loaded.push(name); return Promise.resolve(box.playlistSongs); },
+    loadFileplaylist: (path) => { calls.m3u.push(path); return Promise.resolve({ path, files: [], directories: [] }); },
     savePlaylist: (title, songs) => { calls.saved.push({ title, songs }); return Promise.resolve({}); },
     albumSongs: (body) => { calls.albumSongs.push(body); return Promise.resolve(box.albumSongs); },
     artistAlbums: (body) => { calls.artistAlbums.push(body); return Promise.resolve({ albums: box.artistAlbums }); },
@@ -491,6 +492,7 @@ function makeSandbox({ server = {}, playlist = [], position = -1, playing = fals
     browseKeepKey: () => '',
     boilerplateFailure: (err) => { calls.failures.push(err); },
     getLoadingSvg: () => 'LOADING',
+    printdir: () => {},
     renderAlbum: (name) => `<div class="album-grid-card" data-album="${name}"></div>`,
     discoverDownloadPluginTitle: (name) => name,
     discoverDownloadsAgo: () => '',
@@ -1108,6 +1110,20 @@ describe('Instant Mix: Back', () => {
     await box.S.onBackButton();
     assert.deepEqual(box.calls.senddir, [['demo', 'Boukmanflow']]);
     assert.equal(box.S.state().length, 3);
+  });
+
+  test('to an .m3u open in the explorer: its songs again, its entry put back as it was — never a folder listing of the file', async () => {
+    const box = makeSandbox();
+    box.S.setDirs(['demo', 'Mixes', 'Road trip.m3u']);
+    const m3u = { state: 'fileExplorer', m3u: true, previousScroll: 30, previousSearch: '' };
+    await box.open(DOLO_SEED, DOLO_HEAD, [{ state: 'fileExplorer' }, { state: 'fileExplorer' }, { state: 'fileExplorer' }, m3u]);
+    await box.S.onBackButton();
+    assert.deepEqual(box.calls.senddir, [], 'the folder listing reads no file');
+    assert.deepEqual(box.calls.m3u, ['demo/Mixes/Road trip.m3u/']);
+    assert.equal(box.S.state().at(-1), m3u, 'the entry itself, put back');
+    assert.equal(box.S.state().length, 4);
+    assert.deepEqual(box.S.dirs(), ['demo', 'Mixes', 'Road trip.m3u']);
+    assert.equal(decode(box.el('directoryName').innerHTML), '/demo/Mixes/Road trip.m3u');
   });
 
   test('to a playlist: opened again by name, its entry put back as it was', async () => {

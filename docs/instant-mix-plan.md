@@ -833,6 +833,7 @@ Found while building, in review, or in the end-to-end checks against the demo li
 - `dpage.verb.addToPlaylist` left `en.json`: nothing uses it once Discover's ⋯ reads "More".
 - The filter panel: the unknown-length switch sits inside the Track length control; the select, slider and focus colours are scoped to the panel (Materialize overrides Auto DJ's own); genre suggestions scroll the panel to show themselves; with the panel open the header shrinks and the list keeps two rows in sight; the last library still on is inert, with no toast.
 - `INSTANTMIX.addName` applies Auto DJ's add rules plus the route's length limits, so a chip never silently drops out of the request.
+- Back to an `.m3u` open in the explorer (its entry carries master's `m3u: true`) reads the playlist again, `onFilePlaylistClick(null, entry)` putting the entry back as it was: `senddir()` on the file's path is a 404.
 - Rebased onto master after Auto DJ's panel was redone (#1126): only the Rating's options are shared (`ratingOptionsHtml`, lifted out of `autoDjPanelHtml`) and the Keyword filter's chips are Auto DJ's `autoDjChipsHtml`; the genre field (chips, Whitelist | Blacklist, suggestions) is the panel's own, styled `mix-genre-*`; the 13 words Auto DJ's panel retired are `mix.*` keys with the same English; the chrome also hides master's Add from YouTube here and its strip; the flags arrive through `applyServerInfo`, and `instantMix` follows master's newer flags on `/api/` and ping.
 
 **Phone**

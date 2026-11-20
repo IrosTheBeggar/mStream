@@ -690,12 +690,14 @@ async function recursiveAddDir(el) {
   }
 }
 
-async function onFilePlaylistClick(el) {
+// `entry`: the .m3u's programState entry, put back as it was (Back, from
+// an Instant Mix over its songs) — the explorer's path still ends with it.
+async function onFilePlaylistClick(el, entry) {
   try {
-    fileExplorerArray.push(el.getAttribute("data-directory"));
+    if (!entry) { fileExplorerArray.push(el.getAttribute("data-directory")); }
     // `m3u`: the explorer shows a playlist's songs, no folder to add into
     // (ytdlExplorerFolder) — Add from YouTube here and its strip go
-    programState.push({
+    programState.push(entry || {
       state: 'fileExplorer',
       m3u: true,
       previousScroll: document.getElementById('filelist').scrollTop,
@@ -2771,6 +2773,11 @@ async function onBackButton() {
     await getAllGenres(undefined);
   } else if (backState.state === 'genre') {
     await getGenreSongs(backState.name, backState.source);
+  } else if (backState.state === 'fileExplorer' && fromMix && backState.m3u === true) {
+    // An .m3u's songs under the mix: the playlist read again, its entry put
+    // back as it was (a folder listing of the file is a 404).
+    programState.pop();
+    await onFilePlaylistClick(null, backState);
   } else if (backState.state === 'fileExplorer') {
     // Under a mix the folder is the one it was opened on: drawn again, not
     // its parent.
