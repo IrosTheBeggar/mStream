@@ -129,15 +129,15 @@ function isMuslLinux() {
   }
 }
 
-// Probe the system PATH for ffmpeg + ffprobe. Uses the existing
-// getFfmpegVersion helper which does spawn(name, ['-version']) — bare command
+// Probe the system PATH for ffmpeg + ffprobe. Uses probeVersion(), which
+// does spawn(name, ['-version']) — bare command
 // names get resolved via PATH by Node's child_process. Returns the bare names
 // so later spawns will keep resolving via PATH (system PATH is stable enough
 // that caching a bare name is fine).
 async function findSystemBinaries() {
   const [ff, fp] = await Promise.all([
-    getFfmpegVersion('ffmpeg'),
-    getFfmpegVersion('ffprobe'),
+    probeVersion('ffmpeg'),
+    probeVersion('ffprobe'),
   ]);
   if (ff.major >= MIN_FFMPEG_MAJOR && fp.major >= MIN_FFMPEG_MAJOR) {
     return { ffmpeg: 'ffmpeg', ffprobe: 'ffprobe', ffmpegVersion: ff.versionLine };
@@ -270,6 +270,23 @@ function readReceipt(dir) {
     return (parsed && typeof parsed === 'object' && parsed.pins) ? parsed : null;
   } catch (_err) {
     return null;
+  }
+}
+
+// Whether the binaries in `dir` are mStream's to delete or replace. The
+// default dir is always ours. Anywhere else, only an install marker (the
+// receipt, or the pre-manifest `.checksum` baseline) says we put them there.
+// Without one, a CUSTOM ffmpegDirectory holds the OPERATOR's binaries:
+// possibly a custom or non-free build, possibly a distro's /usr/bin. mStream
+// uses those as they are and never deletes or overwrites them, which is
+// what docs/json_config.md and bin/ffmpeg/README.md promise.
+async function isManagedDir(dir) {
+  if (path.resolve(dir) === path.resolve(BUNDLED_FFMPEG_DIR)) { return true; }
+  if (readReceipt(dir)) { return true; }
+  try {
+    return !!(await fsp.readFile(path.join(dir, LEGACY_CHECKSUM_FILE), 'utf8')).trim();
+  } catch {
+    return false;
   }
 }
 
@@ -649,9 +666,19 @@ async function swapInBinaries(pairs) {
 // would otherwise block the whole resolution chain forever — transcode's
 // init() awaits ensureFfmpeg(), and its bounded retry is only scheduled
 // after that returns.
-const VERSION_PROBE_TIMEOUT_MS = 10000;
+//
+// A probe that runs out of time has said NOTHING about the binary. A healthy
+// build on a loaded box or a slow disk, or under a first-exec antivirus scan,
+// can take longer than this and still answer correctly. So a timeout is
+// reported as such (timedOut), retried once with a longer budget
+// (probeVersion), and never read as "broken". That verdict deletes binaries
+// (ensureFfmpeg step 1), and a slow probe used to delete a working install
+// that way. The env knob exists for the unit tests, which fake a slow binary
+// without sleeping through the real budgets.
+const VERSION_PROBE_TIMEOUT_MS = Math.max(100, Number(process.env.MSTREAM_TEST_FFMPEG_PROBE_TIMEOUT_MS) || 10000);
+const VERSION_PROBE_RETRY_TIMEOUT_MS = VERSION_PROBE_TIMEOUT_MS * 6;
 
-function getFfmpegVersion(binPath) {
+function getFfmpegVersion(binPath, timeoutMs = VERSION_PROBE_TIMEOUT_MS) {
   return new Promise(resolve => {
     let p;
     try {
@@ -676,8 +703,8 @@ function getFfmpegVersion(binPath) {
     };
     timer = setTimeout(() => {
       p.kill('SIGKILL');
-      finish({ major: 0, versionLine: '' });
-    }, VERSION_PROBE_TIMEOUT_MS);
+      finish({ major: 0, versionLine: '', timedOut: true });
+    }, timeoutMs);
     p.stdout.on('data', d => { o += d; });
     p.on('close', () => {
       const line = o.split('\n')[0] || '';
@@ -694,6 +721,21 @@ function getFfmpegVersion(binPath) {
     });
     p.on('error', () => finish({ major: 0, versionLine: '' }));
   });
+}
+
+// getFfmpegVersion() with one retry when the first attempt ran out of time
+// (see VERSION_PROBE_TIMEOUT_MS). A second timeout still only means "did not
+// answer": callers must leave that binary in place, never delete it.
+async function probeVersion(binPath) {
+  const first = await getFfmpegVersion(binPath);
+  if (!first.timedOut) { return first; }
+  winston.warn(`[ffmpeg-bootstrap] ${binPath} gave no version within ${VERSION_PROBE_TIMEOUT_MS / 1000}s, retrying with ${VERSION_PROBE_RETRY_TIMEOUT_MS / 1000}s`);
+  return getFfmpegVersion(binPath, VERSION_PROBE_RETRY_TIMEOUT_MS);
+}
+
+// What a failed probe says, for the logs.
+function probeVerdict(result) {
+  return result.timedOut ? 'no answer to -version in time' : (result.versionLine || '(no output)');
 }
 
 // ── Core download + verify ──────────────────────────────────────────────────
@@ -788,15 +830,17 @@ async function installInto(dir) {
     // Verify BOTH staged binaries execute before touching the live pair —
     // this is the only execution check on the auto-update path, and it
     // catches glibc mismatches and corrupt/truncated extracts. A failure
-    // here leaves the previous working install fully intact.
-    const ffCheck = await getFfmpegVersion(stagedFfmpeg);
+    // here leaves the previous working install fully intact. A staged build
+    // that never answers counts as a failure too: an unverified build must not
+    // replace the live pair. Only staging is discarded, never the live pair.
+    const ffCheck = await probeVersion(stagedFfmpeg);
     if (ffCheck.major < MIN_FFMPEG_MAJOR) {
-      winston.error(`[ffmpeg-bootstrap] ffmpeg verification failed: ${ffCheck.versionLine || '(no output)'}`);
+      winston.error(`[ffmpeg-bootstrap] ffmpeg verification failed: ${probeVerdict(ffCheck)}`);
       return false;
     }
-    const probeCheck = await getFfmpegVersion(stagedFfprobe);
+    const probeCheck = await probeVersion(stagedFfprobe);
     if (probeCheck.major < MIN_FFMPEG_MAJOR) {
-      winston.error(`[ffmpeg-bootstrap] ffprobe verification failed: ${probeCheck.versionLine || '(no output)'}`);
+      winston.error(`[ffmpeg-bootstrap] ffprobe verification failed: ${probeVerdict(probeCheck)}`);
       return false;
     }
 
@@ -843,6 +887,12 @@ async function installInto(dir) {
  * Safe to call multiple times — dedupes via cached promise. On success sets
  * _resolvedFfmpegPath / _resolvedFfprobePath / _resolvedSource.
  *
+ * Binaries are deleted or downloaded over only when they are definitely
+ * broken AND mStream installed them (isManagedDir). A probe that times out
+ * proves nothing (see VERSION_PROBE_TIMEOUT_MS), and an operator's binaries
+ * in a custom ffmpegDirectory are never touched. In both cases the chain
+ * skips the download and falls through to the system PATH.
+ *
  * A chain that a reset() overtakes (soft reboot mid-resolution) runs to its
  * end — its download is the shared single-flight one — but as a bystander: it
  * neither publishes its result nor clears the promise of the chain that
@@ -882,18 +932,44 @@ export async function ensureFfmpeg() {
     const bundledFfprobe = path.join(dir, `ffprobe${binaryExt}`);
 
     // ── Step 1: Working binaries already on disk? ────────────────────────
-    if (await pathExists(bundledFfmpeg) && await pathExists(bundledFfprobe)) {
-      const { major, versionLine } = await getFfmpegVersion(bundledFfmpeg);
+    // Set when the binaries in `dir` must stay exactly as they are, so step 3
+    // must not download either: its swap would rename over them.
+    let leaveInPlace = false;
+    const haveFfmpeg = await pathExists(bundledFfmpeg);
+    const haveFfprobe = await pathExists(bundledFfprobe);
+    if (haveFfmpeg && haveFfprobe) {
+      const ff = await probeVersion(bundledFfmpeg);
       // Probe ffprobe too — a corrupt or truncated ffprobe next to a healthy
       // ffmpeg would otherwise resolve here and fail later in the waveform /
-      // DLNA paths. Every other resolution path checks both.
-      const probe = await getFfmpegVersion(bundledFfprobe);
-      if (major >= MIN_FFMPEG_MAJOR && probe.major >= MIN_FFMPEG_MAJOR) {
-        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', versionLine);
+      // DLNA paths. Every other resolution path checks both. Skipped when
+      // ffmpeg gave no answer: nothing below would use the result.
+      const fp = ff.timedOut ? null : await probeVersion(bundledFfprobe);
+      if (ff.major >= MIN_FFMPEG_MAJOR && fp?.major >= MIN_FFMPEG_MAJOR) {
+        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', ff.versionLine);
       }
-      winston.warn(`[ffmpeg-bootstrap] ffmpeg v${major || '?'} / ffprobe v${probe.major || '?'} in ${dir} is unusable, refreshing`);
-      await fsp.unlink(bundledFfmpeg).catch(() => {});
-      await fsp.unlink(bundledFfprobe).catch(() => {});
+      if (ff.timedOut || fp?.timedOut) {
+        // Slow is not broken (see VERSION_PROBE_TIMEOUT_MS). Keep them, and
+        // don't download over them; transcode's retry probes them again.
+        winston.warn(`[ffmpeg-bootstrap] ${ff.timedOut ? 'ffmpeg' : 'ffprobe'} in ${dir} gave no version in time; leaving the binaries in place`);
+        leaveInPlace = true;
+      } else if (await isManagedDir(dir)) {
+        winston.warn(`[ffmpeg-bootstrap] ffmpeg v${ff.major || '?'} / ffprobe v${fp.major || '?'} in ${dir} is unusable, refreshing`);
+        await fsp.unlink(bundledFfmpeg).catch(() => {});
+        await fsp.unlink(bundledFfprobe).catch(() => {});
+      } else {
+        winston.error(
+          `[ffmpeg-bootstrap] ffmpeg v${ff.major || '?'} / ffprobe v${fp.major || '?'} in ${dir} is unusable ` +
+          `(mStream needs ${MIN_FFMPEG_MAJOR} or newer). mStream did not install these, so it leaves them alone: ` +
+          'replace them, or empty the directory to let mStream download its own.');
+        leaveInPlace = true;
+      }
+    } else if ((haveFfmpeg || haveFfprobe) && !(await isManagedDir(dir))) {
+      // Half of an operator's pair: a download would rename over that half.
+      const [have, missing] = haveFfmpeg ? ['ffmpeg', 'ffprobe'] : ['ffprobe', 'ffmpeg'];
+      winston.error(
+        `[ffmpeg-bootstrap] ${dir} has ${have} but no ${missing}, and mStream did not install it, so it will not ` +
+        `download over it: add ${missing}, or empty the directory to let mStream download its own.`);
+      leaveInPlace = true;
     }
 
     // ── Step 2: musl libc? Skip download, go straight to system fallback ─
@@ -908,15 +984,21 @@ export async function ensureFfmpeg() {
     }
 
     // ── Step 3: Download to getFfmpegDir(), verify it executes ───────────
-    const downloadOk = await downloadAndInstall();
+    const downloadOk = !leaveInPlace && await downloadAndInstall();
     if (downloadOk) {
-      const { major, versionLine } = await getFfmpegVersion(bundledFfmpeg);
-      if (major >= MIN_FFMPEG_MAJOR) {
-        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', versionLine);
+      const ff = await probeVersion(bundledFfmpeg);
+      if (ff.major >= MIN_FFMPEG_MAJOR) {
+        return resolved(bundledFfmpeg, bundledFfprobe, 'bundled', ff.versionLine);
       }
-      winston.warn(`[ffmpeg-bootstrap] Downloaded ffmpeg won't execute (likely libc mismatch), trying system fallback`);
-      await fsp.unlink(bundledFfmpeg).catch(() => {});
-      await fsp.unlink(bundledFfprobe).catch(() => {});
+      if (ff.timedOut) {
+        // installInto() ran this very build in staging moments ago, so a slow
+        // answer now is the machine, not the binary: keep it for the retry.
+        winston.warn('[ffmpeg-bootstrap] Downloaded ffmpeg gave no version in time; keeping it, trying system fallback');
+      } else {
+        winston.warn(`[ffmpeg-bootstrap] Downloaded ffmpeg won't execute (likely libc mismatch), trying system fallback`);
+        await fsp.unlink(bundledFfmpeg).catch(() => {});
+        await fsp.unlink(bundledFfprobe).catch(() => {});
+      }
     }
 
     // ── Step 4: System PATH fallback ─────────────────────────────────────
@@ -926,7 +1008,7 @@ export async function ensureFfmpeg() {
     }
 
     // ── Step 5: Nothing works ────────────────────────────────────────────
-    winston.error('[ffmpeg-bootstrap] No working ffmpeg found (download failed and no system binary on PATH)');
+    winston.error(`[ffmpeg-bootstrap] No working ffmpeg found (${leaveInPlace ? `binaries in ${dir} left in place` : 'download failed'} and no system binary on PATH)`);
     return failed();
   })().catch(e => {
     winston.error(`[ffmpeg-bootstrap] ${e.message}`);
@@ -990,19 +1072,16 @@ export async function checkForUpdate() {
   try { await fsp.access(bin); } catch { return; } // no binary to update
 
   // Receipts are only ever written by our own installs, so they double as a
-  // provenance marker (the pre-manifest `.checksum` baseline counts too). No
-  // marker in a CUSTOM ffmpegDirectory means the operator placed their own
-  // binaries there (possibly a custom or non-free build) — overwriting those
-  // would destroy them, so hands off. The default dir is always ours; a
-  // missing marker there is just an install predating the markers, so
-  // refresh and let downloadAndInstall() write a receipt.
-  const receipt = readReceipt(dir);
-  let legacyBaseline = false;
-  try { legacyBaseline = !!(await fsp.readFile(path.join(dir, LEGACY_CHECKSUM_FILE), 'utf8')).trim(); } catch { /* no legacy marker */ }
-  if (!receipt && !legacyBaseline && path.resolve(dir) !== path.resolve(BUNDLED_FFMPEG_DIR)) {
+  // provenance marker (see isManagedDir). No marker in a CUSTOM
+  // ffmpegDirectory means the operator placed their own binaries there, and
+  // overwriting those would destroy them, so hands off. The default dir is
+  // always ours; a missing marker there is just an install predating the
+  // markers, so refresh and let downloadAndInstall() write a receipt.
+  if (!(await isManagedDir(dir))) {
     winston.info('[ffmpeg-bootstrap] Binaries in custom ffmpegDirectory were not installed by mStream — skipping auto-update');
     return;
   }
+  const receipt = readReceipt(dir);
 
   // Up to date = the receipt records exactly the current pins. Legacy
   // installs (a `.checksum` baseline, or a default-dir install with no

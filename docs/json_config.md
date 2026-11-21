@@ -201,7 +201,10 @@ applies to every codec, so it stays within what they all take.)
 `ffmpegDirectory` is where mStream downloads and manages its ffmpeg/ffprobe
 binaries (weekly auto-update; set `autoUpdate` to `false` to pin the current
 build). If you place your own binaries in a custom `ffmpegDirectory`, mStream
-uses them as-is and never auto-updates them.
+uses them as-is and never auto-updates them. It never deletes or downloads over
+them either. If they are older than ffmpeg 6, or will not run, mStream logs an
+error and leaves them in place: replace them, or empty the directory to let
+mStream download its own.
 
 `bulkConcurrency` (default `2`, 1-64) is how many transcodes flagged as bulk
 work (`?bulk=1`: one file of a long job, such as a library converted onto a
