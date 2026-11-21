@@ -1621,7 +1621,7 @@ function explorerSandbox(o = {}) {
     rows = [...res.directories.map((d) => row('.dirz', 'data-directory', d.name)), ...res.files.map((f) => row('.filez', 'data-file_location', f.path || res.path + f.name))];
   };
   const fns = ['ytdlServerAllows', 'ytdlAllowed', 'ytdlOpenPanel', 'ytdlExplorerFolder', 'ytdlRefreshExplorer', 'ytdlShownNames', 'ytdlOpenWindow',
-    'ytdlSettled', 'ytdlRing', 'ytdlToast', 'ytdlOnPaste', 'getFileExplorerPath'];
+    'ytdlSettled', 'ytdlRing', 'ytdlToast', 'ytdlOnPaste', 'getFileExplorerPath', 'dropzoneOnExplorer'];
   const body = `let peerContext = null; let programState = []; let fileExplorerArray = []; let currentBrowsingList = []; let browseGeneration = 0;
     ${fns.map(findFn).join('\n')}
     return { ${fns.join(', ')},
@@ -1678,6 +1678,33 @@ describe('m.js: the explorer\'s side', () => {
     const open = findFn('onFilePlaylistClick');
     assert.match(open, /programState\.push\(\{\n\s*state: 'fileExplorer',\n\s*m3u: true,/);
     assert.ok(open.indexOf('ytdlRefreshExplorer();') > open.indexOf('m3u: true') && open.indexOf('ytdlRefreshExplorer();') < open.indexOf('await MSTREAMAPI.loadFileplaylist'), 'the button goes before the playlist lists');
+  });
+
+  test('a page opened over the folder (an album from the now-playing card, an artist) shows no folder: no button, no strip, no window, no listing drawn over it', async () => {
+    const paste = { target: { tagName: 'BODY', closest: () => null }, clipboardData: { getData: () => LINK } };
+    const listing = { path: '/Music/Daft Punk/', directories: [], files: [{ type: 'mp3', name: 'One_More_Time.mp3' }] };
+    for (const page of [{ state: 'album', name: 'Discovery' }, { state: 'artist', name: 'Daft Punk' }]) {
+      const x = explorerSandbox({ listing: () => Promise.resolve(listing) });
+      // over the folder, its bar up as the folder left it
+      x.S.set({ state: [{ state: 'fileExplorer' }, { state: 'fileExplorer' }, { state: 'fileExplorer' }, page] });
+      assert.equal(x.S.ytdlExplorerFolder(), null, page.state);
+      x.els.ytdl_btn.classes.delete('super-hide');
+      x.S.ytdlRefreshExplorer();
+      assert.equal(x.els.ytdl_btn.classes.has('super-hide'), true, `${page.state}: Add from YouTube here goes`);
+      assert.deepEqual(x.calls.pop(), ['renderStrip', null], page.state);
+      x.S.ytdlOpenWindow();
+      x.S.ytdlOnPaste(paste);
+      assert.ok(!x.calls.some((c) => c[0] === 'openHere'), `${page.state}: never the window for the folder under it`);
+      assert.deepEqual(x.calls.slice(-3), [['changeView', 'nav-ytdl'], ['ytdlPanel', { link: LINK }], ['toggleThing', 'tab', true]], `${page.state}: a paste opens the panel instead`);
+      x.calls.length = 0;
+      await x.S.ytdlSettled({ state: 'added', directory: '/Music/Daft Punk/', filePath: 'Music/Daft Punk/One_More_Time.mp3' });
+      assert.deepEqual(x.calls, [], `${page.state}: an add into that folder settles with nothing listed or drawn over the page`);
+    }
+    // The album page keeps the bar it found, button and all: it asks as it
+    // goes on the stack, as an .m3u does (the artist's page draws the
+    // column's chrome again, setBrowserRootPanel).
+    const open = findFn('getAlbumSongs');
+    assert.ok(open.indexOf('ytdlRefreshExplorer();') > open.indexOf('programState.push(page);'), 'the album page asks once it is on the stack');
   });
 
   test('the bar\'s button shows only for a writable folder on screen, by the gate; the strip is drawn for the folder', () => {

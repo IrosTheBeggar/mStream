@@ -551,6 +551,7 @@
   "fileExplorer.searchPlaceholder": "Search List",
   "toast.filesExplorerOnly": "Files can only be added to the file explorer",
   "toast.cannotUploadHere": "Cannot Upload File Here",
+  "toast.filesFolderOnly": "Files can only be added to a folder",
   "toast.filesUploaded": "Files Uploaded",
   "toast.uploadPartial": "{{success}} out of {{total}} were uploaded successfully",
   "toast.uploadFailed": "Upload Failed",

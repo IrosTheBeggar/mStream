@@ -6,10 +6,28 @@ const myDropzone = new Dropzone(document.body, {
   maxFilesize: null
 });
 
+// A drop goes into this server's folder at the explorer's path, so it is
+// taken only while the column shows that folder: the explorer at the
+// stack's root, a folder on top (no page opened over it, as an album from
+// the now-playing card, and no open .m3u, a playlist's songs), the bar up
+// (Auto DJ, Transcode and the other views that keep the stack they found
+// hide it) and this server's (a connected server's folder is not, and
+// takes no writes). An upload that ends anywhere else draws no folder
+// there either.
+function dropzoneOnExplorer() {
+  const top = programState[programState.length - 1];
+  return !peerContext && programState[0].state === 'fileExplorer' && top.state === 'fileExplorer' && top.m3u !== true
+    && document.getElementById('directory_bar').style.display !== 'none';
+}
+
 myDropzone.on("addedfile", (file) => {
-  if (programState[0].state !== 'fileExplorer') {
+  if (!dropzoneOnExplorer()) {
+    const top = programState[programState.length - 1];
+    const m3uShown = top.m3u === true && document.getElementById('directory_bar').style.display !== 'none';
     iziToast.error({
-      title: t('toast.filesExplorerOnly'),
+      // a connected server takes none; an open .m3u on screen is in the
+      // explorer, but shows no folder
+      title: t(peerContext ? 'toast.cannotUploadHere' : m3uShown ? 'toast.filesFolderOnly' : 'toast.filesExplorerOnly'),
       position: 'topCenter',
       timeout: 3500
     });
@@ -56,7 +74,7 @@ myDropzone.on('queuecomplete', (file, xhr, formData) => {
       position: 'topCenter',
       timeout: 3500
     });
-    if (programState[0].state === 'fileExplorer') {
+    if (dropzoneOnExplorer()) {
       senddir();
     }
   } else if (successCount === 0) {
@@ -68,7 +86,7 @@ myDropzone.on('queuecomplete', (file, xhr, formData) => {
       timeout: 3500
     });
 
-    if (programState[0].state === 'fileExplorer') {
+    if (dropzoneOnExplorer()) {
       senddir();
     }
   }
@@ -3690,6 +3708,9 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
     previousSearch: document.getElementById('localSearchBar').value
   };
   programState.push(page);
+  // Opened over a folder, the page keeps the bar it found: Add from
+  // YouTube here and its strip go (no folder on screen), as for an .m3u.
+  if (typeof ytdlRefreshExplorer === 'function') { ytdlRefreshExplorer(); }
 
   //clear the list
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -4296,15 +4317,14 @@ function ytdlOpenPanel(opts) {
 }
 
 // The folder the explorer shows, when it is on screen and this server's:
-// '/Music/Daft Punk/', else null. programState alone can't say: Auto DJ,
-// Transcode, Apps, Sonic Path, Jukebox and Config leave it on the explorer
-// with the folder they left — but every one of them hides the bar. An
-// open .m3u (onFilePlaylistClick) is a playlist's songs, no folder.
+// '/Music/Daft Punk/', else null. It is the folder a drop goes into
+// (dropzoneOnExplorer), below the root. The stack's root alone can't say:
+// a page opened over a folder (an album from the now-playing card), an
+// open .m3u (onFilePlaylistClick, a playlist's songs) and the views that
+// keep the stack they found (Auto DJ, Transcode, Apps, Sonic Path, Jukebox
+// and Config, which hide the bar) all leave a folder under them.
 function ytdlExplorerFolder() {
-  if (peerContext || !programState[0] || programState[0].state !== 'fileExplorer' || fileExplorerArray.length === 0) { return null; }
-  if (programState[programState.length - 1].m3u === true) { return null; }
-  const bar = document.getElementById('directory_bar');
-  if (!bar || bar.style.display === 'none') { return null; }
+  if (!programState[0] || fileExplorerArray.length === 0 || !dropzoneOnExplorer()) { return null; }
   return '/' + getFileExplorerPath();
 }
 
