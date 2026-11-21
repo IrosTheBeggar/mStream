@@ -1308,6 +1308,9 @@ const MSTREAMPLAYER = (() => {
       // Clear Shuffle Cache
       while (shuffleCache.length > 0) { shuffleCache.pop(); }
     }
+    // And the history Previous walks back under shuffle: a song of the old
+    // queue is nothing to go back to.
+    shufflePrevious = [];
 
     _seedsOnClear(userClear, hadRows);
 
@@ -1573,6 +1576,8 @@ const MSTREAMPLAYER = (() => {
       if (shuffleCache.length === 0) { newShuffle(); }
       // Chose a random value
       var nextSong = shuffleCache.pop();
+      // An empty queue: nothing to go to, and nothing for the history
+      if (!nextSong) { return false; }
 
       // Prevent same song from playing twice after a re-shuffle
       if (nextSong === mstreamModule.getCurrentSong()) {
@@ -2295,8 +2300,10 @@ const MSTREAMPLAYER = (() => {
   mstreamModule.toggleAutoDJ = () => {
     mstreamModule.playerStats.autoDJ = !mstreamModule.playerStats.autoDJ;
     if (mstreamModule.playerStats.autoDJ === true) {
-      // Turn off shuffle & loop
+      // Turn off shuffle & loop — shuffle as its own button does, the
+      // cycle and the history forgotten
       mstreamModule.playerStats.shuffle = false;
+      turnShuffleOff();
       mstreamModule.playerStats.shouldLoop = false;
       mstreamModule.playerStats.shouldLoopOne = false;
 

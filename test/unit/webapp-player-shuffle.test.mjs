@@ -13,6 +13,14 @@
  * shuffle on leaves the playing song out of the first cycle, and a cycle
  * emptied that way starts over at the next Next.
  *
+ * Clearing the queue kept the history, a Next on an emptied queue put an
+ * empty entry in it, and the Auto DJ turned shuffle off without forgetting
+ * it. After a play that replaced the queue, or with shuffle on again after
+ * the DJ, Previous went for a song no longer queued and restarted the one
+ * playing (and put that old song back in the cycle). A clear now drops the
+ * history, a Next with nothing to play leaves it as it is, and the Auto DJ
+ * forgets it as turning shuffle off does.
+ *
  * What did not change is pinned beside it. A queue of one plays its song
  * again. With shuffle off, Next, Previous and a row click walk the queue in
  * order. Turning shuffle off forgets the cycle and the history. Repeat
@@ -209,6 +217,126 @@ describe('shuffle: a song that starts without a Next', () => {
       const cycle = [cur(p), ...nexts(p, list.length - 1)];
       assert.deepEqual(sorted(cycle), sorted(list), `seed ${seed}: the new cycle plays every row once`);
     }
+  });
+});
+
+describe('shuffle: the history holds only songs still queued', () => {
+  test('after a play that replaces the queue, Previous goes back to its first row and never to a song of the old queue', () => {
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      const p = loadPlayer(seed);
+      queue(p, rows('o', 6));
+      p.toggleShuffle();
+      nexts(p, 3);
+      // A play that replaces the queue: a clear, then its rows (row 1 plays).
+      p.clearPlaylist();
+      const list = rows('n', 8);
+      queue(p, list);
+      assert.equal(cur(p), list[0]);
+
+      p.nextSong();
+      const next = cur(p);
+      p.previousSong();
+      assert.equal(cur(p), list[0], `seed ${seed}: Previous goes back to row 1`);
+      assert.equal(leavesSong(p, () => p.previousSong()), true, `seed ${seed}: and nothing is before it`);
+      p.nextSong();
+      assert.equal(cur(p), next, `seed ${seed}: Next goes on to where Previous left`);
+      const played = [next, ...nexts(p, list.length - 2)];
+      assert.deepEqual(sorted(played), sorted(list.slice(1)), `seed ${seed}: the new rows, none of the old`);
+      // Back through all of them to row 1, and no further.
+      for (let i = played.length - 2; i >= 0; i--) {
+        p.previousSong();
+        assert.equal(cur(p), played[i], `seed ${seed}`);
+      }
+      p.previousSong();
+      assert.equal(cur(p), list[0], `seed ${seed}`);
+      assert.equal(leavesSong(p, () => p.previousSong()), true, `seed ${seed}`);
+    }
+  });
+
+  test('a Next on an emptied queue adds nothing to the history: after the next play fills it, Previous goes back to row 1 and no further', () => {
+    const routes = {
+      'the only row removed while it plays': (p) => {
+        queue(p, rows('o', 1));
+        p.toggleShuffle();
+        p.removeSongAtPosition(0);
+      },
+      'every row removed, the one playing last': (p) => {
+        queue(p, rows('o', 4));
+        p.toggleShuffle();
+        nexts(p, 2);
+        for (const s of p.playlist.filter((x) => x !== cur(p))) { p.removeSongAtPosition(p.playlist.indexOf(s)); }
+        p.removeSongAtPosition(p.positionCache.val);
+      },
+      'Clear Playlist, then Next': (p) => {
+        queue(p, rows('o', 4));
+        p.toggleShuffle();
+        nexts(p, 2);
+        p.clearPlaylist();
+        p.nextSong();
+      },
+    };
+    for (const [route, empty] of Object.entries(routes)) {
+      for (let seed = 1; seed <= SEEDS; seed++) {
+        const p = loadPlayer(seed);
+        empty(p);
+        assert.equal(p.playlist.length, 0, route);
+        const list = rows('n', 6);
+        queue(p, list);
+        assert.equal(cur(p), list[0]);
+        p.nextSong();
+        const next = cur(p);
+        p.previousSong();
+        assert.equal(cur(p), list[0], `${route}, seed ${seed}: Previous goes back to row 1`);
+        assert.equal(leavesSong(p, () => p.previousSong()), true, `${route}, seed ${seed}: and nothing is before it`);
+        p.nextSong();
+        assert.equal(cur(p), next, `${route}, seed ${seed}`);
+        p.previousSong();
+        assert.equal(cur(p), list[0], `${route}, seed ${seed}: from the next song, back to row 1 again`);
+      }
+    }
+  });
+
+  test('a queue cleared while the Auto DJ has shuffle off leaves no history for the next shuffle', async () => {
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      const p = loadPlayer(seed);
+      queue(p, rows('o', 6));
+      p.toggleShuffle();
+      nexts(p, 3);
+      // The Auto DJ turns shuffle off without a word to its history.
+      p.toggleAutoDJ();
+      p.toggleAutoDJ();
+      assert.equal(p.playerStats.shuffle, false);
+      p.clearPlaylist();
+      queue(p, rows('n', 6));
+      p.toggleShuffle();
+      p.nextSong();
+      assert.equal(leavesSong(p, () => p.previousSong()), true, `seed ${seed}: nothing to go back to yet`);
+    }
+    // Let the DJ's own picks (no server here) settle.
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  test('the Auto DJ turns shuffle off as its button does, the history forgotten: a row removed while it ran is never gone back to', async () => {
+    for (let seed = 1; seed <= SEEDS; seed++) {
+      const p = loadPlayer(seed);
+      const list = rows('h', 8);
+      queue(p, list);
+      p.toggleShuffle();
+      const [first] = nexts(p, 3);
+      p.toggleAutoDJ();
+      assert.equal(p.playerStats.shuffle, false);
+      // a row of the history removed while the DJ plays (its X)
+      p.removeSongAtPosition(p.playlist.indexOf(first));
+      p.toggleAutoDJ();
+      assert.equal(p.toggleShuffle(), true);
+      p.nextSong();
+      for (let i = 0; i < 5; i++) {
+        assert.equal(leavesSong(p, () => p.previousSong()), true, `seed ${seed}, Previous ${i + 1}: nothing from before the DJ to go back to`);
+      }
+      assert.ok(p.playlist.includes(cur(p)) && cur(p) !== first, `seed ${seed}`);
+    }
+    // Let the DJ's own picks (no server here) settle.
+    await new Promise((resolve) => setImmediate(resolve));
   });
 });
 
