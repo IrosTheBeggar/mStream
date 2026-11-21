@@ -131,11 +131,13 @@ const VUEPLAYERCORE = (() => {
   var currentPopperSongIndex;
   var currentPopperSong;
   const showClearLink = { val: false };
+  let popInstance;    // the one live Popper on #pop (createPopper)
 
   // add to playlist popper
   mstreamModule.playlists = [];
   var cpsi;
   var cps;
+  let popDInstance;   // the one live Popper on #pop-d (createPopper2)
 
   // Discover panel state (model-powered similar tracks/artists for the
   // current song — /api/v1/discovery/*). `available` comes from the ping
@@ -4978,22 +4980,30 @@ const VUEPLAYERCORE = (() => {
         myRater.setRating(this.song.metadata.rating / 2);
 
         const pop = document.getElementById('pop');
-        Popper.createPopper(ref, pop, {
+        // One instance at a time, as createPopper3's (m.js). A new one over
+        // the last starts from its inline right: 0, which with its own left:
+        // 0 stretches the menu across the page as it is measured: clamped
+        // into the column, it then landed off the page's right edge.
+        if (popInstance) { popInstance.destroy(); }
+        popInstance = Popper.createPopper(ref, pop, {
           placement: 'bottom-end',
           onFirstUpdate: function (data) {
             document.getElementById("pop").style.visibility = "visible";
           },
+          // Inside the queue's column (#playlist), which ends where the
+          // player bar starts: a row near its foot opens it above. Popper 2
+          // reads `boundary` (1's `boundariesElement` it ignores).
           modifiers: [
             {
               name: 'flip',
               options: {
-                boundariesElement: 'scrollParent',
+                boundary: document.getElementById('playlist'),
               },
             },
             {
               name: 'preventOverflow',
               options: {
-                boundariesElement: 'scrollParent',
+                boundary: document.getElementById('playlist'),
               },
             },
           ]
@@ -5011,22 +5021,25 @@ const VUEPLAYERCORE = (() => {
         cps = this.song;
   
         const pop = document.getElementById('pop-d');
-        Popper.createPopper(ref, pop, {
+        // one instance at a time, as the rater's
+        if (popDInstance) { popDInstance.destroy(); }
+        popDInstance = Popper.createPopper(ref, pop, {
           placement: 'bottom-end',
           onFirstUpdate: function (data) {
             document.getElementById("pop-d").style.visibility = "visible";
           },
+          // the queue's column, as the rater's
           modifiers: [
             {
               name: 'flip',
               options: {
-                boundariesElement: 'scrollParent',
+                boundary: document.getElementById('playlist'),
               },
             },
             {
               name: 'preventOverflow',
               options: {
-                boundariesElement: 'scrollParent',
+                boundary: document.getElementById('playlist'),
               },
             },
           ]

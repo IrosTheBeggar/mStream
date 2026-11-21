@@ -950,17 +950,20 @@ function createPopper3(el) {
     onFirstUpdate: function (data) {
       document.getElementById("pop-f").style.visibility = "visible";
     },
+    // Inside the column (#browser), which ends where the player bar
+    // starts: a row near its foot opens the menu above it. Popper 2 reads
+    // `boundary` (1's `boundariesElement` it ignores).
     modifiers: [
       {
         name: 'flip',
         options: {
-          boundariesElement: 'scrollParent',
+          boundary: document.getElementById('browser'),
         },
       },
       {
         name: 'preventOverflow',
         options: {
-          boundariesElement: 'scrollParent',
+          boundary: document.getElementById('browser'),
         },
       },
     ]
