@@ -63,6 +63,53 @@ server on its own config and port doesn't hold it back), and a copy you
 extracted by hand somewhere else (or run with `--portable`) — the script
 only manages its own folder.
 
+## Linux packages: the apt and dnf repositories
+
+Every release also ships `.deb` and `.rpm` packages: amd64 / x86_64 with the
+tray app, arm64 / aarch64 server-only. Install them from the repository
+below and mStream updates with the rest of the system (`apt upgrade`,
+`dnf upgrade`). A package downloaded from the release page by hand works
+the same but stays at that version until you fetch the next one — add the
+repository afterwards and the next upgrade takes over.
+
+Debian, Ubuntu and their derivatives:
+
+```shell
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSL https://repo.mstream.io/mstream.asc -o /etc/apt/keyrings/mstream.asc
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/mstream.asc] https://repo.mstream.io/apt stable main" | sudo tee /etc/apt/sources.list.d/mstream.list
+sudo apt update
+sudo apt install mstream
+```
+
+On a headless box, `sudo apt install --no-install-recommends mstream` leaves
+out the GTK libraries only the tray app uses.
+
+Fedora, RHEL, Rocky, AlmaLinux:
+
+```shell
+sudo curl -fsSL https://repo.mstream.io/rpm/mstream.repo -o /etc/yum.repos.d/mstream.repo
+sudo dnf install mstream
+```
+
+dnf asks once to import the repository's signing key.
+
+* **What is signed.** The repository's index is signed, and the index pins
+  the checksum of every package, so a package that was altered on the way is
+  refused. The packages themselves carry no signature of their own (they are
+  the release assets, byte for byte) — which is why `mstream.repo` sets
+  `repo_gpgcheck=1` and `gpgcheck=0`, and why dnf notes that it skipped the
+  per-package check. Keep `repo_gpgcheck=1`.
+* **Older versions.** The repository serves the three newest releases, so
+  you can pin or go back: `sudo apt install mstream=<version>`,
+  `sudo dnf install mstream-<version>`.
+* **An upgrade does not restart mStream.** The package replaces the files in
+  `/opt/mstream`; a server that is running keeps running the old version
+  until you restart it (or the service you run it under).
+* **mStream's own updater stays out of the way.** On a package install it
+  tells you a release is out (admin panel → About) and leaves the updating
+  to the package manager.
+
 ## Automatic updates
 
 mStream checks the release feed once a day (plus once shortly after boot)

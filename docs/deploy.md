@@ -19,7 +19,8 @@ happened.
 The one thing it never does is publish: the tag build leaves a **draft**
 release. Review it, then publish by hand — publishing is what makes the
 version visible to every install's next update check, and it fires the
-downstream jobs (npm publish, demo deploy, website version stamp).
+downstream jobs (npm publish, demo deploy, website version stamp, the
+apt/dnf repository — see [The Linux package repository](#the-linux-package-repository)).
 
 ## The ritual the script encodes (by hand, if you ever need it)
 
@@ -63,7 +64,8 @@ and fails otherwise.
    fails with instructions instead of shipping an mStream.exe that reports
    the previous version — then attaches the bundles + `manifest.json` to a
    **draft** release. Review, then publish. Publishing fires the downstream
-   jobs (npm publish, demo deploy, website version stamp).
+   jobs (npm publish, demo deploy, website version stamp, the apt/dnf
+   repository).
 
 Why not `npm version` alone: it tags the bump commit in the same breath, and
 at that instant the committed launcher binaries are still the previous
@@ -139,3 +141,115 @@ over a running instance):
   across it leaves scans refusing until re-upgrade, and the watchdogs may
   legitimately park someone on the previous version with that caveat until
   the next patch.
+
+## The Linux package repository
+
+Publishing a release also runs `Linux Package Repository`
+(`.github/workflows/linux-repo.yml`): it takes the deb/rpm assets of the
+three newest published stable releases, builds an apt and a dnf repository
+from them, signs both, and uploads the result to the Bunny storage zone
+behind `https://repo.mstream.io`. That is what lets a package install update
+with `apt upgrade` / `dnf upgrade` ([install.md](install.md)). The scripts
+are in `scripts/linux-repo/`; each one's header says what it does.
+
+Nothing is uploaded until real clients have used the built repository:
+Debian 11, Debian 13, Ubuntu 24.04, Fedora and AlmaLinux containers each
+install the oldest served version from it, upgrade to the newest, and then
+refuse a copy whose signed index was altered. A release whose packages
+cannot be installed or upgraded through a package manager therefore stops
+there, and the live repository stays on the previous release. After the
+upload, the job waits until the CDN serves the new index and installs from
+the live URL once more.
+
+A pull request that touches the scripts or the workflow runs the same build
+and gate with a throwaway key and no upload.
+
+**When the run goes red**, the live repository is still whole — the upload
+moves the index files last, and only once everything they name is in
+storage. Fix the cause and run it again; every run rebuilds from the
+published releases, so there is nothing to clean up first:
+
+```shell
+gh workflow run linux-repo.yml                  # rebuild + publish
+gh workflow run linux-repo.yml -f dry_run=true  # build, gate, print the upload plan; change nothing
+```
+
+A dispatch from any branch but master is always a dry run.
+
+The repository follows the published releases, one run behind any change
+you make by hand: a release deleted from GitHub stays in it until the
+workflow next runs (dispatch it to make that now). As with every other
+install method, that only stops new installs — a machine that already
+upgraded stays on the version it has until a newer one is published.
+
+### One-time setup
+
+Until the four required settings below exist the workflow only rehearses
+(with a warning); with some but not all of them it fails.
+
+1. **Bunny storage zone**, used for nothing else — a publish deletes files
+   it does not recognise. Its name is the repository *variable*
+   `LINUX_REPO_BUNNY_STORAGE_ZONE`; its password (FTP & API Access) is the
+   *secret* `LINUX_REPO_BUNNY_STORAGE_PASSWORD`. If its main region is not
+   Frankfurt, set the variable `LINUX_REPO_BUNNY_STORAGE_HOST` to the
+   region's endpoint (`ny.storage.bunnycdn.com`, `uk.…`, `la.…`, `sg.…`,
+   `se.…`, `br.…`, `jh.…`, `syd.…`).
+2. **Pull zone** with that storage zone as its origin and the hostname
+   `repo.mstream.io` (a CNAME to the pull zone, with its free certificate).
+   The public address is the variable `LINUX_REPO_URL`
+   (`https://repo.mstream.io`, no trailing slash). It is written into the
+   `mstream.repo` file dnf users download, so it cannot move later without
+   every one of them editing that file.
+3. **CDN cache.** Bunny does not notice a file changing in storage, and a
+   repository's index files change in place on every release. Either set
+   the secret `LINUX_REPO_BUNNY_API_KEY` (the account API key, the one the
+   website deploy uses) and the publish purges exactly the files it
+   replaced — or give the pull zone an edge rule that does not cache
+   `InRelease`, `Release`, `Release.gpg`, `Packages*`, `repomd.xml*`,
+   `mstream.asc` and `mstream.repo`. The job's last step fails if the CDN is
+   still serving the old index five minutes after the upload.
+4. **Signing key** — below. The secrets are `LINUX_REPO_GPG_PRIVATE_KEY`
+   and `LINUX_REPO_GPG_PASSPHRASE`.
+
+Then run it once by hand, dry first:
+
+```shell
+gh workflow run linux-repo.yml -f dry_run=true
+gh workflow run linux-repo.yml
+```
+
+### The signing key
+
+One RSA-4096 key that certifies only, kept offline, plus an RSA-4096
+signing subkey — the only secret CI ever holds. RSA because every client
+verifies it, including the oldest rpm and apt the packages still run on.
+
+```shell
+export GNUPGHOME=$(mktemp -d)        # a scratch keyring, not your own
+gpg --quick-generate-key "mStream package repository <paul@mstream.io>" rsa4096 cert never
+FPR=$(gpg --list-keys --with-colons | awk -F: '$1 == "fpr" { print $10; exit }')
+gpg --quick-add-key "$FPR" rsa4096 sign never
+gpg --armor --export-secret-keys "$FPR"    > repo-key-MASTER.asc    # offline, with the other signing material
+gpg --armor --export-secret-subkeys "$FPR" > repo-key-signing.asc   # -> LINUX_REPO_GPG_PRIVATE_KEY
+gpg --show-keys --with-subkey-fingerprint repo-key-signing.asc      # note the fingerprints
+```
+
+gpg asks for a passphrase while generating; that passphrase is
+`LINUX_REPO_GPG_PASSPHRASE`. The public key needs no handling — every
+publish exports it to `https://repo.mstream.io/mstream.asc`.
+
+`never`, because an expiry date is a deadline for every install rather than
+for us: the day the key lapses, apt rejects the signatures that are already
+published, and `apt update` fails everywhere until the expiry is extended,
+republished and re-downloaded by each user. If the key does carry an
+expiry, the build warns from 90 days out.
+
+**The key is the repository's identity.** Installs trust the copy of
+`mstream.asc` they downloaded once, so signing with anything else — a
+regenerated key, a new subkey — breaks updates on all of them until their
+owners fetch the file again. The workflow compares its key with the live
+one before uploading and refuses a mismatch. If the signing subkey ever has
+to be replaced (it leaked): revoke it and add a new one with the offline
+master key, update the secret, run the workflow by hand with
+`-f allow_key_change=true`, and tell users to repeat the `curl … mstream.asc`
+line from [install.md](install.md) — put it in the release notes.
