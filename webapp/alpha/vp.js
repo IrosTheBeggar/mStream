@@ -3622,8 +3622,12 @@ const VUEPLAYERCORE = (() => {
         if (v.scope === 'song') {
           this.playDiscoverFile(v.files[0]);
         } else {
-          mstreamModule.clearQueue();
+          // A live playlist gets the new queue: one save once the files are
+          // in (clearQueue would save it empty first, and the adds stay off
+          // it — an add-song too could land after the save, a row twice).
+          MSTREAMPLAYER.clearPlaylist();
           v.files.forEach((filepath, i) => { mstreamModule.addSongWizard(filepath, {}, true, undefined, false, i > 0); });
+          mstreamModule.saveLiveQueue();
         }
         this.closeDiscoverModal();
       },
@@ -3819,6 +3823,8 @@ const VUEPLAYERCORE = (() => {
       },
       queueDiscoverFile: function (filepath) {
         mstreamModule.addSongWizard(filepath, {}, true, undefined, false, true);
+        // a live playlist: the whole queue once, as Discover's other adds
+        mstreamModule.saveLiveQueue();
         iziToast.success({ title: this.tt('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
       },
       cancelDiscoverJob: async function (job) {
@@ -4867,16 +4873,24 @@ const VUEPLAYERCORE = (() => {
       queueAllDiscoverFed: function () {
         for (const ft of this.discover.fed.tracks) { this.queueDiscoverFed(ft); }
       },
+      // A live playlist gets each of these adds: one save of the whole
+      // queue once its rows are in (none without one), the adds kept off it
+      // as the Discover page's are.
       queueDiscoverTrack: function (t) {
         mstreamModule.addSongWizard(t.filepath, t.metadata || {}, false, undefined, false, true);
+        mstreamModule.saveLiveQueue();
       },
       queueAllDiscover: function () {
-        for (const t of this.discover.tracks) { this.queueDiscoverTrack(t); }
+        for (const t of this.discover.tracks) {
+          mstreamModule.addSongWizard(t.filepath, t.metadata || {}, false, undefined, false, true);
+        }
+        mstreamModule.saveLiveQueue();
       },
       queueArtistEntryPoints: function (a) {
         for (const e of (a.entryPoints || [])) {
           mstreamModule.addSongWizard(e.filepath, e.metadata || {}, false, undefined, false, true);
         }
+        mstreamModule.saveLiveQueue();
       },
       goToDiscoverArtist: function (a) {
         const el = document.createElement('DIV');

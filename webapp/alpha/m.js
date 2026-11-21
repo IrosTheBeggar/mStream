@@ -5570,6 +5570,10 @@ function discoveryAction(act, el) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
   } else if (act === 'queue' && track) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, undefined, false, true);
+    // A live playlist gets it: one save of the whole queue (none without
+    // one). The add stays off it — an add-song too could land after the
+    // save and write the row twice.
+    VUEPLAYERCORE.saveLiveQueue();
     queued();
   } else if (act === 'more' && track) {
     createPopper3(el);
@@ -5779,6 +5783,8 @@ function discoveryQueueAll(shuffle) {
   for (const r of list) {
     VUEPLAYERCORE.addSongWizard(r.filepath, r.metadata || {}, false, undefined, false, true);
   }
+  // a live playlist: the whole queue once, as a row's add
+  VUEPLAYERCORE.saveLiveQueue();
   iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
 }
 
@@ -7337,6 +7343,9 @@ function sonicPathPlay(replaceQueue) {
   for (const row of SONICPATH.rows) {
     VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
   }
+  // a live playlist: the whole queue once (after Play, the path alone), as
+  // Discover's adds
+  VUEPLAYERCORE.saveLiveQueue();
 }
 
 // The name-a-playlist modal (#savePlaylistModal) shared by the Sonic Path
@@ -7496,7 +7505,9 @@ function sonicPathPanel() {
   root.querySelectorAll('[data-spath-row]').forEach((el) => {
     el.addEventListener('click', () => {
       const row = SONICPATH.rows[Number(el.getAttribute('data-spath-row'))];
-      if (row) { VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true); }
+      if (!row) { return; }
+      VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
+      VUEPLAYERCORE.saveLiveQueue();
     });
   });
 }

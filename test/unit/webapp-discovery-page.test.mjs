@@ -1112,15 +1112,18 @@ function makeWindow({ reads = readsOf(), plugins = [COPY], jobsAllowed = true, d
     createElement: (tag) => { const attrs = {}; return { tag, attrs, setAttribute: (k, v) => { attrs[k] = String(v); } }; }, ...docOver };
   const viewed = [];
   const fedQueued = [];
-  // the library's queue (Play your copy, Queue) and the file explorer the
-  // window opens (Show in your library)
+  // the library's queue (Play your copy, Queue) — the player's clear, the
+  // adds and the live playlist's save, in order — and the file explorer
+  // the window opens (Show in your library)
   const queued = [];
   const explored = [];
-  const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); } };
+  const app = { addFederationSongWizard: (...args) => { fedQueued.push(args); }, addSongWizard: (...args) => { queued.push(args); }, clearQueue() { queued.push('cleared'); },
+    saveLiveQueue() { queued.push('saved'); } };
   const toasts = [];
   const izi = Object.fromEntries(['error', 'success', 'warning', 'info'].map((kind) => [kind, (o) => toasts.push({ kind, ...o })]));
   const mod = new Function('DISCOVERJOBS', 'DISCOVERYPAGE', 'PEERRECS', 'MSTREAMAPI', 'document', 't', 'iziToast', 'getAlbumsOnClick', 'mstreamModule', 'MSTREAMPLAYER', 'openFileExplorerAt', 'escapeHtml', body)(
-    J, D, require('../../webapp/alpha/peer-recs.js'), reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app, { positionCache: { val: 0 } }, (parts) => { explored.push(parts); }, escapeHtml);
+    J, D, require('../../webapp/alpha/peer-recs.js'), reads, doc, tEn, izi, (el) => { viewed.push(el.attrs); }, app,
+    { positionCache: { val: 0 }, clearPlaylist() { queued.push('cleared'); } }, (parts) => { explored.push(parts); }, escapeHtml);
   const loads = [];
   const starts = [];
   const cancels = [];
@@ -4610,7 +4613,8 @@ describe('Keep a copy: what its buttons do (vp.js dmKeepAct)', () => {
     const album = await keepWindow({ focus: 'album' });
     album.vm.discover.modal.jobs = { 'federation-copy@album': albumJob({ result: albumResult({ copied: TAPES.slice(0, 2), failed: [TAPES[2]] }) }) };
     album.vm.dmKeepAct('play');
-    assert.deepEqual(album.queued, ['cleared', [inCopies(TAPES[0]), {}, true, undefined, false, false], [inCopies(TAPES[1]), {}, true, undefined, false, true]], 'the first plays, the rest follow');
+    assert.deepEqual(album.queued, ['cleared', [inCopies(TAPES[0]), {}, true, undefined, false, false], [inCopies(TAPES[1]), {}, true, undefined, false, true], 'saved'],
+      'the first plays, the rest follow; then one save for a live playlist');
     const owned = await keepWindow({ focus: 'album' });
     owned.vm.discover.modal.jobs = { 'federation-copy@album': albumJob({ result: albumResult({ owned: TAPES }) }) };
     assert.deepEqual(owned.vm.dmKeepView().files, TAPES.map((t) => `music/Boukmanflow/Harbour Lights/${t}.mp3`));
@@ -4629,7 +4633,7 @@ describe('Keep a copy: what its buttons do (vp.js dmKeepAct)', () => {
     const song = await keepWindow();
     song.vm.discover.modal.jobs = { 'federation-copy': keepJob({ result: { copied: { filepath: inCopies(LATE) } } }) };
     song.vm.dmKeepAct('queue');
-    assert.deepEqual([song.queued, song.toasts.map((x) => x.title), song.vm.discover.modal.open], [[[inCopies(LATE), {}, true, undefined, false, true]], ['Added to the queue'], true]);
+    assert.deepEqual([song.queued, song.toasts.map((x) => x.title), song.vm.discover.modal.open], [[[inCopies(LATE), {}, true, undefined, false, true], 'saved'], ['Added to the queue'], true]);
     const artist = await keepWindow();
     artist.vm.dmKeepChoose('artist');
     artist.vm.discover.modal.keep.onlyMissing = false;

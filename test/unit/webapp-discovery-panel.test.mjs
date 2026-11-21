@@ -351,6 +351,8 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
   const calls = [];
   const storage = new Map(Object.entries(stored));
   const queued = [];
+  // each live-playlist save (VUEPLAYERCORE.saveLiveQueue): the adds made by then
+  const liveSaves = [];
   const opened = [];
   const fedQueued = [];
   const toasts = [];
@@ -489,6 +491,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
       altLayout: { compressArt },
       songCapture: null,
       addSongWizard: (...args) => { queued.push(args); },
+      saveLiveQueue: () => { liveSaves.push(queued.length); },
       addFederationSongWizard: (...args) => { fedQueued.push(['play', ...args]); },
       queueDiscoverFed: (raw) => { fedQueued.push(['queue', raw]); },
       openDiscoverModal: (raw, source, opts) => { opened.push({ raw, source, opts }); return Promise.resolve(); },
@@ -673,7 +676,7 @@ function makeSandbox({ taste, stored = {}, ping = null, playing = null, flags = 
     off: () => { clipStop('reset'); clipEmit('reset'); clipEmit('off'); },
     main: () => { clipStop('main'); },
   };
-  return { S, dispatch, locate, adminSet, surfaces, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer, win };
+  return { S, dispatch, locate, adminSet, surfaces, keyClick, keydown, activeAttrs, views, focused, focusedIn, vpc: globals.VUEPLAYERCORE, api: globals.MSTREAMAPI, calls, storage, queued, liveSaves, opened, fedQueued, toasts, els, click, bandClick, change, tick, liveWatches, watchers, patches, writes, renders: () => renders, bodyClasses, adopted, albumsOpened, rowsQueued, knownPeers, timers, liveTimers, runTimers, setVisibility, docListeners, clip: clipCtl, gateWatchers, copied, scrolls, title, viewNavs, explorer: globals.loadFileExplorer, win };
 }
 
 // The seed picker: open it from the bar ("More options").
@@ -865,10 +868,12 @@ describe('Discover page: opening it', () => {
   });
 
   test('row verbs: library play / queue / ⋯; a connected row plays now / queues / ⋯ opens the peer window', async () => {
-    const { S, click, queued, opened, fedQueued } = makeSandbox({ taste: answer, playing: PLAYING });
+    const { S, click, queued, liveSaves, opened, fedQueued } = makeSandbox({ taste: answer, playing: PLAYING });
     await S.discoveryPanel();
     click({ 'data-dp': 'queue', 'data-i': 0 });
     assert.deepEqual(queued[0].slice(0, 2), ['music/J/Seven.flac', MAIN.library.tracks[0].metadata]);
+    assert.deepEqual(queued[0].slice(4), [false, true], 'queued at the end, off the live playlist: no add-song of its own');
+    assert.deepEqual(liveSaves, [1], 'a live playlist gets it: one whole-queue save, after the add');
     click({ 'data-dp': 'play', 'data-i': 1 });
     assert.equal(queued[1][0], 'music/K/Eight.flac');
     assert.equal(queued[1][3], 3, 'play now = right after the playing song');
@@ -881,6 +886,7 @@ describe('Discover page: opening it', () => {
     assert.equal(fedQueued[0][5], 3, 'right after the playing song');
     click({ 'data-dp': 'fedQueue', 'data-i': 1 });
     assert.deepEqual(fedQueued[1], ['queue', PEERS.peers.peers[0].results[1]], 'the route\'s own row, through the federation stream');
+    assert.deepEqual(liveSaves, [1], 'Play now saves in vp.js (its insert); a connected row never');
     click({ 'data-dp': 'peerMore', 'data-i': 0 });
     assert.equal(opened[0].source, 'federation');
     assert.equal(opened[0].raw, PEER_ROW);
@@ -1427,10 +1433,13 @@ describe('Discover page: Show more', () => {
 
   test('Queue all / Shuffle / Save act on every library song, not only the ones shown', async () => {
     const lib = { ...MAIN, library: { ...MAIN.library, tracks: Array.from({ length: 20 }, (_, i) => libTrack(i)) } };
-    const { S, click, queued } = makeSandbox({ taste: () => lib, flags: NO_FED });
+    const { S, click, queued, liveSaves } = makeSandbox({ taste: () => lib, flags: NO_FED });
     await S.discoveryPanel();
     click({ 'data-dp': 'queueAll' });
     assert.equal(queued.length, 20);
+    click({ 'data-dp': 'shuffle' });
+    assert.equal(queued.length, 40);
+    assert.deepEqual(liveSaves, [20, 40], 'a live playlist: one whole-queue save each, after all its adds');
   });
 });
 
