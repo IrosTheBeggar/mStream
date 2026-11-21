@@ -38,6 +38,9 @@
 # Usage:
 #   bash test/smoke/docker/yt-dlp-fetch-smoke.sh            # phases A–E
 #   REAL=1 bash test/smoke/docker/yt-dlp-fetch-smoke.sh     # + phase F
+#   # arm64 host (Apple Silicon): the store and pins are linux-x64 builds, so
+#   # run the containers emulated, or every yt-dlp phase reports "no build":
+#   IMAGE_BASE='--platform=linux/amd64 node:22-bookworm' bash test/smoke/docker/yt-dlp-fetch-smoke.sh
 #
 # ASSETS_DIR (default: a cache under $TMPDIR) receives the two real
 # yt-dlp_linux builds (OLD_TAG, NEW_TAG below) and NEW_TAG's SHA2-256SUMS,
@@ -139,7 +142,6 @@ cat > "$WORK/config.json" <<'EOF'
     "logsDirectory": "/data/mstream-state/logs",
     "waveformCacheDirectory": "/data/mstream-state/wf"
   },
-  "transcode": { "ffmpegDirectory": "/usr/bin" },
   "scanOptions": { "autoAlbumArt": false, "collectDiscoveryData": false, "analyzeBpm": false },
   "discoveryPlugins": { "youtube": { "enabled": true } }
 }
@@ -195,15 +197,20 @@ EOF
 
 HWORK="$(hostpath "$WORK")"
 
-# ── One-time prep: an image with ffmpeg (the plug-in's other tool) and the
-# checkout + npm ci on the app volume.
-echo "== prep: image with ffmpeg, checkout + npm ci onto the app volume =="
-printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates && rm -rf /var/lib/apt/lists/*\n' "$IMAGE_BASE" > "$WORK/Dockerfile"
+# ── One-time prep: the image and the checkout + npm ci on the app volume.
+# ffmpeg (the plug-in's other tool) is NOT installed here. bookworm's apt
+# build is 5.1, below mStream's floor of 6, so mStream fetches its own pinned
+# build into its managed dir on the data volume (/data/mstream/bin/ffmpeg).
+# This used to point transcode.ffmpegDirectory at /usr/bin, and that only
+# worked because mStream deleted the distro pair there and downloaded over it.
+# Binaries mStream did not install are now never touched.
+echo "== prep: image, checkout + npm ci onto the app volume =="
+printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*\n' "$IMAGE_BASE" > "$WORK/Dockerfile"
 dockerq build -q -t "$IMAGE" "$HWORK" >/dev/null
 dockerq run --rm -v "$APP_VOL:/opt/mstream" -v "$HWORK:/work:ro" "$IMAGE" sh -ec '
   tar xf /work/src.tar -C /opt/mstream
   cd /opt/mstream && npm ci --omit=optional --no-audit --no-fund --loglevel=error
-  ls bin/yt-dlp/; ffmpeg -version | head -1; command -v yt-dlp || echo "no yt-dlp on PATH (as intended)"' | tail -5
+  ls bin/yt-dlp/; command -v yt-dlp || echo "no yt-dlp on PATH (as intended)"' | tail -5
 
 run_phase() { # $1=label $2=store-dir(or -) then env assignments
   local label="$1" store="$2"; shift 2
@@ -211,7 +218,9 @@ run_phase() { # $1=label $2=store-dir(or -) then env assignments
   for kv in "$@"; do envs+=(-e "$kv"); done
   local mounts=(-v "$APP_VOL:/opt/mstream" -v "$DATA_VOL:/data" -v "$HWORK:/work:ro")
   [ "$store" != "-" ] && mounts+=(-v "$HWORK/$store:/store:ro")
-  dockerq run --rm "${mounts[@]}" -e XDG_DATA_HOME=/data -e MANIFEST=manifest-old.json "${envs[@]}" \
+  # ${envs[@]+...}: bash 3.2 (macOS's /bin/bash) treats an EMPTY array as
+  # unset under `set -u`, so phase A, which passes no env, died before running.
+  dockerq run --rm "${mounts[@]}" -e XDG_DATA_HOME=/data -e MANIFEST=manifest-old.json ${envs[@]+"${envs[@]}"} \
     "$IMAGE" sh /work/phase.sh > "$WORK/$label.out" 2>&1
 }
 row() { grep '^ROW ' "$WORK/$1.out" | head -1 | cut -c5-; }
