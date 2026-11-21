@@ -3843,7 +3843,7 @@ describe('Peer Recommendations: leaving it', () => {
     const m = clip.calls.length;
     S.peerRecsCovered();
     assert.equal(clip.calls.length, m);
-    const spa = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.js'), 'utf8');
+    const spa = fs.readFileSync(path.join(ROOT, 'webapp', 'alpha', 'spa.js'), 'utf8').replace(/\r\n/g, '\n');
     assert.match(spa, /if \(bool === false\) \{\n\s*document\.getElementById\('browser'\)\.classList\.add\('hide-on-small-only'\);\n(?:\s*\/\/[^\n]*\n)?\s*if \(typeof peerRecsCovered === 'function'\) \{ peerRecsCovered\(\); \}/);
   });
 
