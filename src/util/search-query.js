@@ -20,7 +20,7 @@
 //   - Field selectors in user input (`title:foo`). The route picks
 //     the column; the user types content.
 
-const ALNUM_RE = /[a-zA-Z0-9]/;
+const ALNUM_RE = /[\p{L}\p{N}]/u;
 
 /**
  * Split raw user input into { positive, negative } term arrays.
