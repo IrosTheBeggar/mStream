@@ -2866,7 +2866,7 @@ describe('Peer Recommendations: opening it', () => {
     const { S, calls, title } = box;
     assert.deepEqual(S.state(), [{ state: 'peerRecs' }]);
     assert.equal(S.view.page, 'peerRecs');
-    assert.equal(title.innerHTML, 'panel.peerRecs');
+    assert.equal(title.innerHTML, '<span data-i18n="panel.peerRecs">panel.peerRecs</span>', 'its name, under its key');
     assert.deepEqual(calls.filter((c) => c.name === 'taste' || c.name === 'peers').map((c) => c.name).sort(), ['peers', 'taste']);
     const [body] = tasteCalls(calls);
     assert.deepEqual(body, {
@@ -3852,7 +3852,7 @@ describe('Peer Recommendations: leaving it', () => {
     await openPage(box);
     await box.S.discoveryPanel();
     assert.deepEqual(box.S.state(), [{ state: 'discovery' }]);
-    assert.equal(box.title.innerHTML, 'panel.discover');
+    assert.equal(box.title.innerHTML, '<span data-i18n="panel.discover">panel.discover</span>');
     assert.deepEqual(box.clip.calls.at(-1), ['stop', 'leave']);
     assert.ok(!box.S.html().includes('data-prec-strip'));
     assert.equal(box.liveTimers().length, 0);
@@ -4095,7 +4095,7 @@ describe('W7: opening the page as an admin with the network off', () => {
     const { S, calls, els, clip, title } = box;
     assert.deepEqual(callNames(calls), ['adminStatus'], 'the status alone: no taste call, no peers poll, no plug-in read');
     assert.deepEqual(S.state(), [{ state: 'peerRecs' }]);
-    assert.equal(title.innerHTML, 'panel.peerRecs');
+    assert.equal(title.innerHTML, '<span data-i18n="panel.peerRecs">panel.peerRecs</span>');
     const html = S.html();
     assert.match(html, /^<div class="dpage dpage-page-peerRecs prec-on-page"><div class="prec-on"><p class="prec-on-text">peerRecs\.turnOn\.shares<\/p><label class="prec-on-field">/);
     assert.ok(!html.includes('peerRecs.turnOn.collection'), 'collection is on: no collection line');

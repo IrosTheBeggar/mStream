@@ -413,7 +413,13 @@ function getLoadingSvg() {
   return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
 }
 
-function setBrowserRootPanel(panelName, showBar) {
+// `panelKey`: the panel's name as its locale key ('panel.albums'), or
+// words of its own ('Add Torrent'). The column's title (its h5, and the
+// phone's tab) holds the name under that key (data-i18n), so every
+// language that loads names it again (translatePage): the first one too,
+// which can land after the first panel drew (loadFileExplorer runs as
+// m.js loads).
+function setBrowserRootPanel(panelKey, showBar) {
   // A connected server's page header goes (the panel's own answer draws
   // it again) — the page it tops held first, as it stands, in case the
   // panel's load fails (browseKeepBack).
@@ -457,7 +463,8 @@ function setBrowserRootPanel(panelName, showBar) {
   hideMoodFilters();
 
   // Inside a peer view every panel says whose library it is showing.
-  const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
+  const name = `<span data-i18n="${panelKey}">${t(panelKey)}</span>`;
+  const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${name}` : name;
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
     el.innerHTML = label;
   });
@@ -467,7 +474,7 @@ function setBrowserRootPanel(panelName, showBar) {
 
 ///////////////// File Explorer
 function loadFileExplorer() {
-  setBrowserRootPanel(t('panel.fileExplorer'));
+  setBrowserRootPanel('panel.fileExplorer');
   programState = [{ state: 'fileExplorer' }];
 
   // Reset file explorer vars
@@ -2771,7 +2778,7 @@ async function onBackButton() {
 
 ///////////////////// Playlists
 async function getAllPlaylists() {
-  setBrowserRootPanel(t('panel.playlists'));
+  setBrowserRootPanel('panel.playlists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `<input class="newPlaylistButton btn green" style="height:24px;" value="${t('label.newPlaylist')}" type="button" onclick="openNewPlaylistModal();">`;
   programState = [ {state: 'allPlaylists' }];
@@ -3139,7 +3146,7 @@ function albumSongsBody(album, artist, year, albumArtist) {
 
 async function getAllArtists(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.artists')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.artists'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
 
@@ -3181,7 +3188,7 @@ function getArtistz(el) {
 }
 
 async function getArtistsAlbums(artist) {
-  setBrowserRootPanel(t('panel.albums'));
+  setBrowserRootPanel('panel.albums');
   document.getElementById('directoryName').innerHTML = t('label.artist') + ' ' + escapeHtml(artist);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -3501,7 +3508,7 @@ function showGenreSourceSwitch(active) {
 }
 
 async function getAllGenres() {
-  setBrowserRootPanel(t('panel.genres'));
+  setBrowserRootPanel('panel.genres');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allGenres' }];
 
@@ -3563,7 +3570,7 @@ function getGenreSongsList(el) {
 // `source` narrows the songs to the list's kind of genre; absent, every
 // song with the genre (and what a server without the filter answers).
 async function getGenreSongs(genre, source) {
-  setBrowserRootPanel(t('panel.songs'));
+  setBrowserRootPanel('panel.songs');
   document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -3596,7 +3603,7 @@ async function getGenreSongs(genre, source) {
 /////////////// Albums
 async function getAllAlbums(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.albums')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.albums'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   
   programState = [{ state: 'allAlbums' }];
@@ -3719,7 +3726,7 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
 ////////////// Rated Songs
 async function getRatedSongs(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.starred')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.starred'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allRated' }];
 
@@ -3768,7 +3775,7 @@ async function getRatedSongs(opts) {
 
 ///////////////// Recently Played
 function getRecentlyPlayed() {
-  setBrowserRootPanel(t('panel.recentlyPlayed'));
+  setBrowserRootPanel('panel.recentlyPlayed');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyPlayed();" onfocusout="redoRecentlyPlayed();" id="recently-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3823,7 +3830,7 @@ function submitRecentlyPlayed() {
 
 ///////////////// Most Played
 function getMostPlayed() {
-  setBrowserRootPanel(t('panel.mostPlayed'));
+  setBrowserRootPanel('panel.mostPlayed');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitMostPlayed();" onfocusout="redoMostPlayed();" id="most-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3878,7 +3885,7 @@ function submitMostPlayed() {
 
 ///////////////// Recently Added
 function getRecentlyAdded() {
-  setBrowserRootPanel(t('panel.recentlyAdded'));
+  setBrowserRootPanel('panel.recentlyAdded');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyAdded();" onfocusout="redoRecentlyAdded();" id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3952,7 +3959,7 @@ function submitRecentlyAdded() {
 const discoverDownloadsView = { all: false, removed: false, list: [], plugins: null };
 
 function discoverDownloadsPanel() {
-  setBrowserRootPanel(t('panel.downloads'), false);
+  setBrowserRootPanel('panel.downloads', false);
   programState = [{ state: 'discoverDownloads' }];
   currentBrowsingList = [];
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -4104,7 +4111,7 @@ function openFileExplorerAt(parts) {
   document.querySelectorAll('.side-nav-item').forEach((item) => item.classList.remove('select'));
   const nav = document.querySelector('.side-nav-item[data-panel="fileExplorer"]');
   if (nav) { nav.classList.add('select'); }
-  setBrowserRootPanel(t('panel.fileExplorer'));
+  setBrowserRootPanel('panel.fileExplorer');
   programState = [{ state: 'fileExplorer' }];
   fileExplorerArray = [];
   for (const part of parts) {
@@ -4266,7 +4273,7 @@ function ytdlPanel(opts) {
     return;
   }
   programState = [{ state: 'addFromYoutube' }];
-  setBrowserRootPanel(t('panel.addFromYoutube'), false);
+  setBrowserRootPanel('panel.addFromYoutube', false);
   currentBrowsingList = [];
   const list = document.getElementById('filelist');
   list.innerHTML = '<div id="ytdl-panel-mount"></div>';
@@ -4660,7 +4667,7 @@ function discoveryPanel(opts) {
     applyServerContext();
     highlightNavPanel(state);
   }
-  setBrowserRootPanel(t(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover'), false);
+  setBrowserRootPanel(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover', false);
   currentBrowsingList = [];
   sonicPathHideBanner();
   // The banner goes: its pick too, when it was this page's or the Auto DJ
@@ -6875,7 +6882,7 @@ function peerRecsBandClick(ev) {
 
 ///////////////// Transcode
 function setupTranscodePanel(){
-  setBrowserRootPanel(t('panel.transcode'), false);
+  setBrowserRootPanel('panel.transcode', false);
 
   if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
     document.getElementById('filelist').innerHTML = '<div class="pad-6"><b>Transcoding is disabled on this server</b></div>';
@@ -6959,7 +6966,7 @@ function toggleTranscoding(el, manual){
 
 ///////////////////////////// Mobile Stuff
 async function getMobilePanel(){
-  setBrowserRootPanel(t('panel.mobileApps'), false);
+  setBrowserRootPanel('panel.mobileApps', false);
 
   const html = `
     <div class="mobile-links pad-6">
@@ -7347,7 +7354,7 @@ function sonicPathStartOver() {
 }
 
 function sonicPathPanel() {
-  setBrowserRootPanel(t('sonicPath.title'), false);
+  setBrowserRootPanel('sonicPath.title', false);
   sonicPathHideBanner();
   // The banner goes: an Auto DJ Seeds pick with it (no armed pick without
   // its banner).
@@ -9063,7 +9070,7 @@ async function autoDjPanel(opts) {
   _autoDjPanelAbortController = new AbortController();
   const _autoDjPanelSignal = _autoDjPanelAbortController.signal;
 
-  setBrowserRootPanel(t('panel.autoDJ'), false);
+  setBrowserRootPanel('panel.autoDJ', false);
 
   // First-render side-effect: pull legacy keys onto the new namespace.
   // Safe to call repeatedly — guarded against double-migrate.
@@ -9423,7 +9430,7 @@ async function autoDjPanel(opts) {
 
 ////////////// Jukebox
 function setupJukeboxPanel() {
-  setBrowserRootPanel(t('panel.jukeboxMode'), false);
+  setBrowserRootPanel('panel.jukeboxMode', false);
 
   let newHtml;
   if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
@@ -9569,7 +9576,7 @@ const searchMap = {
 };
 
 function setupSearchPanel(searchTerm) {
-  setBrowserRootPanel(t('panel.searchDB'));
+  setBrowserRootPanel('panel.searchDB');
   document.getElementById('local_search_btn').style.display = 'none';
   programState = [{ state: 'searchPanel' }];
 
@@ -11167,7 +11174,7 @@ browseKeepListen();
 
 ///////////////// Config
 function advancedConfig() {
-  setBrowserRootPanel(t('panel.config'), false);
+  setBrowserRootPanel('panel.config', false);
 
   let newHtml = `<div class="pad-6">
     <h5>${t('autoDJ.useFolders')}</h5>
@@ -11192,7 +11199,7 @@ function advancedConfig() {
 
 ////////////////// Layout
 function setupLayoutPanel() {
-  setBrowserRootPanel(t('panel.layout'), false);
+  setBrowserRootPanel('panel.layout', false);
   programState = [{ state: 'layout' }];
 
   const newHtml = `
@@ -11369,11 +11376,9 @@ I18N.onChange(() => {
   if (programState[0] && programState[0].state === 'layout') {
     setupLayoutPanel();
   }
-  // Add from YouTube's panel redraws its own words (alpha/ytdl-ui.js);
-  // its title is the column's, which translatePage() just reset.
-  if (programState[0] && programState[0].state === 'addFromYoutube') {
-    ([...document.getElementsByClassName('panel_one_name')]).forEach((el) => { el.textContent = t('panel.addFromYoutube'); });
-  }
+  // Add from YouTube's panel redraws its own words (alpha/ytdl-ui.js); the
+  // column's title, every panel's, translatePage() just named again
+  // (setBrowserRootPanel).
 });
 
 

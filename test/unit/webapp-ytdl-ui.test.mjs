@@ -1120,7 +1120,7 @@ describe('m.js: the gate, the panel, the wiring', () => {
     const g = gateSandbox(OK);
     g.S.ytdlPanel({ link: LINK });
     assert.deepEqual(g.S.state(), [{ state: 'addFromYoutube' }]);
-    assert.deepEqual(g.calls[0], ['setBrowserRootPanel', 'T:panel.addFromYoutube', false]);
+    assert.deepEqual(g.calls[0], ['setBrowserRootPanel', 'panel.addFromYoutube', false], 'its name by its key');
     assert.equal(g.filelist.innerHTML, '<div id="ytdl-panel-mount"></div>');
     assert.equal(g.filelist.scrollTop, 0);
     assert.deepEqual(g.calls[1], ['mountPanel', 'ytdl-panel-mount', { link: LINK }]);
@@ -1172,8 +1172,12 @@ describe('m.js: the gate, the panel, the wiring', () => {
     assert.match(M_SRC, /\n {2}addFromYoutube: \(\) => ytdlPanel\(programState\[0\] && programState\[0\]\.state === 'addFromYoutube' \? programState\[0\]\.open : undefined\),\n/);
     const peerCapable = M_SRC.slice(M_SRC.indexOf('const PEER_CAPABLE_STATES'), M_SRC.indexOf(']);', M_SRC.indexOf('const PEER_CAPABLE_STATES')));
     assert.ok(!peerCapable.includes('addFromYoutube'));
+    // its title comes back after a language change: setBrowserRootPanel
+    // writes every panel's name under its key, which translatePage() names
+    // again (webapp-panel-title.test.mjs) — m.js's listener writes none
+    assert.match(findFn('setBrowserRootPanel'), /\n {2}const name = `<span data-i18n="\$\{panelKey\}">\$\{t\(panelKey\)\}<\/span>`;\n/);
     const lang = M_SRC.slice(M_SRC.lastIndexOf('I18N.onChange(() => {'));
-    assert.match(lang, /programState\[0\]\.state === 'addFromYoutube'\) \{\n\s*\(\[\.\.\.document\.getElementsByClassName\('panel_one_name'\)\]\)\.forEach\(\(el\) => \{ el\.textContent = t\('panel\.addFromYoutube'\); \}\);/);
+    assert.ok(!lang.includes('panel_one_name') && !lang.includes("'addFromYoutube'"));
     const section = M_SRC.slice(M_SRC.indexOf('///////////////// Add from YouTube'), M_SRC.indexOf('///////////////// Discover page'));
     assert.ok(section.includes('function ytdlPanel('), 'the m.js half sits in its own section');
   });
