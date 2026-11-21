@@ -279,6 +279,17 @@ removed.
 
 ### 🐛 Bug fixes
 
+- **mStream no longer gives up on, or deletes, an ffmpeg it did not
+  install.** YunoHost's package points `transcode.ffmpegDirectory` at
+  `/usr/bin`, where Debian 12 keeps ffmpeg 5 — too old for mStream,
+  which needs 6. The server tried to delete those binaries and download
+  its own in their place. As the unprivileged YunoHost service it could
+  do neither, and ran with no ffmpeg at all (no transcoding, waveforms
+  or yt-dlp); run as root it replaced the distro's `ffmpeg` and
+  `ffprobe`. Binaries mStream did not install are now left exactly as
+  they are, and when it cannot use them — or cannot write to the
+  configured directory — it downloads its own build into its default
+  directory instead and says so in the log.
 - **No more lost database writes on Docker Desktop bind mounts.** With
   `/config` bind-mounted from a Mac, the server's own writes (playlists,
   ratings, the genre and mood syncs) never reached the database file:

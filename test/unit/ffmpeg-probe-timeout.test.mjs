@@ -15,12 +15,17 @@
  *     download renamed over them, including a distro's /usr/bin pair (the
  *     yt-dlp docker smoke did exactly that). Binaries without an install
  *     marker (receipt or legacy .checksum, see isManagedDir) in a custom dir
- *     now stay as they are.
+ *     now stay as they are. When they cannot be used, mStream's own build
+ *     goes to the default directory standing in for that one, never into it
+ *     (ffmpeg-foreign-dir.test.mjs covers the stand-in itself).
  *
  * Hermetic, like ffmpeg-bootstrap.test.mjs:
  *   - MSTREAM_FFMPEG_MIRROR points every download at a loopback server
  *     whose bytes can never match the committed pins, so nothing installs.
- *     What is asserted is whether a download was ATTEMPTED.
+ *     What is asserted is whether a download was ATTEMPTED — and, for the
+ *     operator cases, WHERE: they inject the default directory, because the
+ *     real one is the checkout's bin/ffmpeg, which holds working binaries on
+ *     a dev machine and in CI.
  *   - PATH points at an empty dir, so the system-PATH rung finds nothing
  *     and every non-resolving outcome is a deterministic null.
  *   - MSTREAM_TEST_FFMPEG_PROBE_TIMEOUT_MS shrinks the probe budgets
@@ -68,6 +73,12 @@ function freshDir() {
   const dir = path.join(tmpDir, `ffmpeg-${++dirCounter}`);
   config.program.transcode.ffmpegDirectory = dir;
   return dir;
+}
+
+// The default directory to inject next to the freshDir() just made: it does
+// not exist until an install is attempted in it.
+function standInFor() {
+  return path.join(tmpDir, `default-${dirCounter}`);
 }
 
 function put(dir, name, body) {
@@ -176,20 +187,27 @@ describe('ffmpeg-bootstrap: slow probes and operator binaries are never destroye
     put(dir, 'ffmpeg', answers('ffmpeg', '4.4.2'));
     put(dir, 'ffprobe', answers('ffprobe', '4.4.2'));
     const before = snapshot(dir);
+    const standIn = standInFor();
 
-    assert.equal(await bootstrap.ensureFfmpeg(), null);
+    assert.equal(await bootstrap.ensureFfmpeg({ defaultDir: standIn }), null);
     assert.deepEqual(snapshot(dir), before, 'no install marker = the operator\'s files, untouched');
-    assert.deepEqual(hits, [], 'a download would rename over them');
+    // A download INTO this directory would rename over them. mStream's own
+    // build is fetched all the same, for the default directory standing in:
+    // one attempt, and it was made there.
+    assert.equal(hits.length, 1, `exactly one install attempt: ${hits.join(', ')}`);
+    assert.equal(fs.existsSync(standIn), true, 'the attempt went to the default directory, not over the operator\'s pair');
   });
 
   test("half of an operator's pair is not downloaded over", async () => {
     const dir = freshDir();
     put(dir, 'ffmpeg', answers('ffmpeg', '7.1'));
     const before = snapshot(dir);
+    const standIn = standInFor();
 
-    assert.equal(await bootstrap.ensureFfmpeg(), null);
+    assert.equal(await bootstrap.ensureFfmpeg({ defaultDir: standIn }), null);
     assert.deepEqual(snapshot(dir), before, 'the lone ffmpeg survives and no ffprobe appears');
-    assert.deepEqual(hits, []);
+    assert.equal(hits.length, 1, `exactly one install attempt: ${hits.join(', ')}`);
+    assert.equal(fs.existsSync(standIn), true, 'the attempt went to the default directory, not over the lone ffmpeg');
   });
 
   test('an empty custom dir still gets a download (a desktop profile\'s first run)', async () => {
