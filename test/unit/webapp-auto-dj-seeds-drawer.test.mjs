@@ -496,7 +496,7 @@ const keyOf = (name, owner = null) => AUTODJ.seeds.keyOf(owner, `music/${name}.m
 const queueRow = (name, extra = {}) => ({ rawFilePath: `music/${name}.mp3`, filepath: `music/${name}.mp3`, metadata: { title: name, artist: `${name} artist` }, ...extra });
 
 const PANEL_FNS = ['escapeHtml', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'autoDjSeedArtUrl', 'autoDjSecToMin',
-  'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
+  'ratingOptionsHtml', 'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
   'autoDjApplySonicDim', 'autoDjRenderTiles', 'autoDjRenderToggle', 'autoDjPanel'];
 // Every function of the drawer, Add song and the library pick.
 const DRAWER_FNS = [...SRC.matchAll(/^(?:async )?function ((?:autoDjSeed|onAutoDjSeeds|autoDjAddSong|autoDjAddResults|autoDjPickRow|autoDjDrawer)\w*)\(/gm)].map((m) => m[1]);

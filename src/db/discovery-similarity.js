@@ -54,7 +54,9 @@ function blobToVec(blob) {
   return new Float32Array(buf);
 }
 
-function dot(a, b) {
+// Exported for callers that compare a few vectors of their own (Instant
+// Mix's near-duplicate checks, api/discovery-mix.js).
+export function dot(a, b) {
   let s = 0;
   for (let i = 0; i < a.length; i++) { s += a[i] * b[i]; }
   return s;

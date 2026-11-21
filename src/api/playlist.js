@@ -66,6 +66,10 @@ export function setup(mstream) {
       // check) — same fact /api/ carries under features; listed by hand
       // here too (the drift-lock test checks).
       ytdl: features.ytdl,
+      // Instant Mix (POST /api/v1/discovery/local/mix) generation — same
+      // fact /api/ carries under features, listed by hand for the same
+      // reason.
+      instantMix: features.instantMix,
       // A resource (the playlist routes), not a server capability.
       playlists: getPlaylists(req.user.id),
       // Historical version-gate ("this server has the sonic-path route") —
