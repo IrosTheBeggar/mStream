@@ -2990,6 +2990,9 @@ async function setLivePlaylist() {
 
     if (VUEPLAYERCORE.livePlaylist.name !== false) {
       VUEPLAYERCORE.livePlaylist.name = false;
+      // off until it is turned on again: the next visit's init() starts
+      // the one this key names
+      localStorage.removeItem('live-playlist-auto-start');
       document.getElementById('set_live_playlist').classList.remove('blue');
       document.getElementById('set_live_playlist').classList.add('green');
       document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
