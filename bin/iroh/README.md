@@ -14,9 +14,33 @@ are tracked; a `.node` in this directory is a build product (gitignored).
 
 | Bundle | Source |
 | --- | --- |
-| native legs (darwin-arm64, linux-x64, win-x64, …) | the platform package `npm ci` installed |
-| cross legs with an npm prebuilt (linux-arm64, musl) | `npm pack @number0/iroh-<triple>@<lockfile version>`, integrity-checked against `package-lock.json` |
-| **darwin-x64 (Intel Mac)** | **built from source in CI** — see below |
+| native legs (darwin-arm64, win-x64) | the platform package `npm ci` installed |
+| cross legs with a usable npm prebuilt (the musl bundles) | `npm pack @number0/iroh-<triple>@<lockfile version>`, integrity-checked against `package-lock.json` |
+| **darwin-x64 (Intel Mac)** | **built from source in CI** — no upstream prebuilt exists; see below |
+| **linux-x64, linux-arm64 (glibc)** | **built from source in CI** against glibc 2.28 — upstream's prebuilts need 2.34; see below |
+
+## Why the Linux glibc bindings are built from source
+
+Upstream's `@number0/iroh-linux-x64-gnu` / `-linux-arm64-gnu` prebuilts are
+linked on a glibc 2.34 image, so on Debian 11, Ubuntu 20.04 or RHEL/Rocky 8
+(glibc 2.28–2.31) the `.node` fails to `dlopen`: the napi-rs loader then
+throws its generic "Cannot find native binding… npm has a bug" error, the
+server logged "tunnel unavailable on this platform", and Quick Connect was
+silently dead on exactly the hosts a self-hosted server tends to run on (the
+mStream#1101 host). The server binary itself runs on glibc 2.17, so the
+binding — like the rust-parser scanner, same story — was the real floor.
+
+`build-bun.yml`'s linux-x64 and linux-arm64 legs build the same `iroh-js`
+crate with [cargo-zigbuild](https://github.com/rust-cross/cargo-zigbuild)
+(`.github/actions/setup-zigbuild`, pinned + hashed wheels):
+`--target x86_64-unknown-linux-gnu.2.28` links against exactly that glibc ABI
+on any runner, `scripts/check-glibc-floor.sh` asserts the result's symbol
+versions, and the linux-x64 leg then smokes the finished bundle inside a
+`debian:10` container (glibc 2.28). The scanner gets the same treatment in
+`build-rust-parser.yml`; `GLIBC_FLOOR` in `build-bun.yml` is the number, and
+`docs/install.md` states it. The lockfile keeps pinning the upstream platform
+packages — the source build replaces them for their floor, not because they
+are missing — so the expiry alarm below is darwin-only.
 
 ## Why darwin-x64 is built from source
 
@@ -66,10 +90,11 @@ of the ordinary `npm pack` path.
 ## Building it yourself
 
 The exact CI recipe, runnable on any Mac with rustup and Xcode CLT
-(Apple-silicon Macs cross-compile; Rosetta is not needed to build):
+(Apple-silicon Macs cross-compile; Rosetta is not needed to build). The
+tag is `iroh-ffi-pin.json`'s:
 
 ```bash
-git clone --depth 1 --branch v1.1.0 https://github.com/n0-computer/iroh-ffi.git
+git clone --depth 1 --branch v1.2.0 https://github.com/n0-computer/iroh-ffi.git
 cd iroh-ffi && git rev-parse HEAD        # must match iroh-ffi-pin.json's commit
 rustup target add x86_64-apple-darwin
 MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --locked \
@@ -77,6 +102,19 @@ MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --locked \
 strip -x target/x86_64-apple-darwin/release/libnumber0_iroh.dylib
 cp target/x86_64-apple-darwin/release/libnumber0_iroh.dylib \
    <mStream>/bin/iroh/iroh.darwin-x64.node
+```
+
+The Linux glibc bindings, from the same clone on any Linux (or macOS /
+Windows — zig cross-links) with the CI's pinned toolchain:
+
+```bash
+pip install cargo-zigbuild==0.24.0 ziglang==0.16.0   # .github/actions/setup-zigbuild
+rustup target add x86_64-unknown-linux-gnu            # or aarch64-unknown-linux-gnu
+CARGO_PROFILE_RELEASE_STRIP=symbols cargo zigbuild --release --locked \
+  --target x86_64-unknown-linux-gnu.2.28 -p number0_iroh
+cp target/x86_64-unknown-linux-gnu/release/libnumber0_iroh.so \
+   <mStream>/bin/iroh/iroh.linux-x64-gnu.node          # arm64: iroh.linux-arm64-gnu.node
+scripts/check-glibc-floor.sh 2.28 <mStream>/bin/iroh/iroh.linux-x64-gnu.node
 ```
 
 Uses:

@@ -103,6 +103,28 @@ async function forceRescanAndDrain(server, mstreamDbPath) {
   assert.fail('hash_transitions did not drain');
 }
 
+// Resolves once the server reports its ffmpeg resolved. GET
+// /api/v1/admin/transcode's `downloaded` is transcode's lockInit, which
+// init() sets only AFTER ensureFfmpeg() has published ffmpegBin() — so it
+// can never read true while the enrichment gates still see no binary.
+// 240 ticks (2 min) is far past the resolution chain's healthy worst case
+// (two version probes, each capped at 10s); running out means ffmpeg is
+// genuinely not resolving, and the message says so instead of the
+// embedding wait later timing out with no reason.
+async function waitForServerFfmpeg(server) {
+  let last = null;
+  for (let i = 0; i < 240; i++) {
+    try {
+      last = await fetch(`${server.baseUrl}/api/v1/admin/transcode`).then((r) => r.json());
+      if (last.downloaded === true) { return; }
+    } catch (err) {
+      last = { fetchError: err.message };
+    }
+    await sleep(500);
+  }
+  assert.fail(`server never resolved ffmpeg (last /api/v1/admin/transcode: ${JSON.stringify(last)})`);
+}
+
 // The anon export id the single-write-path invariant requires after a
 // re-key: sha256(install salt + NEW hash), recomputed from the DB's own
 // stored salt — proves the applier went through exportIdFor, not a raw
@@ -165,6 +187,21 @@ describe('hash-transition applier (discovery ON — live worker)', () => {
     // 'failed' with still no row, means more waiting is pointless — fail
     // NOW with the reason, so the next CI failure names its cause instead
     // of presenting as a mystery timeout.
+    //
+    // ffmpeg FIRST, or the fail-fast misfires. The discovery gate reads
+    // ffmpegBin(), which stays null until the server's ensureFfmpeg() has
+    // finished BOTH version probes (ffmpeg -version, then ffprobe -version).
+    // Those run beside the boot scan, and on a loaded box the two spawns can
+    // outlast the whole scan of this small library. A first exec of a freshly
+    // copied binary alone costs ~0.9s each on macOS. Until then the pass
+    // reports disabled/'no-ffmpeg', which the admin panel shows as "waiting
+    // for ffmpeg", while task-queue's retryWhenFfmpegResolves() holds the
+    // enqueue until resolution. That state is transient, not a verdict, and
+    // the first status poll read it as one (full `npm test` on master
+    // 9116d63b, 2026-11-20). With ffmpeg resolved, every 'disabled' reason
+    // left ('config', 'runtime-unavailable') is terminal, so the fail-fast
+    // below is sound again.
+    await waitForServerFfmpeg(server);
     let seed = null;
     let passState = null;
     for (let i = 0; i < 480 && !seed; i++) {

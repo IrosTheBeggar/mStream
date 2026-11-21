@@ -59,7 +59,11 @@ function sliceFn(name) {
   throw new Error(`could not find the end of ${name}()`);
 }
 
-const FNS = ['_buildAutoDjBody', '_autoDjSongBlocked', '_federatedPeers', '_askPeerRandomSongs', '_autoDjFederatedPick'];
+const FNS = [
+  '_buildAutoDjBody', '_autoDjSongBlocked', '_federatedPeers', '_askPeerRandomSongs', '_autoDjFederatedPick',
+  // the helpers they call
+  '_currentRow', '_sonicOn', '_wireTakesNegatives', '_landDjPicks', '_dropRerolled',
+];
 
 /** The player's Auto DJ functions over stub servers. `answers.local` and
  * `answers.peer` are what each server's random-songs returns. */
@@ -86,7 +90,7 @@ function makePlayer({ moodFilters = true, answers = {} } = {}) {
     AUTODJ,
     MSTREAMAPI,
     VUEPLAYERCORE,
-    mstreamModule: { playerStats: { metadata: {} }, getCurrentSong: () => null },
+    mstreamModule: { playerStats: { metadata: {} }, getCurrentSong: () => null, playlist: [], positionCache: { val: -1 } },
     _fetchSimilarArtists: async () => [],
     t: (k) => k,
   };
@@ -94,6 +98,8 @@ function makePlayer({ moodFilters = true, answers = {} } = {}) {
     'use strict';
     let autoDjIgnoreArray = [];
     let _fedPeersCache = null;
+    let _djQueueGen = 0;
+    let _rerollOwed = null;
     const FED_PEERS_TTL_MS = 5 * 60 * 1000;
     ${FNS.map(sliceFn).join('\n\n')}
     return { build: _buildAutoDjBody, federatedPick: _autoDjFederatedPick };
@@ -142,13 +148,13 @@ describe('Auto DJ: a cross-server pick under a mood filter', () => {
   const LOCAL = { songs: [song('Local')], ignoreList: [1], sonic: { similarities: [0.6] } };
   const PEER = { songs: [song('Peer')], ignoreList: [2], sonic: { similarities: [0.9] } };
 
+  // A running lane whose More like holds one song of this server.
   function session() {
-    AUTODJ.setState({
-      sonicEnabled: true,
-      sonicSeed: { filepath: 'music/Seed.mp3', title: 'Seed' },
-      djMoodEnabled: true,
-      djMoods: relaxed,
-    });
+    AUTODJ.setState({ sonicEnabled: true, djMoodEnabled: true, djMoods: relaxed });
+    AUTODJ.seeds.setArmed(true);
+    AUTODJ.seeds.laneEdge({});
+    AUTODJ.seeds.beginPick({ current: null, route: 'fanout', sonicOn: true });
+    AUTODJ.seeds.add('more', { owner: null, path: 'music/Seed.mp3', title: 'Seed', artist: '', album: '', art: null, duration: null });
   }
 
   test('an answer without the echo is dropped, however close its song', async () => {

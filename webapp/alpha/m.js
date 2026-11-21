@@ -83,8 +83,10 @@ myDropzone.on('error', (err, msg, xhr) => {
     timeout: 3500
   };
 
+  // the server's words, which can name the library: escaped for the toast,
+  // which takes markup
   if (msg.error) {
-    iziStuff.message = msg.error;
+    iziStuff.message = escapeHtml(msg.error);
   }
 
   iziToast.error(iziStuff);
@@ -419,6 +421,11 @@ function setBrowserRootPanel(panelName, showBar) {
   // Add from YouTube's panel is a Vue instance in #filelist: it goes with
   // the column (its draft stays for the next visit).
   if (typeof YTDLUI !== 'undefined') { YTDLUI.unmountPanel(); }
+  // The Auto DJ page's drawers (Seeds, Genres) belong to it: a view that
+  // takes the column under one (a toast's Details, say: toasts sit above
+  // its scrim) closes it, the keyboard left where it is.
+  if (typeof autoDjSeedsClose === 'function') { autoDjSeedsClose({ noFocus: true }); }
+  if (typeof autoDjGenresClose === 'function') { autoDjGenresClose({ noFocus: true }); }
 
   if(showBar === false) {
     document.getElementById('directory_bar').style.display = 'none';
@@ -428,6 +435,10 @@ function setBrowserRootPanel(panelName, showBar) {
 
   // Discover's bar lives in the column's chrome: no other panel shows it.
   discoveryHideHead();
+  // Peer Recommendations' poll, preview and band end with the page (a
+  // preview never plays out of sight of its attribution). A panel sliced
+  // out on its own, with no page beside it, has nothing to end.
+  if (typeof peerRecsLeave === 'function') { peerRecsLeave(); }
 
   document.getElementById('localSearchBar').value = "";
   document.getElementById('directoryName').innerHTML = '';
@@ -810,9 +821,6 @@ async function init() {
     // its songs (the Keep a copy window's folder count).
     MSTREAMAPI.currentServer.supportedAudioFiles = response.supportedAudioFiles || null;
 
-    // Discovery capability — consumed by the Discover panel (below) and
-    // the Auto-DJ panel's sonic-similarity section.
-    MSTREAMAPI.currentServer.discovery = response.discovery === true;
     // Stats API v2 — with it, the player reports complete plays instead of
     // the 30-second scrobble (assets/js/mstream.player.js), and posts what
     // an earlier page left behind.
@@ -820,8 +828,10 @@ async function init() {
     if (typeof MSTREAMPLAYER.statsInit === 'function') { MSTREAMPLAYER.statsInit(); }
     // The listening page (/stats) reads the same API; its nav entry follows the flag.
     document.getElementById('nav-stats').classList.toggle('super-hide', MSTREAMAPI.currentServer.stats < 2);
-    VUEPLAYERCORE.setDiscoveryAvailable(response.discovery === true);
-    VUEPLAYERCORE.setDiscoveryP2pAvailable(response.discoveryP2p === true);
+    // Discovery capability — the now-playing Discover panel and its "From
+    // the network", the Auto-DJ panel's sonic-similarity section, Sonic
+    // Path's nav row.
+    applyDiscoverySurfaces(response);
     VUEPLAYERCORE.setFederationDiscoveryAvailable(response.federationDiscovery === true);
     // Discovery plug-ins (actions on a recommendation row) — the flag says
     // the server has at least one switched on; the list is fetched lazily.
@@ -829,27 +839,10 @@ async function init() {
     // Admins get the "Invite <peer> to federate" row in the recommendation
     // modal. Identity lives on the layered /api/ endpoint (ping is a frozen
     // flat contract); a server without /api/ or a failed call = not admin,
-    // and the row simply never shows.
+    // and the row simply never shows (applyServerInfo).
     MSTREAMAPI.serverInfo()
-      .then((info) => {
-        const admin = !!(info && info.user && info.user.admin === true);
-        MSTREAMAPI.currentServer.admin = admin;   // the Downloads panel's "All accounts"
-        VUEPLAYERCORE.setAdmin(admin);
-        // The account's name ('mstream-user' in public mode): Add from
-        // YouTube keeps this browser's jobs and choices per account.
-        MSTREAMAPI.currentServer.username = info && info.user && typeof info.user.username === 'string' ? info.user.username : ytdlTokenUser();
-        ytdlStart(MSTREAMAPI.currentServer.username);
-      })
-      .catch(() => {
-        MSTREAMAPI.currentServer.admin = false;
-        VUEPLAYERCORE.setAdmin(false);
-        MSTREAMAPI.currentServer.username = ytdlTokenUser();
-        ytdlStart(MSTREAMAPI.currentServer.username);
-      });
-    // Sonic Path is a standalone side-nav panel — reveal its nav entry
-    // only when the server has the route (never probed).
-    MSTREAMAPI.currentServer.discoveryPath = response.discoveryPath === true;
-    document.getElementById('nav-sonic-path').classList.toggle('super-hide', response.discoveryPath !== true);
+      .then(applyServerInfo)
+      .catch(() => applyServerInfo(null));
     // Downloads: what the discovery plug-ins and Add from YouTube brought
     // in — the "Get it" rows' flag, or Add from YouTube's gate, so the
     // panel (and its Remove) exists wherever a song can come in.
@@ -908,8 +901,9 @@ async function init() {
       // get current playlist
       const response = await MSTREAMAPI.loadPlaylist(VUEPLAYERCORE.livePlaylist.name);
 
-      // set the queue to the current playlist
-      MSTREAMPLAYER.clearPlaylist();
+      // set the queue to the current playlist — the boot's own clear, not
+      // the user's (the seeds' "clear pins" box ignores it)
+      MSTREAMPLAYER.clearPlaylist({ userClear: false });
       response.forEach(value => {
         VUEPLAYERCORE.addSongWizard(value.filepath, value.metadata, false, undefined, false, true);
       });
@@ -2698,8 +2692,12 @@ function downloadFileplaylist(el) {
       if (match) { message = match[1]; }
     }
 
+    // The server's words quote the path it could not read ('Cannot read
+    // playlist "<folder>/<file>" (ENOENT)'), and a folder's or a file's name
+    // is whatever the music came with: escaped for the toast, which takes
+    // markup.
     const opts = { title: t('toast.downloadFailed'), position: 'topCenter', timeout: 5000 };
-    if (message) { opts.message = message; }
+    if (message) { opts.message = escapeHtml(message); }
     iziToast.error(opts);
 
     // Clear so stale error text can't be re-read on a later submit.
@@ -4445,21 +4443,22 @@ document.addEventListener('paste', ytdlOnPaste);
 //              playable through this server. Two parallel POSTs to
 //              /api/v1/discovery/taste (library, peers), so the library
 //              never waits on a connected server's deadline.
-//   'explore'  the network (p2p leads), reached only through
-//              discoveryPanel({ page: 'explore' }) until its nav row lands.
+//   'peerRecs' Peer Recommendations — the p2p network's leads (songs this
+//              server does not have, metadata only), by peer, with 30 s
+//              previews (docs/peer-recommendations-plan.md §4.1; its own
+//              part is the peerRecs* section after this one).
 // Every request body, view model, label and state comes from the pure
 // half, alpha/discovery-page.js (DISCOVERYPAGE); this part fetches, draws
 // and wires. Network leads and the peer ⋯ open the Discover panel's own
-// recommendation window (VUEPLAYERCORE.openDiscoverModal); the leads reuse
-// its plug-in list and job poll for their badges.
+// recommendation window (VUEPLAYERCORE.openDiscoverModal); the connected
+// servers' rows reuse its plug-in list and job poll for their badges.
 //
 // Row actions use data-dp attributes and ONE delegated handler per render
 // (onDiscoveryClick), indexes into discoveryView.shown — never JSON in an
 // onclick. Local-only: play history never leaves this server.
 const discoveryView = {
-  flags: { discovery: false, discoveryTaste: 0, discoveryP2p: false, federationDiscovery: false, discoveryPlugins: false },
+  flags: { discovery: false, discoveryTaste: 0, discoveryP2p: false, discoveryP2pPeers: 0, federationDiscovery: false, discoveryPlugins: false },
   window: 30,         // the bar's window (localStorage: STORAGE_KEYS.window)
-  newArtistsOnly: false, // the Explore page's toggle (the panel's shared key)
   off: null,          // after a 403: 'checking' (re-pinging) | 'server' | 'account'
   pins: [],           // this visit's pins (vpath form), now playing first
   moreFrom: null,     // { library, peers }: the first row the last "Show more" added
@@ -4481,15 +4480,15 @@ const discoveryView = {
   pending: { main: false, peers: false },
   pendingGen: 0,      // the browseGeneration those requests belong to
   seq: 0,             // one per request; an answer for an older one is dropped
-  page: 'play',       // 'play' (Discover) | 'explore' (the network)
+  page: 'play',       // 'play' (Discover) | 'peerRecs' (Peer Recommendations)
   more: { library: 16, peers: 16 }, // rows each song column shows ("Show more")
   allSeeds: false,    // "Show all" opened (the dropped seeds show too)
   optionsOpen: false, // the bar's "More options" opened (the seed picker shows)
   moodsOpen: false,   // the bar's Filters opened (the mood filters show)
   plugins: null,      // VUEPLAYERCORE.ensureDiscoverPlugins' answer
   badgeRows: [],      // the rows looked up, with their job badges: the
-                      // explore page's network leads, the play page's
-                      // connected-server songs (never library rows)
+                      // play page's connected-server songs (never library
+                      // rows; Peer Recommendations' leads carry none)
   badges: new Map(),  // raw row → badge
   cardBadges: new Map(), // a connected album card's key → its badge
   badgeAsk: 0,        // one per lookup; an older lookup's answer is dropped
@@ -4503,23 +4502,72 @@ const DPAGE_LIMITS = { albums: 12, tracks: 48, peers: 25 };
 
 const DPAGE_ICONS = { play: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', add: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M13 11h8v2h-8v8h-2v-8H3v-2h8V3h2v8z"/></svg>', refresh: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path fill="none" d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5"/></svg>', note: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><path fill="currentColor" d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></svg>', open: '<svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24"><path fill="currentColor" d="M14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7zm5 16H5V5h7V3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7h-2v7z"/></svg>' };
 
-// The ping's Discover page flags (init()). A server with the taste route
-// says so with discoveryTaste >= 1 (an integer generation); the p2p and
-// federation sections exist only where the ping advertises them.
+// The ping's Discover page flags (init(), and Peer Recommendations'
+// re-ping). A server with the taste route says so with discoveryTaste >= 1
+// (an integer generation); the p2p and federation sections exist only
+// where the ping advertises them, and Peer Recommendations only with
+// generation 3 and the peers route (discoveryP2pPeers).
 function applyDiscoveryPing(response) {
   const r = response || {};
   MSTREAMAPI.currentServer.discoveryTaste = Number(r.discoveryTaste) || 0;
   // Auto DJ's mood filter reads it here (mstream.player.js).
   MSTREAMAPI.currentServer.moodFilters = r.moodFilters === true;
+  // The Auto DJ picker's generation: from 1, random-songs takes Less like
+  // (lessLike); below it Less like and Learn from skips read "Needs a newer
+  // server" (AUTODJ.seeds.takesNegatives / needsNewerServer).
+  MSTREAMAPI.currentServer.autoDj = Number(r.autoDj) || 0;
   discoveryView.flags = {
     discovery: r.discovery === true,
     discoveryTaste: MSTREAMAPI.currentServer.discoveryTaste,
     discoveryP2p: r.discoveryP2p === true,
+    discoveryP2pPeers: Number(r.discoveryP2pPeers) || 0,
     federationDiscovery: r.federationDiscovery === true,
     discoveryPlugins: r.discoveryPlugins === true,
     moodFilters: r.moodFilters === true,
   };
   discoverySetEntry(DISCOVERYPAGE.pageAvailable(discoveryView.flags));
+  peerRecsSetEntry(peerRecsEntryNow() !== null);
+}
+
+// The rest of the app's discovery flags off the ping (init(), and the
+// network turned on from Peer Recommendations: peerRecsTurnedOn). The
+// now-playing panel's Discover and its "From the network" — the network's
+// first, so a panel that shows asks for both; the Auto-DJ panel's sonic
+// similarity (currentServer.discovery); Sonic Path, a standalone side-nav
+// panel — its nav entry only where the server has the route (never
+// probed).
+function applyDiscoverySurfaces(response) {
+  const r = response || {};
+  MSTREAMAPI.currentServer.discovery = r.discovery === true;
+  MSTREAMAPI.currentServer.discoveryPath = r.discoveryPath === true;
+  const nav = document.getElementById('nav-sonic-path');
+  if (nav) { nav.classList.toggle('super-hide', r.discoveryPath !== true); }
+  VUEPLAYERCORE.setDiscoveryP2pAvailable(r.discoveryP2p === true);
+  VUEPLAYERCORE.setDiscoveryAvailable(r.discovery === true);
+}
+
+// GET /api's answer, once it comes (init(), after the ping): whether the
+// discovery scan has analysed anything yet (features.discoveryReady;
+// unknown without the key): Auto DJ sends seeds only while it is not false
+// (mstream.player.js _sonicOn). The server's version (`server`): Auto DJ
+// narrows the genre filter to one kind only on a server known to take it.
+// An admin or not — the Downloads panel's "All accounts", the window's
+// invite row — and whether the admin API answers (its `admin` object,
+// absent while lockAdmin is on): Peer Recommendations' turn-on form, so its
+// nav row is read again. The account's name ('mstream-user' in public
+// mode): Add from YouTube keeps this browser's jobs and choices per
+// account. null = no answer: none of them known.
+function applyServerInfo(info) {
+  const feats = info && info.features;
+  MSTREAMAPI.currentServer.discoveryReady = feats && typeof feats === 'object' && 'discoveryReady' in feats ? feats.discoveryReady === true : undefined;
+  const admin = !!(info && info.user && info.user.admin === true);
+  MSTREAMAPI.currentServer.version = info && typeof info.server === 'string' ? info.server : undefined;
+  MSTREAMAPI.currentServer.admin = admin;
+  MSTREAMAPI.currentServer.adminApi = !!(info && info.admin);
+  VUEPLAYERCORE.setAdmin(admin);
+  MSTREAMAPI.currentServer.username = info && info.user && typeof info.user.username === 'string' ? info.user.username : ytdlTokenUser();
+  ytdlStart(MSTREAMAPI.currentServer.username);
+  peerRecsSetEntry(peerRecsEntryNow() !== null);
 }
 
 // The nav entry and the now-playing panel's "Discover page →" link
@@ -4535,16 +4583,12 @@ function discoveryT(label) {
   return label && label.key ? t(label.key, label.params) : '';
 }
 
-// A job row's sub-line part ({key}|{text}|{parts}), the panel's dmText rule.
-function discoveryText(part) {
-  if (!part) { return ''; }
-  if (Array.isArray(part.parts)) { return part.parts.map(discoveryText).filter(Boolean).join(' · '); }
-  return part.key ? t(part.key, part.params) : String(part.text || '');
-}
-
-// The page is up (not an album opened from it, not another panel).
+// The page is up (not an album opened from it, not another panel) — the
+// page the view holds: Discover's state is 'discovery', Peer
+// Recommendations' 'peerRecs'.
 function discoveryOnScreen() {
-  return programState.length === 1 && !!programState[0] && programState[0].state === 'discovery';
+  const s = programState[0];
+  return programState.length === 1 && !!s && s.state === (discoveryView.page === 'peerRecs' ? 'peerRecs' : 'discovery');
 }
 
 // The now-playing song as a pin (vpath form), or null: nothing plays, or
@@ -4555,26 +4599,24 @@ function discoveryNowPlayingPath() {
   return String(song.rawFilePath).replace(/^\/+/, '') || null;
 }
 
-// This browser's choices: the window and the shared "new artists only".
+// This browser's choice: the window.
 function discoveryLocalChoices() {
   const D = DISCOVERYPAGE;
-  const out = { window: D.DEFAULT_WINDOW, newArtistsOnly: false };
+  const out = { window: D.DEFAULT_WINDOW };
   try {
     out.window = D.storedWindow(localStorage.getItem(D.STORAGE_KEYS.window));
-    out.newArtistsOnly = localStorage.getItem(D.STORAGE_KEYS.newArtistsOnly) === 'true';
   } catch (_) { /* storage blocked: defaults */ }
   return out;
 }
 
-// One choice at a time ('window' | 'newArtistsOnly'): the second key is
-// shared with the now-playing panel, which may have changed it since this
-// visit read it — a window change must not write it back.
+// The page's one stored choice, the window ('window'). "New artists only",
+// stored beside it, is the now-playing panel's alone: the pages never
+// write it.
 function discoverySaveLocalChoice(key) {
   const D = DISCOVERYPAGE;
-  const v = discoveryView;
-  const value = key === 'window' ? String(v.window) : String(v.newArtistsOnly === true);
+  if (key !== 'window') { return; }
   try {
-    localStorage.setItem(D.STORAGE_KEYS[key], value);
+    localStorage.setItem(D.STORAGE_KEYS.window, String(discoveryView.window));
   } catch (_) { /* storage blocked: this visit only */ }
 }
 
@@ -4595,14 +4637,16 @@ function openDiscoveryPage() {
 // from an album opened on it, from the song picker — the visit's pins and
 // drops stay). Either way the page asks again; the answer on screen stays
 // drawn (busy) until the new one lands.
-// opts.page: 'play' (Discover, the default) | 'explore' (the network); a
-// return keeps the page it left.
+// opts.page: 'play' (Discover, the default) | 'peerRecs' (Peer
+// Recommendations, peerRecsPanel); a return keeps the page it left.
 function discoveryPanel(opts) {
   const o = opts || {};
   const keep = !!o.keep;
   const v = discoveryView;
   const page = DISCOVERYPAGE.PAGES.indexOf(o.page) !== -1 ? o.page : (keep ? v.page : 'play');
-  programState = [{ state: 'discovery' }];
+  // each page is its own panel: its programState, nav row and title
+  const state = page === 'peerRecs' ? 'peerRecs' : 'discovery';
+  programState = [{ state }];
   if (peerContext) {
     // Local-only: home first (switchServer draws this page again).
     if (!keep) { switchServer(null); return; }
@@ -4611,17 +4655,18 @@ function discoveryPanel(opts) {
     browseGeneration++;
     fileExplorerArray = [];
     applyServerContext();
-    highlightNavPanel('discovery');
+    highlightNavPanel(state);
   }
-  setBrowserRootPanel(t('panel.discover'), false);
+  setBrowserRootPanel(t(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover'), false);
   currentBrowsingList = [];
   sonicPathHideBanner();
-  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.dpage === true) { VUEPLAYERCORE.songCapture = null; }
+  // The banner goes: its pick too, when it was this page's or the Auto DJ
+  // Seeds drawer's (Sonic Path's comes back to its own page).
+  if (VUEPLAYERCORE.songCapture && (VUEPLAYERCORE.songCapture.dpage === true || VUEPLAYERCORE.songCapture.seeds)) { VUEPLAYERCORE.songCapture = null; }
   if (!keep) {
     const np = discoveryNowPlayingPath();
     const local = discoveryLocalChoices();
     v.window = local.window;
-    v.newArtistsOnly = local.newArtistsOnly;
     v.off = null;
     v.nowPlaying = np;
     v.pins = np ? [np] : [];
@@ -4645,6 +4690,14 @@ function discoveryPanel(opts) {
     v.cardBadges = new Map();
     v.more = { library: DISCOVERYPAGE.PAGE_SIZE, peers: DISCOVERYPAGE.PAGE_SIZE };
   }
+  // Peer Recommendations' own part: its strip's poll, its preview, a
+  // fresh visit's batch and tab (where the server has the page at all) —
+  // or, for an admin who can turn the network on, the form that does.
+  if (page === 'peerRecs' && DISCOVERYPAGE.peerRecsAvailable(v.flags)) {
+    peerRecsOpen(keep);
+  } else if (page === 'peerRecs' && peerRecsEntryNow() === 'turnOn') {
+    return peerRecsTurnOnOpen();
+  }
   // No answer yet: the page's own loading state (title row, skeletons).
   renderDiscovery();
   return redoDiscovery();
@@ -4652,14 +4705,19 @@ function discoveryPanel(opts) {
 
 // Ask — always: the route draws a new random batch of seeds on every call,
 // so every open and every tap is a new question. Built from the visit's
-// state alone: the window, the pins, the dropped seeds (exclude) and, on
-// the Explore page, "new artists only". The answer on screen stays drawn
-// (busy) until the new one lands; an answer for an older ask is dropped.
-async function redoDiscovery() {
+// state alone: the window, the pins and the dropped seeds (exclude) — and,
+// on Peer Recommendations, its tab (networkPeers). The answer on screen
+// stays drawn (busy) until the new one lands; an answer for an older ask
+// is dropped.
+// opts.batch (Peer Recommendations): ask on the batch on screen — a strip
+// tab, an Add that landed, Try again (plan §3.5 R2, R4) — pinned to its
+// seeds; without it every ask starts a new batch (R3).
+async function redoDiscovery(opts) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   const gen = browseGeneration;
-  if (!D.pageAvailable(v.flags)) {
+  const peerRecs = v.page === 'peerRecs';
+  if (!(peerRecs ? D.peerRecsAvailable(v.flags) : D.pageAvailable(v.flags))) {
     if (discoveryOnScreen()) { renderDiscovery(); }
     return;
   }
@@ -4669,10 +4727,10 @@ async function redoDiscovery() {
     pins: v.pins,
     exclude: v.excluded,
     passed: v.passed,
-    newArtistsOnly: v.newArtistsOnly,
+    networkPeers: peerRecs && peerRecsView.selected ? [peerRecsView.selected] : [],
     ignoreVPaths: localIgnoreVPaths(),
     // the album strip's share and three pages of songs ("Show more"); the
-    // same on both calls and both pages
+    // same on both of Discover's calls (Peer Recommendations has its own)
     limits: DPAGE_LIMITS,
     flags: v.flags,
     moods: moodFilterBody('discover'),
@@ -4680,6 +4738,19 @@ async function redoDiscovery() {
   if (!reqs.main) {
     if (discoveryOnScreen()) { renderDiscovery(); }
     return;
+  }
+  let body = reqs.main;
+  const tab = peerRecsTab(peerRecsView.selected);
+  if (peerRecs) {
+    // the batch's seeds pinned (null: no batch, or none to pin) — else a
+    // new batch, whose first answer the page keeps
+    const pinned = opts && opts.batch === true ? D.batchRequest(reqs.main, peerRecsView.batch, peerRecsView.selected) : null;
+    if (pinned) {
+      body = pinned;
+    } else {
+      peerRecsView.batch = null;
+      peerRecsView.answers = new Map();
+    }
   }
 
   const seq = ++v.seq;
@@ -4698,7 +4769,7 @@ async function redoDiscovery() {
   // picker shows. Until then the old pair stays drawn (busy); when the new
   // main lands, the column is in flight (its skeleton), never the old one
   // under the new seeds.
-  const res = await MSTREAMAPI.discoveryTaste(reqs.main).catch(() => null);
+  const res = await MSTREAMAPI.discoveryTaste(body).catch(() => null);
   if (!current()) { return; }
   // "Another pick" ran out: every song the random fallback could draw was
   // passed over this visit (the server answers no seed, notAnalyzed). Start
@@ -4706,8 +4777,11 @@ async function redoDiscovery() {
   // false "scan pending" card. Once: the list is empty on the second ask.
   if (v.passed.length && D.noPickLeft(res)) {
     v.passed = [];
-    return redoDiscovery();
+    return redoDiscovery(opts);
   }
+  // Peer Recommendations: no connected servers, no badges (its leads carry
+  // no job state on the page).
+  if (peerRecs) { return peerRecsAnswer(res, tab); }
   v.main = res;
   v.pending.main = false;
   if (res && typeof res === 'object' && res.disabled !== true) { v.lastRandom = res.seedSource === 'random'; }
@@ -4790,25 +4864,25 @@ function discoveryResponse() {
   return excluded.length === res.excluded.length ? res : Object.assign({}, res, { excluded });
 }
 
-// What the user already did with a row: a network lead's download
-// ("getting it · 64%") on the explore page; on the play page a connected
-// server's copy — of the song, its album or its artist — on that server's
-// song rows and album cards (a copy started from the window leaves its
-// trace on the page). Library rows are never looked up: they are already
-// yours. One batch lookup per 100 rows (every connected-server row, not
-// only the ones "Show more" has drawn so far), then the strip's job poll
-// keeps the badges current while the page is up. Only where plug-ins
-// exist. Called once an answer's rows are drawn: a whole ask's, and the
-// connected column's own Try again.
+// What the user already did with a row: a connected server's copy — of the
+// song, its album or its artist — on that server's song rows and album
+// cards (a copy started from the window leaves its trace on the page).
+// Library rows are never looked up: they are already yours; nor are Peer
+// Recommendations' leads (their job shows in the window alone). One batch
+// lookup per 100 rows (every connected-server row, not only the ones "Show
+// more" has drawn so far), then the strip's job poll keeps the badges
+// current while the page is up. Only where plug-ins exist. Called once an
+// answer's rows are drawn: a whole ask's, and the connected column's own
+// Try again.
 async function discoveryLoadBadges(seq) {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
-  if (v.flags.discoveryPlugins !== true || seq !== v.seq) { return; }
+  if (v.flags.discoveryPlugins !== true || v.page !== 'play' || seq !== v.seq) { return; }
   const gen = browseGeneration;
   const ask = ++v.badgeAsk;
   const live = () => gen === browseGeneration && seq === v.seq && ask === v.badgeAsk;
   const res = discoveryResponse();
-  const rows = v.page === 'explore' ? D.networkRows(res).rows : D.peerSongRows(D.peerGroups(res));
+  const rows = D.peerSongRows(D.peerGroups(res));
   if (!rows.length) {
     v.badgeRows = [];
     discoveryIndexBadges();
@@ -4842,7 +4916,7 @@ function discoveryIndexBadges() {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
   v.badges = new Map(v.badgeRows.map((r) => [r.raw, r.badge]));
-  const cards = v.page === 'explore' ? [] : D.peerAlbums(D.peerGroups(discoveryResponse()));
+  const cards = D.peerAlbums(D.peerGroups(discoveryResponse()));
   const badges = D.peerAlbumBadges(cards, v.badgeRows, DISCOVERJOBS);
   v.cardBadges = new Map();
   cards.forEach((c, i) => { if (badges[i]) { v.cardBadges.set(c.key, badges[i]); } });
@@ -4859,7 +4933,9 @@ function discoveryWatchJobs() {
   discoveryMergeJobs(VUEPLAYERCORE.discoverJobs());
   if (!v.unwatch) {
     v.unwatch = VUEPLAYERCORE.watchDiscoverJobs((jobs) => {
-      if (!programState[0] || programState[0].state !== 'discovery') {
+      // the play page's badges: gone with it (another panel, Peer
+      // Recommendations, an album opened from it)
+      if (v.page !== 'play' || !discoveryOnScreen()) {
         if (v.unwatch) { v.unwatch(); }
         v.unwatch = null;
         return;
@@ -4890,21 +4966,18 @@ function discoveryMergeJobs(jobs) {
 
 // Redraw what changed in place — never the page (focus, the album strip's
 // scroll and an open ⋯ popper survive the poll's beat): a row's badge and
-// bar slots (data-bslot / data-pslot = 'n' + a network lead's index, 'p' +
-// a connected-server song row's) and a connected album card's ('a' + its
-// index). A row or card not drawn is skipped; a slot not found falls back
-// to a whole-page draw.
+// bar slots (data-bslot / data-pslot = 'p' + a connected-server song row's
+// index) and a connected album card's ('a' + its index). A row or card not
+// drawn is skipped; a slot not found falls back to a whole-page draw.
 function discoveryPatchBadges(changed) {
   const v = discoveryView;
   const root = document.getElementById('filelist');
   const writes = [];
   for (const raw of changed.rows || []) {
-    const n = v.shown.network.findIndex((r) => r.raw === raw);
-    if (n !== -1) { writes.push(['n' + n, discoveryLeadTag(v.shown.network[n]), discoveryProgressHtml(v.badges.get(raw) || null)]); }
     const p = v.shown.peers.findIndex((r) => r.raw === raw);
     if (p !== -1) {
       const b = v.badges.get(raw) || null;
-      writes.push(['p' + p, discoveryBadgeHtml(b, true), discoveryThinBarHtml(b)]);
+      writes.push(['p' + p, discoveryBadgeHtml(b), discoveryThinBarHtml(b)]);
     }
   }
   for (const key of changed.cards || []) {
@@ -4935,21 +5008,29 @@ function discoveryHideHead() {
 function renderDiscovery() {
   const D = DISCOVERYPAGE;
   const v = discoveryView;
+  // Peer Recommendations' turnOn mode: its own block, never the page's
+  if (v.page === 'peerRecs' && peerRecsView.turnOn) { peerRecsTurnOnDraw(); return; }
   const root = document.getElementById('filelist');
   const head = document.getElementById('dpage-head');
   const res = discoveryResponse();
-  const page = v.page === 'explore' ? 'explore' : 'play';
+  const page = v.page === 'peerRecs' ? 'peerRecs' : 'play';
   const st = D.stateOf(res, v.flags, { page });
   v.shown = { chips: [], excluded: [], tracks: [], allTracks: [], network: [], peers: [], allPeers: [], peerAlbums: [] };
 
   if (st.state === 'off') {
+    discoveryHideHead();
+    // Peer Recommendations draws no off card: its re-ping hides the entry
+    // and leaves the page (peerRecsOff).
+    if (page === 'peerRecs') {
+      root.innerHTML = '<div class="dpage dpage-off"></div>';
+      return;
+    }
     // After a 403 the re-ping names the reason: the server switched it off,
     // or this account has no history here (the ping still has the page).
     const account = v.off === 'account' && D.pageAvailable(v.flags);
     const body = v.off === 'checking'
       ? escapeHtml(t('dpage.state.loading'))
       : `<b>${escapeHtml(t(account ? 'dpage.state.unavailable' : 'dpage.state.off'))}</b><br>${escapeHtml(t(account ? 'dpage.state.unavailableBody' : 'dpage.state.offBody'))}`;
-    discoveryHideHead();
     root.innerHTML = `<div class="dpage dpage-off"><div class="dpage-hint">${body}</div></div>`;
     return;
   }
@@ -4962,20 +5043,23 @@ function renderDiscovery() {
   const refocus = discoveryFocusedSelector();
   const cls = `dpage-page-${page}${busy ? ' dpage-busy' : ''}`;
   // The bar sits in the column's chrome (#dpage-head), out of the scroller.
-  // The seed picker (and, on Explore, "new artists only") sit behind its
-  // "More options", in the same host: a first-time user took the seed chips
-  // for songs to play.
+  // The seed picker sits behind its "More options", in the same host: a
+  // first-time user took the seed chips for songs to play. On Peer
+  // Recommendations the chips are the batch's (a tab's answer is pinned to
+  // it: every seed would read as picked).
   let barHtml = discoveryHeadHtml(v.window);
   if (v.moodsOpen && page === 'play' && DISCOVERYPAGE.moodsAvailable(v.flags)) {
     barHtml += `<div class="mood-filters dpage-moods" id="dpage-moods" role="region" aria-label="${escapeHtml(t('moods.filters'))}">${moodPanelHtml('discover')}</div>`;
   }
-  if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, res, page); }
+  if (v.optionsOpen) { barHtml += discoveryOptionsHtml(st, page === 'peerRecs' && peerRecsView.batch ? peerRecsView.batch : res); }
   let html = `<div class="dpage ${cls}"${st.state === 'loading' ? ' aria-busy="true"' : ''}>`;
   // No host (an index.html older than this script): the bar heads the page
   // in the scroller, as it once did, rather than vanishing.
   if (!head) { html += barHtml; }
 
-  if (st.state === 'failed') {
+  if (page === 'peerRecs') {
+    html += peerRecsBodyHtml(res, st);
+  } else if (st.state === 'failed') {
     html += discoveryCardHtml(t('dpage.state.failed'), '', [['retry', 'dpage.verb.tryAgain', true]]);
   } else {
     if (st.state === 'nothingFinished') {
@@ -4986,11 +5070,9 @@ function renderDiscovery() {
       if (dropped) { acts.splice(1, 0, ['editSeeds', 'dpage.seeds.edit']); }
       html += discoveryCardHtml(discoveryT(st.reason), t(dropped ? 'dpage.state.allDroppedBody' : 'dpage.state.nothingFinishedBody'), acts);
     } else if (st.state === 'scanPending') {
-      const acts = [['retry', 'dpage.verb.checkAgain']];
-      if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
-      html += discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
+      html += discoveryScanCardHtml(st);
     }
-    html += page === 'explore' ? discoveryExploreHtml(res, st) : discoveryPlayHtml(res, st);
+    html += discoveryPlayHtml(res, st);
   }
   html += '</div>';
   if (head) {
@@ -5003,7 +5085,12 @@ function renderDiscovery() {
     const opts = keep ? head.querySelector('.dpage-options') : null;
     if (opts) { opts.scrollTop = keep; }
   }
+  // Peer Recommendations' strip keeps its sideways scroll across the draw.
+  const strip = page === 'peerRecs' ? root.querySelector('.prec-strip-row') : null;
+  const stripLeft = strip ? strip.scrollLeft : 0;
   root.innerHTML = html;
+  const stripNow = stripLeft ? root.querySelector('.prec-strip-row') : null;
+  if (stripNow) { stripNow.scrollLeft = stripLeft; }
   for (const host of [head, root]) {
     const el = host && host.querySelector('.dpage');
     if (!el) { continue; }
@@ -5037,7 +5124,7 @@ function discoveryHeadHtml(windowDays) {
   const open = discoveryView.optionsOpen === true;
   // The mood filters (moodPanelHtml), on the Discover page of a server
   // that takes them; orange with a dot while one is set.
-  const moods = discoveryView.page !== 'explore' && DISCOVERYPAGE.moodsAvailable(discoveryView.flags)
+  const moods = discoveryView.page === 'play' && DISCOVERYPAGE.moodsAvailable(discoveryView.flags)
     ? `<button type="button" class="mood-filter-btn dpage-moods-btn${moodFilterBody('discover') ? ' mood-on' : ''}" data-dp="moods" aria-expanded="${discoveryView.moodsOpen ? 'true' : 'false'}"${discoveryView.moodsOpen ? ' aria-controls="dpage-moods"' : ''} aria-label="${escapeHtml(t('moods.filters'))}" title="${escapeHtml(t('moods.filters'))}"><svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.25 5.61C6.27 8.2 10 13 10 13v6c0 .55.45 1 1 1h2c.55 0 1-.45 1-1v-6s3.72-4.8 5.74-7.39A.998.998 0 0 0 18.95 4H5.04c-.83 0-1.3.95-.79 1.61z"/><circle class="mood-filter-dot" cx="20" cy="4" r="3.5"/></svg></button>`
     : '';
   return `<div class="dpage-bar">
@@ -5050,24 +5137,16 @@ function discoveryHeadHtml(windowDays) {
   </div>`;
 }
 
-// Under the bar while "More options" is open: on Explore its one checkbox
-// ("new artists only"), then the seed picker — or one dim line while there
-// is no answer to pick from.
-function discoveryOptionsHtml(st, res, page) {
-  const check = page === 'explore'
-    ? `<div class="dpage-opt-row">${discoveryCheckHtml('newArtists', discoveryView.newArtistsOnly === true, t('dpage.network.newArtistsOnly'))}</div>`
-    : '';
+// Under the bar while "More options" is open: the seed picker over `res`
+// (the batch's answer) — or one dim line while there is no answer to pick
+// from.
+function discoveryOptionsHtml(st, res) {
   // The body already says why (loading / failed): this line says only
   // what the picker is waiting for.
   const inner = st.state === 'loading' || st.state === 'failed'
     ? `<div class="dpage-hint">${escapeHtml(t('dpage.bar.seedsWait'))}</div>`
     : discoverySeedsHtml(res);
-  return `<div class="dpage-options" id="dpage-options">${check}${inner}</div>`;
-}
-
-// A checkbox drawn as a button (materialize hides a bare <input>).
-function discoveryCheckHtml(act, on, label) {
-  return `<button type="button" class="dpage-tog dpage-check${on ? ' on' : ''}" role="checkbox" aria-checked="${on ? 'true' : 'false'}" data-dp="${act}"><i aria-hidden="true"></i>${escapeHtml(label)}</button>`;
+  return `<div class="dpage-options" id="dpage-options">${inner}</div>`;
 }
 
 // One of the states' cards: a title, a body, its buttons ([act, key, primary]).
@@ -5080,6 +5159,14 @@ function discoveryCardHtml(title, body, acts, note) {
     <div class="dpage-card-acts">${buttons}</div>
     ${note ? `<div class="dpage-card-note">${escapeHtml(note)}</div>` : ''}
   </div>`;
+}
+
+// Nothing analyzed yet: the card that says so (both pages), with Check
+// again and, for an admin, the way to Enrichment.
+function discoveryScanCardHtml(st) {
+  const acts = [['retry', 'dpage.verb.checkAgain']];
+  if (MSTREAMAPI.currentServer.admin === true) { acts.push(['admin', 'dpage.verb.adminEnrichment']); }
+  return discoveryCardHtml(discoveryT(st.reason), t('dpage.state.scanPendingBody'), acts, t('dpage.state.seedsListedAnyway'));
 }
 
 // "Based on what you finished": the batch the answer was built from (×
@@ -5289,7 +5376,7 @@ function discoverySongRowHtml(r, i, kind) {
   // row has neither.
   const badge = peer ? (discoveryView.badges.get(r.raw) || null) : null;
   const sub = peer
-    ? `<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">${escapeHtml(r.subtitle || '')}</span><div class="dpage-slot" data-bslot="p${i}">${discoveryBadgeHtml(badge, true)}</div></div><div class="dpage-slot" data-pslot="p${i}">${discoveryThinBarHtml(badge)}</div>`
+    ? `<div class="discover-row-sub dpage-subline"><span class="dpage-subtext">${escapeHtml(r.subtitle || '')}</span><div class="dpage-slot" data-bslot="p${i}">${discoveryBadgeHtml(badge)}</div></div><div class="dpage-slot" data-pslot="p${i}">${discoveryThinBarHtml(badge)}</div>`
     : `<div class="discover-row-sub">${escapeHtml(r.subtitle || '')}</div>`;
   return `<div class="discover-row dpage-row pointer" data-dp="${peer ? 'fedQueue' : 'queue'}" data-i="${i}"${tip ? ` title="${escapeHtml(tip)}"` : ''}>
     ${discoveryArtHtml(src, peer)}
@@ -5373,54 +5460,23 @@ function discoveryPeerSongsHtml(s, pg, labels) {
   return `<section class="dpage-col dpage-src-peers" data-source="peers">${discoveryLabelHtml(label)}${acts}${body}</section>`;
 }
 
-// ── Explore (the network): reached only through discoveryPanel({ page:
-// 'explore' }) until its nav row lands.
-function discoveryExploreHtml(res, st) {
-  const s = st.sources.network;
-  return !s || s.status === 'absent' ? '' : discoveryNetworkHtml(res, s);
-}
-
-function discoverySectionHtml(name, title, sub, body) {
-  return `<section class="dpage-sec dpage-sec-${name}" data-source="${name}">
-    <div class="dpage-sec-h"><span class="dpage-dot"></span><h3>${escapeHtml(title)}</h3><span class="dpage-sub">${escapeHtml(sub.filter(Boolean).join(' · '))}</span></div>
-    ${body}
-  </section>`;
-}
-
-// A section's body while it has nothing to draw: skeleton rows (asking),
-// or its one dim line (empty / failed).
-function discoveryEmptyHtml(s) {
-  if (s.status === 'loading') {
-    return `<div class="dpage-rows" aria-busy="true">${discoverySkelHtml('rows', 4)}</div>`;
-  }
-  const retry = s.status === 'failed' ? ` <a href="javascript:void(0)" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</a>` : '';
-  return `<div class="dpage-hint">${escapeHtml(discoveryT(s.reason))}${retry}</div>`;
-}
-
-// A job badge: its word, what it acts on beyond the song ("album", "every
-// album", "what you're missing") and — on the explore page — its sub-line
-// ("getting it · 64%"); its bar while it moves. `plain` (the play page:
-// connected-server rows and album cards) draws the word and the kind
-// alone — "copying · album", "in your collection" — no percentage and no
-// count: the numbers stay in the recommendation window.
-function discoveryBadgeHtml(b, plain) {
+// A job badge (the play page: connected-server rows and album cards): its
+// word and what it acts on beyond the song ("album", "every album", "what
+// you're missing") — "copying · album", "in your collection" — no
+// percentage and no count: the numbers stay in the recommendation window.
+function discoveryBadgeHtml(b) {
   if (!b) { return ''; }
-  const text = [b.tag ? t(b.tag) : '', b.kind ? t(b.kind) : '', plain ? '' : discoveryText(b.sub)].filter(Boolean).join(' · ');
+  const text = [b.tag ? t(b.tag) : '', b.kind ? t(b.kind) : ''].filter(Boolean).join(' · ');
   if (!text) { return ''; }
   const cls = b.tagCls === 'ok' ? 'ok' : (b.tagCls === 'err' ? 'err' : (b.muted ? 'dim' : 'src'));
   return `<span class="dpage-badge dpage-badge-${cls}">${escapeHtml(text)}</span>`;
-}
-
-function discoveryProgressHtml(b) {
-  if (!b || typeof b.progress !== 'number') { return ''; }
-  return `<div class="dpage-prog"><i style="width:${Math.max(0, Math.min(100, b.progress))}%"></i></div>`;
 }
 
 // A connected album card's badge: the row's word, without "album" — the
 // card is the album (an artist copy still says "every album").
 function discoveryCardBadgeHtml(b) {
   const own = b && b.kind === 'discover.tray.kindAlbum' ? Object.assign({}, b, { kind: null }) : b;
-  return discoveryBadgeHtml(own, true);
+  return discoveryBadgeHtml(own);
 }
 
 // The play page's bar: the same thin line, drawn by a scale so no number
@@ -5432,50 +5488,10 @@ function discoveryThinBarHtml(b) {
   return `<div class="dpage-prog dpage-prog-thin" aria-hidden="true"><i style="transform:scaleX(${Number(f.toFixed(3))})"></i></div>`;
 }
 
-// A lead's tag slot: its job badge, else the network's "new artist".
-function discoveryLeadTag(r) {
-  const badge = discoveryView.badges.get(r.raw) || null;
-  if (badge) { return discoveryBadgeHtml(badge); }
-  return r.newArtistLabel ? `<span class="dpage-tag dpage-new">${escapeHtml(discoveryT(r.newArtistLabel))}</span>` : '';
-}
-
 // What the recommendation window's match bar names: the seed this row was
 // matched against (its seedHash), else the centroid of the seeds (peers).
 function discoveryMatchOpts(row) {
   return row && row.matchSeed ? { seedTitle: row.matchSeed } : { seedPlain: t('dpage.match.recent') };
-}
-
-// "From the network": metadata-only leads; the row opens its window.
-function discoveryNetworkHtml(res, s) {
-  const D = DISCOVERYPAGE;
-  const v = discoveryView;
-  const net = D.networkRows(res);
-  const sub = [t('dpage.network.sub'), net.line ? discoveryT(net.line) : ''];
-  if (s.status !== 'ready') {
-    return discoverySectionHtml('network', t('dpage.network.title'), sub, discoveryEmptyHtml(s));
-  }
-  const rows = net.rows;
-  v.shown.network = rows;
-  let body = '';
-  const chips = v.plugins && v.plugins.available ? D.pluginChips(v.plugins.list, v.plugins.jobsAllowed) : [];
-  if (chips.length) {
-    body += `<div class="dpage-plugins"><span>${escapeHtml(t('dpage.network.pluginsOn'))}</span>${chips.map((c) =>
-      `<span class="dpage-plugin"><b>${escapeHtml(t(c.key, c.params))}</b> · ${escapeHtml(c.title)}</span>`).join('')}</div>`;
-  }
-  body += '<div class="dpage-rows">';
-  const open = escapeHtml(t('dpage.verb.openLead'));
-  rows.forEach((r, i) => {
-    const badge = v.badges.get(r.raw) || null;
-    const rest = [r.album, r.year == null ? '' : String(r.year), r.onLabel ? discoveryT(r.onLabel) : ''].filter(Boolean).join(' · ');
-    body += `<div class="discover-row dpage-row pointer" data-dp="lead" data-i="${i}"${r.because ? ` title="${escapeHtml(discoveryT(r.because))}"` : ''}>
-      ${discoveryArtHtml(null)}
-      <div class="discover-row-info"><div class="discover-row-title">${escapeHtml(r.title)}</div><div class="discover-row-sub">${escapeHtml(r.artist)}${rest ? `<span class="discover-row-tags">${r.artist ? ' · ' : ''}${escapeHtml(rest)}</span>` : ''}</div><div class="dpage-slot" data-pslot="n${i}">${discoveryProgressHtml(badge)}</div></div>
-      <span class="dpage-slot" data-bslot="n${i}">${discoveryLeadTag(r)}</span>
-      <span class="dpage-verbs"><button type="button" class="dpage-vb" data-dp="lead" data-i="${i}" title="${open}" aria-label="${open}">${DPAGE_ICONS.open}</button></span>
-    </div>`;
-  });
-  body += `</div><div class="dpage-foot"><span class="dpage-foot-note">${escapeHtml(t('dpage.network.rowOpens'))}</span></div>`;
-  return discoverySectionHtml('network', t('dpage.network.title'), sub, body);
 }
 
 function onDiscoveryChange(ev) {
@@ -5513,9 +5529,10 @@ function discoveryAction(act, el) {
   const val = el.getAttribute('data-v');
   const queued = () => iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
   const track = v.shown.tracks[i];
-  const lead = v.shown.network[i];
   const peerRow = v.shown.peers[i];
   const peerAlbum = v.shown.peerAlbums[i];
+  // Peer Recommendations' own controls (its strip, rows and acts line)
+  if (act.indexOf('prec') === 0) { peerRecsAction(act, el); return; }
   if (act === 'play' && track) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
   } else if (act === 'queue' && track) {
@@ -5528,9 +5545,6 @@ function discoveryAction(act, el) {
   } else if (act === 'save') {
     if (!v.shown.allTracks.length) { return; }
     openSavePlaylistModal(() => v.shown.allTracks.map((r) => r.filepath));
-  } else if (act === 'lead' && lead) {
-    // the window gives the keyboard back to this control when it closes
-    VUEPLAYERCORE.openDiscoverModal(lead.raw, 'p2p', Object.assign({}, discoveryMatchOpts(lead), { opener: el }));
   } else if (act === 'peerPlay' && peerRow && peerRow.playable) {
     // Play now, through this server's federation stream proxy.
     const raw = peerRow.raw;
@@ -5567,16 +5581,20 @@ function discoveryAction(act, el) {
     v.moreFrom = Object.assign({}, v.moreFrom, { [val]: v.more[val] });
     v.more = Object.assign({}, v.more, { [val]: D.pageSlice(all, v.more[val]).next });
     renderDiscovery();
-  } else if (act === 'newArtists') {
-    v.newArtistsOnly = v.newArtistsOnly !== true;
-    discoverySaveLocalChoice('newArtistsOnly');
-    redoDiscovery();
   } else if (act === 'refresh') {
     // "New seeds": the same question again — the server draws a new random
-    // batch; the answer on screen stays drawn (busy) until it lands.
+    // batch; the answer on screen stays drawn (busy) until it lands. Peer
+    // Recommendations walks the network on a random pick too: the pick
+    // shown is passed over, as "Another pick" does (plan §3.5 R3).
+    if (v.page === 'peerRecs') {
+      const pick = D.randomPick(peerRecsView.batch || discoveryResponse());
+      if (pick) { v.passed = D.passPick(v.passed, pick); }
+    }
     redoDiscovery();
   } else if (act === 'retry') {
-    redoDiscovery();
+    // Try again / Check again; Peer Recommendations asks on its batch
+    // (a new one when there is none)
+    redoDiscovery({ batch: v.page === 'peerRecs' });
   } else if (act === 'peersRetry') {
     redoDiscoveryPeers();
   } else if (act === 'drop') {
@@ -5734,7 +5752,9 @@ function discoveryQueueAll(shuffle) {
 // "+ Add a song…" / "Choose a song…": the Sonic Path's picker — the next
 // single row click anywhere becomes a pin, then the page comes back.
 function discoveryPick() {
-  const back = () => changeView(() => discoveryPanel({ keep: true }), document.getElementById('nav-discover'));
+  // back to the page it was picked for, with its own nav row lit
+  const nav = document.getElementById(discoveryView.page === 'peerRecs' ? 'nav-peer-recs' : 'nav-discover');
+  const back = () => changeView(() => discoveryPanel({ keep: true }), nav);
   const capture = (song) => {
     sonicPathHideBanner();
     const path = String((song && song.filepath) || '').replace(/^\/+/, '');
@@ -5745,6 +5765,1109 @@ function discoveryPick() {
   VUEPLAYERCORE.songCapture = capture;
   showPickBanner(t('dpage.seeds.pickBanner'), back);
   changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
+// ── Peer Recommendations (docs/peer-recommendations-plan.md §4.1) ────────
+// The p2p network's leads — songs other servers have and this one does
+// not, metadata only — seeded by the songs this account finished. The bar,
+// the seed batch, the visit and the recommendation window are Discover's
+// (discoveryPanel({ page: 'peerRecs' }); renderDiscovery draws this page's
+// body with peerRecsBodyHtml). Its own parts:
+//   - the peer strip: All, the shelf's peers, an admin's "+" items (GET
+//     /api/v1/discovery/p2p/peers, polled — R6). A peer narrows the leads
+//     to it, asked again on the batch on screen (R2); each tab's answer is
+//     kept for the batch, so going back to one asks nothing;
+//   - the leads in two columns: a row's open button opens the
+//     recommendation window the now-playing panel's network rows open, and
+//     only its play icon plays — a 30 s preview through the preview
+//     plug-in (VUEPLAYERCORE.clip*: one clip for the rows and the band);
+//   - the band (#dpage-band, under the scroller): the clip, its
+//     attribution, ⏸ ⏭, Get it… and ✕;
+//   - Preview all (the tab's leads one after another) and Copy list.
+// What the server stamps — a lead's tile, a peer's label, monogram and
+// hue, a preview's attribution — is drawn as sent (alpha/peer-recs.js,
+// PEERRECS, holds the rules), and every state is keyed on the peer's
+// endpointId. A poll or a clip event writes slots in place (data-*slot,
+// data-prec-strip), never the page: the strip's scroll and the keyboard's
+// control stay where they were.
+// With the network off, an admin who can turn it on gets the page in its
+// turnOn mode instead (plan §4.1 W7, peerRecsTurnOn*): one block — the
+// form that turns the network on — and none of the above.
+const peerRecsView = {
+  visit: 0,           // one per open (and leave): an older visit's answers are dropped
+  peers: null,        // the last peers answer (null: none yet)
+  noRoute: false,     // the peers route answered 404 (an older server): the strip is All alone
+  polling: false,     // the strip polls while the page is up
+  paused: false,      // a poll skipped while the document was hidden (one when it shows)
+  pollTimer: null,
+  polls: 0,           // peers polls sent: an Add's local state stands until a later one answers
+  answered: 0,        // the newest poll answered (an older one landing late is dropped)
+  local: {},          // endpointId → { state, poll }: an Add's state before the server says so
+  posted: new Set(),  // endpointIds this page added whose landing re-asks (R4)
+  posting: new Set(), // the Adds still out
+  selected: null,     // the strip's tab: null = All, else an endpointId
+  batch: null,        // the batch's first answer: its seeds pin every tab and draw the chips
+  answers: new Map(), // tab ('all' | endpointId) → its answer for this batch
+  pending: false,     // an Add landed while a clip played: the tab re-asks when it ends
+  seq: null,          // the clip's list: { mode: 'one' | 'all', list (raw leads), index, prefetched }
+  noPreview: new Set(), // lead keys with no preview this visit
+  provider: null,     // the preview plug-in (PEERRECS.previewProvider): no play icon without one
+  getIt: false,       // the band's Get it…: an acquire plug-in, jobs allowed, a destination
+  stripHtml: '',      // the strip as last drawn: a poll that changes nothing writes nothing
+  cells: [],          // each drawn row's play icon, as last written
+  acts: '',           // the acts line, as last written
+  bandKey: null,      // the lead the band shows
+  checking: false,    // a re-ping is out (peerRecsOff)
+  unwatchClip: null,
+  unwatchGate: null,
+  onVisible: null,    // the visibilitychange listener while the page is up
+  turnOn: null,       // the turnOn mode's block while it is up: { mode: 'loading' |
+                      // 'failed' | 'unavailable' | 'form', name, description (the
+                      // fields as typed), from (as the server had them), busy,
+                      // error (the server's words), acts (Turn on, as last written) }
+  settingUp: false,   // this page turned the network on in this load: until leads
+                      // come, an endless bar and one line stand in for loading,
+                      // "No peers yet" and "Nothing new" (peerRecsSetupHtml), and a
+                      // shelf that grows asks again. A reload, or the network going
+                      // off, drops it.
+};
+
+const PREC_ICONS = { network: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="5.5" r="2.2"/><circle cx="5.5" cy="17.5" r="2.2"/><circle cx="18.5" cy="17.5" r="2.2"/><path d="M10.9 7.4 6.6 15.6M13.1 7.4l4.3 8.2M7.7 17.5h8.6"/></svg>', plus: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>', alert: '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 6v8"/><circle cx="12" cy="18" r="1.1" fill="currentColor"/></svg>', play: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>', pause: '<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z"/></svg>', next: '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M6 6l9 6-9 6zM16.5 6H19v12h-2.5z"/></svg>', close: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>' };
+
+// The nav row (index.html #nav-peer-recs), and the panel when the app
+// comes back to it (PANELS_BY_STATE.peerRecs).
+function peerRecsPanel() {
+  return discoveryPanel({ page: 'peerRecs' });
+}
+
+// The nav row comes and goes with the ping's gate, and the turn-on form's
+// (peerRecsEntryNow). Nothing else links the page.
+function peerRecsSetEntry(on) {
+  const nav = document.getElementById('nav-peer-recs');
+  if (nav) { nav.classList.toggle('super-hide', !on); }
+}
+
+// Who is asking (DISCOVERYPAGE.peerRecsEntry's `who`): an admin, and
+// whether the admin API answers — both from GET /api (applyServerInfo);
+// neither until it lands.
+function peerRecsWho() {
+  const s = MSTREAMAPI.currentServer;
+  return { admin: s.admin === true, adminApi: s.adminApi === true };
+}
+
+// What the nav row opens as the flags and the account stand now: 'page',
+// 'turnOn' (the form) or null (no row).
+function peerRecsEntryNow() {
+  return DISCOVERYPAGE.peerRecsEntry(discoveryView.flags, peerRecsWho());
+}
+
+// Leave the page for the file explorer, when it is up (R7: no off card).
+function peerRecsExit() {
+  if (!peerRecsOnScreen()) { return; }
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
+// The answers map's key for a tab.
+function peerRecsTab(id) {
+  return id || 'all';
+}
+
+function peerRecsOnScreen() {
+  return discoveryView.page === 'peerRecs' && discoveryOnScreen();
+}
+
+// Opened (discoveryPanel, after setBrowserRootPanel left the last visit):
+// a fresh visit forgets the last one's batch, tab, Add states, previews and
+// earned art; a return ({ keep: true }, from the seed picker) keeps them.
+// Either way the strip polls at once, the clip is watched and the preview
+// plug-in and Get it… are read.
+function peerRecsOpen(keep) {
+  const p = peerRecsView;
+  p.visit++;
+  if (!keep) {
+    Object.assign(p, {
+      noRoute: false, local: {}, posted: new Set(), selected: null, batch: null,
+      answers: new Map(), pending: false, seq: null, noPreview: new Set(),
+    });
+    VUEPLAYERCORE.clipReset();
+  }
+  p.polling = true;
+  p.paused = false;
+  p.stripHtml = '';
+  p.unwatchClip = VUEPLAYERCORE.watchClip(peerRecsOnClip);
+  p.unwatchGate = VUEPLAYERCORE.watchKeepGate(peerRecsReadGate);
+  p.onVisible = peerRecsVisible;
+  document.addEventListener('visibilitychange', p.onVisible);
+  peerRecsPoll();
+  peerRecsReadGate();
+}
+
+// The page left (setBrowserRootPanel: another panel, or the page drawn
+// again): the poll stops, the clip ends — the main player plays again if
+// the clip paused it — and the band goes. The turnOn mode's block goes
+// too: an answer still out for it draws nothing. Nothing when it was not up.
+function peerRecsLeave() {
+  const p = peerRecsView;
+  if (p.turnOn) {
+    p.turnOn = null;
+    p.visit++;
+  }
+  if (!p.polling && !p.unwatchClip) { return; }
+  p.visit++;
+  p.polling = false;
+  p.paused = false;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); p.pollTimer = null; }
+  if (p.onVisible) { document.removeEventListener('visibilitychange', p.onVisible); p.onVisible = null; }
+  for (const k of ['unwatchClip', 'unwatchGate']) {
+    if (p[k]) { p[k](); p[k] = null; }
+  }
+  p.seq = null;
+  p.pending = false;
+  VUEPLAYERCORE.clipStop('leave');
+  peerRecsBandHide();
+}
+
+// The phone's Now Playing tab hid the browser column, the band with it
+// (spa.js toggleThing): a clip never plays out of sight of its attribution
+// (plan §2 item 14), so it ends — the main player plays again if the clip
+// paused it. The page stays up, its poll too.
+function peerRecsCovered() {
+  if (peerRecsOnScreen()) { VUEPLAYERCORE.clipStop('leave'); }
+}
+
+// The preview plug-in (the first listed that previews: no play icons, no
+// Preview all, no band without one) and the band's Get it… (§3.6: an
+// acquire plug-in other than the connected servers' copy, this account
+// allowed to start jobs, and a destination to land in). Read on open and
+// whenever the window says the gate may have moved (watchKeepGate).
+async function peerRecsReadGate() {
+  const p = peerRecsView;
+  const visit = p.visit;
+  const plugins = await VUEPLAYERCORE.ensureDiscoverPlugins();
+  if (visit !== p.visit) { return; }
+  const list = plugins && plugins.available === true && Array.isArray(plugins.list) ? plugins.list : [];
+  const provider = PEERRECS.previewProvider(list);
+  const acquire = !!plugins && plugins.jobsAllowed === true && list.some((x) => x && x.name !== DISCOVERJOBS.COPY_PLUGIN
+    && Array.isArray(x.capabilities) && x.capabilities.indexOf('acquire') !== -1);
+  let getIt = false;
+  if (acquire) {
+    const view = await MSTREAMAPI.discoveryDestination().catch(() => null);
+    if (visit !== p.visit) { return; }
+    getIt = !!(view && view.destination);
+  }
+  const redraw = (provider && provider.name) !== (p.provider && p.provider.name);
+  // the visit's "no preview" leads were the old plug-in's answers
+  if (redraw) { p.noPreview = new Set(); }
+  p.provider = provider;
+  p.getIt = getIt;
+  if (redraw && peerRecsOnScreen()) { renderDiscovery(); }
+  const s = VUEPLAYERCORE.clipState();
+  if (s.live) { peerRecsBandDraw(s); }
+}
+
+// R6: the strip's poll — on open, then every 15 s, every 3 s while a row
+// is being added or an Add of this page's is out; skipped while the
+// document is hidden (one poll when it shows again). A 403 is the network
+// switched off (R7); a 404 an older server: All alone, no more polls; any
+// other failure keeps the last strip.
+async function peerRecsPoll() {
+  const p = peerRecsView;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); p.pollTimer = null; }
+  if (!p.polling) { return; }
+  if (document.visibilityState === 'hidden') { p.paused = true; return; }
+  const visit = p.visit;
+  const n = ++p.polls;
+  let answer = null;
+  let status = 200;
+  try {
+    answer = await MSTREAMAPI.discoveryP2pPeers();
+  } catch (err) {
+    status = (err && err.status) || 0;
+  }
+  if (visit !== p.visit || !p.polling) { return; }
+  if (status === 403) {
+    p.polling = false;
+    peerRecsOff('peers');
+    return;
+  }
+  if (status === 404) {
+    p.polling = false;
+    p.noRoute = true;
+    p.peers = null;
+    peerRecsPatchStrip();
+    return;
+  }
+  if (status === 200 && answer && typeof answer === 'object' && n > p.answered) {
+    p.answered = n;
+    peerRecsTakePeers(answer, n);
+  }
+  peerRecsPollIn(PEERRECS.pollDelay(peerRecsStrip().items, p.posting.size));
+}
+
+function peerRecsPollIn(ms) {
+  const p = peerRecsView;
+  if (p.pollTimer) { clearTimeout(p.pollTimer); }
+  p.pollTimer = p.polling ? setTimeout(peerRecsPoll, ms) : null;
+}
+
+// The document shows again: the poll it skipped, at once.
+function peerRecsVisible() {
+  const p = peerRecsView;
+  if (document.visibilityState === 'hidden' || !p.paused) { return; }
+  p.paused = false;
+  peerRecsPoll();
+}
+
+// The strip's items as the last peers answer and this page's Add states
+// stand (PEERRECS.stripItems); `poll` = the poll an answer belongs to.
+function peerRecsStrip(poll) {
+  const p = peerRecsView;
+  return PEERRECS.stripItems(p.peers, { selected: p.selected, local: p.local, poll });
+}
+
+// A poll's answer: the strip patched in place. The tab's peer gone from
+// the shelf goes back to All (R5: its answer for the batch, else asked);
+// an Add of this page's that landed — or a shelf that filled while "No
+// peers yet" shows — asks the tab again on the batch (R4); a shelf that
+// emptied asks too, for its "No peers yet" (§2 item 18). An Add by someone
+// else, or a rotation, only moves the strip.
+function peerRecsTakePeers(answer, n) {
+  const p = peerRecsView;
+  const land = PEERRECS.landed(p.peers, answer, p.posted, peerRecsNoPeers());
+  const emptied = PEERRECS.emptied(p.peers, answer);
+  // setting up (no leads yet): every snapshot that lands may bring the first
+  const more = p.settingUp && p.peers !== null && peerRecsSearchable(answer) > peerRecsSearchable(p.peers);
+  for (const id of land.ids.concat(land.failed)) { p.posted.delete(id); }
+  p.peers = answer;
+  const strip = peerRecsStrip(n);
+  p.local = strip.local;
+  const reask = land.reask || emptied || more;
+  // the shelf moved under the batch: no tab's answer stands
+  if (reask) { p.answers = new Map(); }
+  if (strip.fallback) { p.selected = null; }
+  peerRecsPatchStrip();
+  if (strip.fallback) {
+    const all = p.answers.get('all');
+    if (all) {
+      ++discoveryView.seq;
+      peerRecsShow(all);
+    } else {
+      redoDiscovery({ batch: true });
+    }
+  } else if (reask || (p.pending && !peerRecsHolding())) {
+    p.pending = false;
+    peerRecsReask();
+  }
+}
+
+// A peers answer's searchable snapshots (0 for none, or no answer).
+function peerRecsSearchable(answer) {
+  const n = answer && answer.shelf ? Number(answer.shelf.searchable) : 0;
+  return Number.isFinite(n) ? n : 0;
+}
+
+// R4's re-ask: the tab on the batch — once the clip is over (the list
+// never changes under a preview).
+function peerRecsReask() {
+  const p = peerRecsView;
+  if (peerRecsHolding()) {
+    p.pending = true;
+    return;
+  }
+  p.answers = new Map();
+  if (peerRecsOnScreen()) { redoDiscovery({ batch: true }); }
+}
+
+// The list holds still while a clip plays and while the recommendation
+// window is up (a preview tile there may be playing, and the keyboard goes
+// back to a row by its place): a re-ask then waits (p.pending) for the
+// clip's end, or for the first poll after the window closed.
+function peerRecsHolding() {
+  return VUEPLAYERCORE.clipState().live || VUEPLAYERCORE.discoverWindowOpen();
+}
+
+// What an empty network section says (§2 item 18): "No peers yet" where
+// the walk had no peer to search (its reason) or the strip's shelf has
+// none searchable, else "Nothing new".
+function peerRecsEmpty(s) {
+  const shelf = peerRecsView.peers && peerRecsView.peers.shelf;
+  return s.why === 'noPeers' || (!!shelf && shelf.searchable === 0) ? 'noPeers' : 'nothingNew';
+}
+
+// Whether the page shows "No peers yet" now.
+function peerRecsNoPeers() {
+  const s = DISCOVERYPAGE.stateOf(discoveryResponse(), discoveryView.flags, { page: 'peerRecs' }).sources.network;
+  return s.status === 'empty' && s.why !== 'scanPending' && peerRecsEmpty(s) === 'noPeers';
+}
+
+// An admin's "+" (or its Try again): POST the Add (§3.3), "Adding…" at
+// once and the poll at 3 s; the answer is read by its code
+// (PEERRECS.addOutcome), never by its words.
+async function peerRecsAdd(id) {
+  const p = peerRecsView;
+  const item = peerRecsStrip().items.find((x) => x.kind === 'add' && x.id === id);
+  if (!item || item.act !== 'add' || p.posting.has(id)) { return; }
+  const visit = p.visit;
+  p.local[id] = { state: 'adding', poll: p.polls };
+  p.posted.add(id);
+  p.posting.add(id);
+  peerRecsPatchStrip();
+  peerRecsPollIn(PEERRECS.POLL_FAST_MS);
+  const res = await MSTREAMAPI.discoveryP2pAdd(id);
+  p.posting.delete(id);
+  if (visit !== p.visit) { return; }
+  const out = PEERRECS.addOutcome(res ? res.status : 0, res ? res.body : null);
+  if (out.local) { p.local[id] = { state: out.local, poll: p.polls }; } else { delete p.local[id]; }
+  // only an Add still on its way can land (R4)
+  if (out.outcome !== 'adding' && out.outcome !== 'landed') { p.posted.delete(id); }
+  peerRecsPatchStrip();
+  peerRecsPollIn(out.pollNow ? 0 : PEERRECS.pollDelay(peerRecsStrip().items, p.posting.size));
+}
+
+// A strip tab (R2): its answer for this batch when the page has it, else
+// asked on the batch; the last tap wins (the seq fence).
+function peerRecsSelect(id) {
+  const p = peerRecsView;
+  p.selected = id;
+  const kept = p.batch ? p.answers.get(peerRecsTab(id)) : null;
+  if (kept) {
+    // an ask still out is for another tab
+    ++discoveryView.seq;
+    peerRecsShow(kept);
+    return;
+  }
+  redoDiscovery({ batch: true });
+}
+
+// One of the page's answers (redoDiscovery). A refusal, or no network on a
+// history answer, is the network switched off (R7); a tab whose peer left
+// the shelf goes back to All (R5); else it is drawn and kept for its tab —
+// the first of a batch as the batch. A walk that failed (reason 'error',
+// "Try again") is kept for no tab: tapped again, the tab asks again.
+function peerRecsAnswer(res, tab) {
+  const v = discoveryView;
+  const p = peerRecsView;
+  v.pending = { main: false, peers: false };
+  const answered = !!res && typeof res === 'object';
+  if (answered && (res.disabled === true || (res.seedSource !== 'random' && res.network === null))) { return peerRecsOff('taste'); }
+  if (answered && res.network && res.network.reason === 'not-on-shelf' && p.selected !== null) {
+    p.selected = null;
+    const all = p.answers.get('all');
+    if (all) { return peerRecsShow(all); }
+    return redoDiscovery({ batch: true });
+  }
+  if (answered) {
+    if (!p.batch) { p.batch = res; }
+    if (res.network && res.network.reason === 'error') { p.answers.delete(tab); } else { p.answers.set(tab, res); }
+  }
+  peerRecsShow(res);
+}
+
+// Draw a tab's answer. Preview all plays its clip out and ends there: it
+// never runs on into another list.
+function peerRecsShow(res) {
+  const v = discoveryView;
+  const p = peerRecsView;
+  if (p.seq && p.seq.mode === 'all') { p.seq.mode = 'one'; }
+  v.pending = { main: false, peers: false };
+  v.main = res;
+  if (discoveryOnScreen()) { renderDiscovery(); }
+}
+
+// R7: the network switched off — a refusal or no network on a history
+// answer ('taste'), a 403 from the strip's poll ('peers') or from a
+// preview's resolve ('clip'). One re-ping (its flags are the app's from
+// now on): off, or no answer, hides the nav row and leaves the page for
+// the file explorer — there is no off card — unless the account can turn
+// the network on again: then the page becomes the form (its turnOn
+// mode). Still on: a taste answer draws "Try again"; the rest stays as it
+// is.
+async function peerRecsOff(source) {
+  const p = peerRecsView;
+  const v = discoveryView;
+  if (p.checking) { return; }
+  p.checking = true;
+  let r = null;
+  try {
+    r = await MSTREAMAPI.ping();
+  } catch (_) { /* no answer: off */ }
+  p.checking = false;
+  if (r) { applyDiscoveryPing(r); }
+  const entry = r ? peerRecsEntryNow() : null;
+  if (entry === 'page') {
+    if (source === 'taste') {
+      v.main = null;
+      if (peerRecsOnScreen()) { renderDiscovery(); }
+    }
+    return;
+  }
+  // off: no network is setting up any more
+  p.settingUp = false;
+  if (entry === 'turnOn') {
+    if (peerRecsOnScreen()) { discoveryPanel({ page: 'peerRecs' }); }
+    return;
+  }
+  peerRecsSetEntry(false);
+  peerRecsExit();
+}
+
+// The page's turnOn mode (plan §4.1 W7): an admin who can turn the network
+// on, with it off. No bar, strip, poll, clip or band: one block. The admin
+// status first — already on (turned on meanwhile): the page; refused (405:
+// the admin API is locked; 403: not from here): the row goes and so does
+// the page, as R7; no sidecar for this platform and none to fetch: one
+// line; else the form, with the name and the description the server has.
+// A status that did not come: "Try again".
+async function peerRecsTurnOnOpen() {
+  const p = peerRecsView;
+  const visit = ++p.visit;
+  // an ask still out (this page's, Discover's) is no answer for the block
+  ++discoveryView.seq;
+  p.turnOn = { mode: 'loading', name: '', description: '', from: { name: '', description: '' }, busy: false, error: '', acts: '' };
+  peerRecsTurnOnDraw();
+  let status = null;
+  let code = 200;
+  try {
+    status = await MSTREAMAPI.discoveryP2pAdminStatus();
+  } catch (err) {
+    code = (err && err.status) || 0;
+  }
+  // no admin API from here (the account's, whatever is up now): no form
+  if (code === 403 || code === 405) {
+    MSTREAMAPI.currentServer.adminApi = false;
+    peerRecsSetEntry(peerRecsEntryNow() !== null);
+    if (visit === p.visit) { peerRecsExit(); }
+    return;
+  }
+  if (visit !== p.visit) { return; }
+  const o = p.turnOn;
+  if (code !== 200 || !status || typeof status !== 'object') {
+    o.mode = 'failed';
+  } else if (status.enabled === true) {
+    return peerRecsTurnedOn(visit);
+  } else if (status.binaryFound !== true && status.binaryFetchable !== true) {
+    o.mode = 'unavailable';
+  } else {
+    const text = (x) => (typeof x === 'string' ? x : '');
+    o.from = { name: text(status.serverName), description: text(status.serverDescription) };
+    o.name = o.from.name;
+    o.description = o.from.description;
+    o.mode = 'form';
+  }
+  if (peerRecsOnScreen()) { peerRecsTurnOnDraw(); }
+}
+
+// The block, whole (renderDiscovery hands the page over while the mode is
+// up): no bar in the host; busy while the status or the enable is out;
+// the keyboard's button put back when a draw replaced it.
+function peerRecsTurnOnDraw() {
+  const o = peerRecsView.turnOn;
+  const root = document.getElementById('filelist');
+  if (!o || !root) { return; }
+  discoveryHideHead();
+  const refocus = discoveryFocusedSelector();
+  o.acts = peerRecsTurnOnActsHtml(o);
+  root.innerHTML = `<div class="dpage dpage-page-peerRecs prec-on-page"${o.mode === 'loading' || o.busy ? ' aria-busy="true"' : ''}>${peerRecsTurnOnHtml(o)}</div>`;
+  const el = root.querySelector('.dpage');
+  if (el) {
+    el.addEventListener('click', onDiscoveryClick);
+    el.addEventListener('input', peerRecsTurnOnInput);
+    el.addEventListener('keydown', peerRecsTurnOnKey);
+  }
+  if (refocus) { discoveryRefocus(refocus); }
+}
+
+// The shares line; the collection line where the ping says collection is
+// off (turning the network on turns it on); the server's name and its
+// description; Turn on, and under it the server's words when it refused —
+// outside the slot typing rewrites, so the alert is drawn (and read) once.
+// Or the one line, or "Try again".
+function peerRecsTurnOnHtml(o) {
+  if (o.mode === 'loading') { return ''; }
+  if (o.mode === 'failed') {
+    return `<div class="prec-on"><button type="button" class="dpage-btn" data-dp="precOnRetry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
+  }
+  if (o.mode === 'unavailable') {
+    return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.unavailable'))}</p></div>`;
+  }
+  const off = o.busy ? ' disabled' : '';
+  const field = (key, label, value, max) => `<label class="prec-on-field"><span class="prec-on-label">${escapeHtml(label)}</span>`
+    + `<input type="text" class="prec-on-input browser-default" data-prec-on="${key}" maxlength="${max}" value="${escapeHtml(value)}" autocomplete="off" spellcheck="false"${off}></label>`;
+  const collect = discoveryView.flags.discovery !== true ? `<p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.collection'))}</p>` : '';
+  return `<div class="prec-on"><p class="prec-on-text">${escapeHtml(t('peerRecs.turnOn.shares'))}</p>${collect}`
+    + field('name', t('peerRecs.turnOn.name'), o.name, 64)
+    + field('description', t('peerRecs.turnOn.description'), o.description, 180)
+    + `<div class="prec-on-acts" data-prec-on-slot="acts">${o.acts}</div>`
+    + (o.error ? `<p class="prec-on-err" role="alert">${escapeHtml(o.error)}</p>` : '')
+    + '</div>';
+}
+
+// Turn on — shut while the fields are not what the server takes
+// (DISCOVERYPAGE.turnOnValid), and while it is turning on ("Turning on…")
+// shut for the pointer and the screen reader alone (aria-disabled): the
+// keyboard stays on it and its label is read (a press is dropped by
+// peerRecsTurnOnSubmit).
+function peerRecsTurnOnActsHtml(o) {
+  const off = o.busy ? ' aria-disabled="true"' : (DISCOVERYPAGE.turnOnValid(o) ? '' : ' disabled');
+  return `<button type="button" class="dpage-btn pri prec-on-btn" data-dp="precTurnOn"${off}>${escapeHtml(t(o.busy ? 'peerRecs.turnOn.busy' : 'peerRecs.turnOn.button'))}</button>`;
+}
+
+// A field typed in: its value kept (the form is drawn from it), and Turn
+// on as the fields now stand — written in place, only when it changed.
+function peerRecsTurnOnInput(ev) {
+  const o = peerRecsView.turnOn;
+  const el = ev.target;
+  const key = el && typeof el.getAttribute === 'function' ? el.getAttribute('data-prec-on') : null;
+  if (!o || o.mode !== 'form' || o.busy || (key !== 'name' && key !== 'description')) { return; }
+  o[key] = String(el.value == null ? '' : el.value);
+  const acts = peerRecsTurnOnActsHtml(o);
+  if (acts === o.acts) { return; }
+  o.acts = acts;
+  peerRecsWrite('[data-prec-on-slot="acts"]', acts);
+}
+
+// Enter in a field turns the network on, as Turn on does — not the Enter
+// that confirms an IME conversion (ja, ko, zh: isComposing, or Safari's
+// keyCode 229), which is the field's.
+function peerRecsTurnOnKey(ev) {
+  const el = ev.target;
+  if (ev.isComposing || ev.keyCode === 229) { return; }
+  if (ev.key !== 'Enter' || !el || typeof el.getAttribute !== 'function' || !el.getAttribute('data-prec-on')) { return; }
+  ev.preventDefault();
+  peerRecsTurnOnSubmit();
+}
+
+// Turn on: "Turning on…" (the keyboard on it, from a field too) and the
+// fields shut, then POST enabled — no client timeout: the server may
+// fetch the sidecar first. Refused: the server's own words under the
+// button, the form back. On: the name and
+// the description, each only when the form changed it — a failure is a
+// warning (the network stays on) — then the page (peerRecsTurnedOn). A
+// page left meanwhile draws nothing; what was sent is still saved.
+async function peerRecsTurnOnSubmit() {
+  const p = peerRecsView;
+  const o = p.turnOn;
+  if (!o || o.mode !== 'form' || o.busy || !DISCOVERYPAGE.turnOnValid(o)) { return; }
+  const visit = p.visit;
+  const name = o.name.trim();
+  const description = o.description.trim();
+  o.busy = true;
+  o.error = '';
+  peerRecsTurnOnDraw();
+  discoveryRefocus('[data-dp="precTurnOn"]');
+  try {
+    await MSTREAMAPI.discoveryP2pSetEnabled(true);
+  } catch (err) {
+    if (visit !== p.visit) { return; }
+    const said = err && err.body && typeof err.body.error === 'string' ? err.body.error.trim() : '';
+    o.busy = false;
+    o.error = said || t('peerRecs.tryAgain');
+    peerRecsTurnOnDraw();
+    discoveryRefocus('[data-dp="precTurnOn"]');
+    return;
+  }
+  // on: peers are found and their snapshots fetched over the next minutes
+  p.settingUp = true;
+  const warn = (key) => iziToast.warning({ title: escapeHtml(t(key)), position: 'topCenter', timeout: 6000 });
+  if (name !== o.from.name.trim()) {
+    await MSTREAMAPI.discoveryP2pSetName(name).catch(() => warn('peerRecs.turnOn.nameNotSaved'));
+  }
+  if (description !== o.from.description.trim()) {
+    await MSTREAMAPI.discoveryP2pSetDescription(description).catch(() => warn('peerRecs.turnOn.descriptionNotSaved'));
+  }
+  return peerRecsTurnedOn(visit);
+}
+
+// The network is on (the form's, or the status said so): one re-ping —
+// its flags the app's from now on, the now-playing panel's and the rest
+// (applyDiscoverySurfaces) too — then the page in its own mode, a
+// fresh visit and its first ask (R1). Not the page after it (no answer, or
+// a gate the network alone does not open): the row as the flags stand,
+// and the file explorer. A page left meanwhile draws nothing.
+async function peerRecsTurnedOn(visit) {
+  let r = null;
+  try {
+    r = await MSTREAMAPI.ping();
+  } catch (_) { /* no answer: the flags as they were */ }
+  if (r) {
+    applyDiscoveryPing(r);
+    applyDiscoverySurfaces(r);
+  }
+  if (visit !== peerRecsView.visit || !peerRecsOnScreen()) { return; }
+  if (peerRecsEntryNow() === 'page') { return discoveryPanel({ page: 'peerRecs' }); }
+  peerRecsExit();
+}
+
+// The page's own controls (discoveryAction hands them over): a strip tab
+// or "+", a row's open button or play icon, Preview all, Copy list — and
+// the turnOn mode's Turn on and Try again.
+function peerRecsAction(act, el) {
+  const p = peerRecsView;
+  const i = Number(el.getAttribute('data-i'));
+  const id = el.getAttribute('data-v');
+  const r = discoveryView.shown.network[i];
+  if (act === 'precTab') {
+    if (id === '' || PEERRECS.isEndpointId(id)) { peerRecsSelect(id || null); }
+  } else if (act === 'precAdd') {
+    if (PEERRECS.isEndpointId(id)) { peerRecsAdd(id); }
+  } else if (act === 'precOpen' && r) {
+    // the same window as the now-playing panel's network rows, its match
+    // line naming the seed as Discover's does: nothing plays until one of
+    // its previews is pressed; the keyboard comes back here on close
+    VUEPLAYERCORE.openDiscoverModal(r.raw, 'p2p', Object.assign({}, discoveryMatchOpts(r), { opener: el }));
+  } else if (act === 'precPlay' && r) {
+    peerRecsPlay(i);
+  } else if (act === 'precAll') {
+    peerRecsPreviewAll();
+  } else if (act === 'precCopy') {
+    peerRecsCopyList();
+  } else if (act === 'precTurnOn') {
+    peerRecsTurnOnSubmit();
+  } else if (act === 'precOnRetry' && p.turnOn) {
+    peerRecsTurnOnOpen();
+  }
+}
+
+// A row's play icon: its lead's clip — paused, resumed or dropped when it
+// is the live clip (VUEPLAYERCORE.clipToggle), else started with the
+// tab's leads after it for ⏭ (its own clip that ended or failed too). It
+// opens nothing.
+function peerRecsPlay(i) {
+  const p = peerRecsView;
+  const rows = discoveryView.shown.network;
+  const r = rows[i];
+  if (!r || !p.provider || peerRecsClipOf(r.raw) === 'none') { return; }
+  const s = VUEPLAYERCORE.clipState();
+  if (!s.live || s.key !== PEERRECS.leadKey(r.raw)) {
+    p.seq = { mode: 'one', list: rows.map((x) => x.raw), index: i, prefetched: -1 };
+  }
+  VUEPLAYERCORE.clipToggle(r.raw);
+}
+
+// Preview all: the tab's leads one after another from the top, past those
+// with no preview this visit; pressed while it runs, it stops.
+function peerRecsPreviewAll() {
+  const p = peerRecsView;
+  if (!p.provider) { return; }
+  if (p.seq && p.seq.mode === 'all' && VUEPLAYERCORE.clipState().live) {
+    VUEPLAYERCORE.clipStop('user');
+    return;
+  }
+  const list = discoveryView.shown.network.map((r) => r.raw);
+  const first = PEERRECS.nextIndex(list, -1, p.noPreview);
+  if (first === -1) { return; }
+  p.seq = { mode: 'all', list, index: first, prefetched: -1 };
+  VUEPLAYERCORE.clipStart(list[first]);
+  peerRecsPatchPlay();
+}
+
+// The next lead of the clip's list (past those with no preview), started
+// at once — inside the clip's own event when one ended, so the main player
+// stays paused across the hand-off. → whether there was one.
+function peerRecsAdvance() {
+  const p = peerRecsView;
+  const seq = p.seq;
+  const next = seq ? PEERRECS.nextIndex(seq.list, seq.index, p.noPreview) : -1;
+  if (next === -1) { return false; }
+  seq.index = next;
+  seq.prefetched = -1;
+  VUEPLAYERCORE.clipStart(seq.list[next]);
+  return true;
+}
+
+// The clip's events (VUEPLAYERCORE.watchClip, while the page is up): the
+// band and the play icons follow it; Preview all moves on when a clip
+// ends or has no preview, asks the next one ahead once (20 s in), and
+// ends on a failed one rather than run into the provider's limiter. Every
+// clip is the page's own (a row's play icon, Preview all, ⏭), so its list
+// is always set when it starts.
+function peerRecsOnClip(ev) {
+  const p = peerRecsView;
+  const seq = p.seq;
+  const all = !!seq && seq.mode === 'all';
+  const s = ev.state;
+  if (ev.type === 'resolving' || ev.type === 'waiting' || ev.type === 'playing' || ev.type === 'paused') {
+    peerRecsBandDraw(s);
+    peerRecsPatchPlay();
+  } else if (ev.type === 'time') {
+    peerRecsBandProgress(s);
+    if (all && s.at >= 20 && seq.prefetched !== seq.index) {
+      seq.prefetched = seq.index;
+      const next = PEERRECS.nextIndex(seq.list, seq.index, p.noPreview);
+      if (next !== -1) { VUEPLAYERCORE.clipPrefetch(seq.list[next]); }
+    }
+  } else if (ev.type === 'art') {
+    peerRecsPatchArt(ev.tileKey);
+  } else if (ev.type === 'result') {
+    // the window's preview tile answered for a lead: the page knows it now
+    // (Preview all and ⏭ pass a lead with no preview by), and its play icon
+    // follows. A forgotten answer (a clip of the lead's would not play) is
+    // no "No preview": the icon is idle again, and its next press asks.
+    if (ev.status === 'none') { p.noPreview.add(ev.key); } else { p.noPreview.delete(ev.key); }
+    peerRecsPatchPlay();
+  } else if (ev.type === 'ended') {
+    if (!(all && peerRecsAdvance())) { peerRecsEnd(); }
+  } else if (ev.type === 'none' || ev.type === 'failed') {
+    // none: no preview for the visit; failed: for this press only
+    if (ev.type === 'none') { p.noPreview.add(ev.key); }
+    if (all && ev.type === 'none' && peerRecsAdvance()) { return; }
+    // a play icon's press says so (Preview all moves on quietly)
+    if (seq && !all) { iziToast.info({ title: escapeHtml(t('peerRecs.noPreview')), position: 'topCenter', timeout: 1800 }); }
+    peerRecsEnd();
+  } else if (ev.type === 'stopped') {
+    peerRecsEnd();
+  } else if (ev.type === 'reset') {
+    peerRecsPatchArt(null);
+  } else if (ev.type === 'off') {
+    peerRecsEnd();
+    peerRecsOff('clip');
+  }
+}
+
+// The clip's session is over (its last clip played out, ✕, no preview, the
+// main player started, the window's tile took over): the band goes, the
+// play icons settle, and an Add that landed meanwhile asks the tab again.
+function peerRecsEnd() {
+  const p = peerRecsView;
+  p.seq = null;
+  peerRecsBandHide();
+  peerRecsPatchPlay();
+  if (p.pending) {
+    p.pending = false;
+    peerRecsReask();
+  }
+}
+
+// Copy list: the tab's leads, "Artist - Title" a line (§5.7).
+async function peerRecsCopyList() {
+  const text = PEERRECS.copyListText(discoveryView.shown.network);
+  if (!text) { return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    iziToast.success({ title: escapeHtml(t('peerRecs.copied')), position: 'topCenter', timeout: 1800 });
+  } catch (_) {
+    // no clipboard here: the list itself, to copy by hand
+    iziToast.info({ title: escapeHtml(text), position: 'topCenter', timeout: 3500 });
+  }
+}
+
+// A lead's play icon: 'none' (no preview this visit: muted, inert), its
+// clip's status while it is the live clip (resolving · waiting · playing ·
+// paused), else 'idle'.
+function peerRecsClipOf(raw) {
+  const key = PEERRECS.leadKey(raw);
+  const known = VUEPLAYERCORE.clipResult(raw);
+  if (peerRecsView.noPreview.has(key) || (known && known.status === 'none')) { return 'none'; }
+  const s = VUEPLAYERCORE.clipState();
+  return s.live && s.key === key ? s.status : 'idle';
+}
+
+function peerRecsHttps(url) {
+  if (typeof url !== 'string' || !url) { return false; }
+  try {
+    return new URL(url).protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
+// The art a preview earned for a tile key this visit (§5.4: https only).
+function peerRecsArt(tileKey) {
+  const url = VUEPLAYERCORE.clipArt(tileKey);
+  return peerRecsHttps(url) ? url : null;
+}
+
+// While the network sets up after this page turned it on (settingUp): an
+// endless bar and one line, named for the screen reader by that line.
+function peerRecsSetupHtml() {
+  return '<div class="prec-setup"><div class="prec-setup-bar" role="progressbar" aria-labelledby="prec-setup-text"><i></i></div>'
+    + `<p class="prec-setup-text" id="prec-setup-text">${escapeHtml(t('peerRecs.settingUp'))}</p></div>`;
+}
+
+// The page under the bar (renderDiscovery): the strip, then the state —
+// Discover's scan-pending card, "Try again", the setup bar (settingUp, in
+// place of loading and of the two below), "No peers yet", "Nothing new"
+// with New seeds — or the acts line and the leads. Loading: two columns of
+// skeleton rows; an ask with an answer on screen dims it (.dpage-busy).
+function peerRecsBodyHtml(res, st) {
+  const D = DISCOVERYPAGE;
+  const p = peerRecsView;
+  const s = st.sources.network;
+  p.stripHtml = peerRecsStripHtml(peerRecsStrip().items);
+  p.cells = [];
+  p.acts = '';
+  const html = `<div class="prec-strip-host" data-prec-strip>${p.stripHtml}</div>`;
+  if (st.state === 'scanPending') { return html + discoveryScanCardHtml(st); }
+  if (st.state === 'failed' || s.status === 'failed') {
+    return html + `<div class="prec-retry"><button type="button" class="dpage-btn" data-dp="retry">${escapeHtml(t('dpage.verb.tryAgain'))}</button></div>`;
+  }
+  if (p.settingUp && (s.status === 'loading' || s.status === 'empty')) { return html + peerRecsSetupHtml(); }
+  if (s.status === 'loading') {
+    return html + `<div class="dpage-songs dpage-songs-solo prec-songs" aria-busy="true"><div class="dpage-rows dpage-flow" style="--dpage-per:8">${discoverySkelHtml('rows', 16)}</div></div>`;
+  }
+  if (s.status === 'empty') {
+    return html + (peerRecsEmpty(s) === 'noPeers'
+      ? discoveryColHintHtml(t('peerRecs.noPeers'))
+      : discoveryColHintHtml(t('peerRecs.nothingNew'), 'refresh', 'dpage.verb.newSeeds'));
+  }
+  if (s.status !== 'ready') { return html; }
+  const rows = D.networkRows(res).rows;
+  // the first leads: the network is set up
+  if (rows.length > 0) { p.settingUp = false; }
+  discoveryView.shown.network = rows;
+  p.cells = rows.map((r, i) => peerRecsPlayHtml(r, i));
+  p.acts = peerRecsActsHtml();
+  // no "Show more": every lead (at most 32), column-major in blocks of 16
+  const blocks = D.columnBlocks(rows).map((b) =>
+    `<div class="dpage-rows dpage-flow" style="--dpage-per:${b.perColumn}">${b.rows.map((x) => peerRecsRowHtml(x.row, x.i)).join('')}</div>`).join('');
+  return `${html}<div class="dpage-slot" data-aslot="acts">${p.acts}</div><div class="dpage-songs dpage-songs-solo prec-songs">${blocks}</div>`;
+}
+
+// The peer strip (§5.6): All, the shelf's peers (the server's monogram on
+// the peer's hue, a dot while it is online, dimmed while not), then an
+// admin's "+" items with their Add states. Drawn once the first poll
+// answered (All alone on a server without the route), and not at all when
+// there is no peer to show.
+function peerRecsStripHtml(items) {
+  const p = peerRecsView;
+  if (!p.noRoute && (!p.peers || items.length < 2)) { return ''; }
+  return `<section class="prec-strip" role="group" aria-label="${escapeHtml(t('peerRecs.a11y.peers'))}"><div class="prec-strip-row">${items.map(peerRecsItemHtml).join('')}</div></section>`;
+}
+
+// One strip item (PEERRECS.stripItems): All and a shelf peer select the
+// tab; an addable peer's "+" and Try again POST the Add, its Adding… and
+// No room are inert. data-v is the endpoint id (64 hex, checked by
+// stripItems), the inline style an integer hue.
+function peerRecsItemHtml(it) {
+  const label = it.kind === 'all' ? t('peerRecs.all') : it.label;
+  const name = `<span class="prec-name">${escapeHtml(label)}</span>`;
+  if (it.kind === 'all') {
+    return `<button type="button" class="prec-peer prec-all${it.selected ? ' is-on' : ''}" data-dp="precTab" data-v="" aria-pressed="${it.selected}"><span class="prec-circle">${PREC_ICONS.network}</span>${name}</button>`;
+  }
+  const attrs = `data-v="${escapeHtml(it.id)}" title="${escapeHtml(label)}" style="--h:${PEERRECS.hueOf(it.hue)}"`;
+  const mono = escapeHtml(it.monogram);
+  const dot = it.online ? '<i class="prec-online" aria-hidden="true"></i>' : '';
+  if (it.kind === 'peer') {
+    return `<button type="button" class="prec-peer${it.online ? '' : ' prec-off'}${it.selected ? ' is-on' : ''}" data-dp="precTab" ${attrs} aria-pressed="${it.selected}" aria-label="${escapeHtml(label)}"><span class="prec-circle">${mono}${dot}</span>${name}</button>`;
+  }
+  const cls = { adding: ' prec-adding', failed: ' prec-failed', noRoom: ' prec-noroom' }[it.state] || '';
+  const face = { adding: mono, failed: PREC_ICONS.alert, noRoom: PREC_ICONS.plus }[it.state] || PREC_ICONS.plus + dot;
+  const state = it.text ? `<span class="prec-state">${escapeHtml(t(it.text.key, it.text.params))}</span>` : '';
+  return `<button type="button" class="prec-peer prec-add${cls}" data-dp="precAdd" ${attrs} aria-label="${escapeHtml(t(it.aria.key, it.aria.params))}"${it.act ? '' : ' aria-disabled="true"'}><span class="prec-circle">${face}</span>${name}${state}</button>`;
+}
+
+// "Preview all · Copy list" over the leads (Preview all only with a
+// preview plug-in; pressed while it runs).
+function peerRecsActsHtml() {
+  const p = peerRecsView;
+  const copy = `<button type="button" class="prec-act" data-dp="precCopy">${escapeHtml(t('peerRecs.copyList'))}</button>`;
+  if (!p.provider) { return `<div class="dpage-acts prec-acts">${copy}</div>`; }
+  const on = !!p.seq && p.seq.mode === 'all';
+  return `<div class="dpage-acts prec-acts"><button type="button" class="prec-act prec-act-all" data-dp="precAll" aria-pressed="${on}">${PREC_ICONS.play}${escapeHtml(t('peerRecs.previewAll'))}</button><span class="dpage-sep" aria-hidden="true">·</span>${copy}</div>`;
+}
+
+// A lead: its open button (the tile, title and "Artist · Album") opens the
+// recommendation window — or, with no plug-ins and no admin, copies
+// "Artist - Title" as the now-playing panel's network rows do, and then
+// says no dialog; its play icon, always shown, plays its preview. No job
+// state on the row: the window shows it.
+function peerRecsRowHtml(r, i) {
+  const popup = VUEPLAYERCORE.leadOpensWindow() ? ' aria-haspopup="dialog"' : '';
+  return `<div class="discover-row dpage-row prec-row">
+    <button type="button" class="prec-open" data-dp="precOpen" data-i="${i}"${popup}><span class="dpage-slot" data-tslot="${i}">${peerRecsTileHtml(r)}</span><span class="discover-row-info"><span class="discover-row-title">${escapeHtml(r.title)}</span><span class="discover-row-sub">${escapeHtml(r.subtitle || '')}</span></span></button>
+    <span class="dpage-slot" data-cslot="${i}">${peerRecsView.cells[i] || ''}</span>
+  </div>`;
+}
+
+// A lead's 40 px tile: the art a preview earned for its tile key this
+// visit, else the server's tile (its letter on its hue), else the note.
+function peerRecsTileHtml(r) {
+  const art = r.tile ? peerRecsArt(r.tile.key) : null;
+  if (art) { return `<span class="dpage-art"><img loading="lazy" src="${escapeHtml(art)}" alt="" referrerpolicy="no-referrer" onerror="discoveryPeerArtFailed(this)"></span>`; }
+  if (r.tile) { return `<span class="dpage-art prec-tile" style="--h:${PEERRECS.hueOf(r.tile.hue)}" aria-hidden="true">${escapeHtml(r.tile.letter)}</span>`; }
+  return discoveryArtHtml(null);
+}
+
+// A lead's play icon — none without a preview plug-in: play; pause while
+// its clip plays (a turning ring while it is asked for); muted and inert
+// with no preview this visit.
+function peerRecsPlayHtml(r, i) {
+  if (!peerRecsView.provider) { return ''; }
+  const st = peerRecsClipOf(r.raw);
+  const title = { title: r.title };
+  if (st === 'none') {
+    return `<button type="button" class="prec-play is-none" data-dp="precPlay" data-i="${i}" aria-disabled="true" aria-label="${escapeHtml(t('peerRecs.a11y.previewSong', title))}" title="${escapeHtml(t('peerRecs.noPreview'))}">${PREC_ICONS.play}</button>`;
+  }
+  const busy = st === 'resolving' || st === 'waiting';
+  const on = busy || st === 'playing';
+  const cls = st === 'idle' ? '' : ` is-live${busy ? ' is-busy' : ''}`;
+  return `<button type="button" class="prec-play${cls}" data-dp="precPlay" data-i="${i}" aria-pressed="${on}" aria-label="${escapeHtml(t(on ? 'peerRecs.a11y.pauseSong' : 'peerRecs.a11y.previewSong', title))}">${on ? PREC_ICONS.pause : PREC_ICONS.play}</button>`;
+}
+
+// Write one of the page's slots in place; the keyboard's control, when it
+// was inside, comes back.
+function peerRecsWrite(sel, html) {
+  const root = document.getElementById('filelist');
+  const slot = root && root.querySelector(sel);
+  if (!slot) { return; }
+  const refocus = discoveryFocusedSelector();
+  const held = refocus && slot.querySelector(refocus) ? refocus : null;
+  slot.innerHTML = html;
+  if (held) { discoveryRefocus(held); }
+}
+
+// The play icons and Preview all as the clip now stands: only the slots
+// that changed are written.
+function peerRecsPatchPlay() {
+  const p = peerRecsView;
+  if (!peerRecsOnScreen()) { return; }
+  discoveryView.shown.network.forEach((r, i) => {
+    const html = peerRecsPlayHtml(r, i);
+    if (html === p.cells[i]) { return; }
+    p.cells[i] = html;
+    peerRecsWrite(`[data-cslot="${i}"]`, html);
+  });
+  const acts = peerRecsActsHtml();
+  if (acts !== p.acts) {
+    p.acts = acts;
+    peerRecsWrite('[data-aslot="acts"]', acts);
+  }
+}
+
+// A preview earned its art (tileKey), or a fresh visit took it back
+// (null): every drawn row with that tile, in place.
+function peerRecsPatchArt(tileKey) {
+  if (!peerRecsOnScreen()) { return; }
+  discoveryView.shown.network.forEach((r, i) => {
+    if (r.tile && (tileKey === null || r.tile.key === tileKey)) { peerRecsWrite(`[data-tslot="${i}"]`, peerRecsTileHtml(r)); }
+  });
+}
+
+// The strip as the last poll left it, in place: its sideways scroll kept,
+// the keyboard back on the item it was on (by endpoint id; All when that
+// one went). A poll that changes nothing writes nothing.
+function peerRecsPatchStrip() {
+  const p = peerRecsView;
+  const root = document.getElementById('filelist');
+  const host = root && peerRecsOnScreen() ? root.querySelector('[data-prec-strip]') : null;
+  if (!host) { return; }
+  const html = peerRecsStripHtml(peerRecsStrip().items);
+  if (html === p.stripHtml) { return; }
+  p.stripHtml = html;
+  const row = host.querySelector('.prec-strip-row');
+  const left = row ? row.scrollLeft : 0;
+  const at = document.activeElement;
+  const id = at && typeof at.closest === 'function' && at.closest('[data-prec-strip]') ? at.getAttribute('data-v') : null;
+  host.innerHTML = html;
+  const next = left ? host.querySelector('.prec-strip-row') : null;
+  if (next) { next.scrollLeft = left; }
+  if (id !== null) {
+    const same = id === '' || PEERRECS.isEndpointId(id) ? host.querySelector(`[data-v="${id}"]`) : null;
+    const el = same || host.querySelector('[data-v=""]');
+    if (el && typeof el.focus === 'function') { el.focus(); }
+  }
+}
+
+// The band (#dpage-band, under the scroller): the clip as it stands — its
+// earned art or tile, title, artist and, once resolved, its attribution
+// (verbatim; linked only to https), then ⏸ ⏭, Get it… (where the server
+// can get it: it opens the lead's window) and ✕. Hidden while no clip is
+// live. The keyboard's button comes back after a redraw.
+function peerRecsBandDraw(s) {
+  const band = document.getElementById('dpage-band');
+  if (!band || !s || !s.live) {
+    peerRecsBandHide();
+    return;
+  }
+  const at = document.activeElement;
+  const act = at && typeof at.closest === 'function' && at.closest('#dpage-band') ? at.getAttribute('data-dp') : null;
+  peerRecsView.bandKey = s.key;
+  band.innerHTML = peerRecsBandHtml(s);
+  band.classList.remove('super-hide');
+  const el = band.querySelector('.prec-band');
+  if (el) { el.addEventListener('click', peerRecsBandClick); }
+  const again = act && /^band[A-Za-z]+$/.test(act) ? band.querySelector(`[data-dp="${act}"]`) : null;
+  if (again && typeof again.focus === 'function') { again.focus(); }
+}
+
+function peerRecsBandHtml(s) {
+  const raw = s.raw || {};
+  const busy = s.status === 'resolving' || s.status === 'waiting';
+  const on = busy || s.status === 'playing';
+  const tile = s.tile;
+  const art = tile ? peerRecsArt(tile.key) : null;
+  const face = art
+    ? `<span class="dpage-art prec-band-art"><img src="${escapeHtml(art)}" alt="" referrerpolicy="no-referrer" onerror="discoveryPeerArtFailed(this)"></span>`
+    : (tile
+      ? `<span class="dpage-art prec-band-art prec-tile" style="--h:${PEERRECS.hueOf(tile.hue)}" aria-hidden="true">${escapeHtml(tile.letter)}</span>`
+      : `<span class="dpage-art prec-band-art dpage-art-ph">${DPAGE_ICONS.note}</span>`);
+  const pv = s.preview;
+  const words = pv && typeof pv.attribution === 'string' ? pv.attribution.trim() : '';
+  const credit = !words ? '' : (peerRecsHttps(pv.link)
+    ? `<a class="prec-band-credit" href="${escapeHtml(pv.link)}" target="_blank" rel="noopener noreferrer">${escapeHtml(words)}</a>`
+    : `<span class="prec-band-credit">${escapeHtml(words)}</span>`);
+  const artist = typeof raw.artist === 'string' && raw.artist.trim() ? `<span class="prec-band-artist">${escapeHtml(raw.artist.trim())}</span>` : '';
+  const sub = [artist, credit].filter(Boolean).join('<span aria-hidden="true">·</span>');
+  const getIt = peerRecsView.getIt ? `<button type="button" class="prec-band-getit" data-dp="bandGetIt" aria-haspopup="dialog">${escapeHtml(t('peerRecs.getIt'))}</button>` : '';
+  return `<div class="prec-band" role="region" aria-label="${escapeHtml(t('peerRecs.preview'))}">
+    <div class="dpage-slot" data-band-prog>${peerRecsBandProgHtml(s)}</div>
+    ${face}
+    <div class="prec-band-text"><div class="prec-band-title">${escapeHtml(raw.title || '')}</div>${sub ? `<div class="prec-band-sub">${sub}</div>` : ''}</div>
+    <div class="prec-band-acts">
+      <button type="button" class="prec-band-toggle${busy ? ' is-busy' : ''}" data-dp="bandToggle" aria-pressed="${on}" aria-label="${escapeHtml(t(on ? 'peerRecs.a11y.pause' : 'peerRecs.a11y.play'))}">${on ? PREC_ICONS.pause : PREC_ICONS.play}</button>
+      <button type="button" class="prec-band-icon" data-dp="bandNext" aria-label="${escapeHtml(t('peerRecs.a11y.next'))}">${PREC_ICONS.next}</button>
+      ${getIt}
+      <button type="button" class="prec-band-icon" data-dp="bandClose" aria-label="${escapeHtml(t('peerRecs.a11y.close'))}">${PREC_ICONS.close}</button>
+    </div>
+  </div>`;
+}
+
+// The band's 2 px line: how far the clip is.
+function peerRecsBandProgHtml(s) {
+  const secs = Number(s.seconds) > 0 ? Number(s.seconds) : 30;
+  const at = Math.max(0, Math.min(secs, Number(s.at) || 0));
+  return `<div class="prec-band-prog" role="progressbar" aria-label="${escapeHtml(t('peerRecs.a11y.position'))}" aria-valuemin="0" aria-valuemax="${Math.round(secs)}" aria-valuenow="${Math.round(at)}"><i style="transform:scaleX(${Number((at / secs).toFixed(3))})"></i></div>`;
+}
+
+// A time tick: the line alone (the band's buttons keep the keyboard).
+function peerRecsBandProgress(s) {
+  const band = document.getElementById('dpage-band');
+  const slot = band && band.querySelector('[data-band-prog]');
+  if (slot) { slot.innerHTML = peerRecsBandProgHtml(s); } else { peerRecsBandDraw(s); }
+}
+
+// The band hidden and emptied; the keyboard, when it was on it, goes to
+// the lead's play icon (else Preview all, else the bar).
+function peerRecsBandHide() {
+  const band = document.getElementById('dpage-band');
+  if (!band) { return; }
+  const at = document.activeElement;
+  const held = !!at && typeof at.closest === 'function' && !!at.closest('#dpage-band');
+  band.classList.add('super-hide');
+  band.innerHTML = '';
+  if (!held) { return; }
+  const i = discoveryView.shown.network.findIndex((r) => PEERRECS.leadKey(r.raw) === peerRecsView.bandKey);
+  discoveryRefocus(...(i === -1 ? [] : [`[data-dp="precPlay"][data-i="${i}"]`]), '[data-dp="precAll"]', '[data-dp="options"]');
+}
+
+// The band's own delegated click (its host is outside #filelist).
+function peerRecsBandClick(ev) {
+  const el = ev.target && typeof ev.target.closest === 'function' ? ev.target.closest('[data-dp]') : null;
+  if (!el) { return; }
+  const p = peerRecsView;
+  const act = el.getAttribute('data-dp');
+  const s = VUEPLAYERCORE.clipState();
+  if (!s.raw) { return; }
+  if (act === 'bandToggle') {
+    VUEPLAYERCORE.clipToggle(s.raw);
+  } else if (act === 'bandNext') {
+    if (!peerRecsAdvance()) { VUEPLAYERCORE.clipStop('user'); }
+  } else if (act === 'bandGetIt' && p.getIt) {
+    const row = discoveryView.shown.network.find((x) => PEERRECS.leadKey(x.raw) === s.key) || null;
+    VUEPLAYERCORE.openDiscoverModal(s.raw, 'p2p', Object.assign({}, discoveryMatchOpts(row), { opener: el }));
+  } else if (act === 'bandClose') {
+    VUEPLAYERCORE.clipStop('user');
+  }
 }
 
 ///////////////// Transcode
@@ -6223,6 +7346,9 @@ function sonicPathStartOver() {
 function sonicPathPanel() {
   setBrowserRootPanel(t('sonicPath.title'), false);
   sonicPathHideBanner();
+  // The banner goes: an Auto DJ Seeds pick with it (no armed pick without
+  // its banner).
+  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.seeds) { VUEPLAYERCORE.songCapture = null; }
 
   const tags = (row) => {
     if (!row.genreTags || !row.genreTags.length) { return ''; }
@@ -6342,9 +7468,1594 @@ function sonicPathPanel() {
   });
 }
 
+// ── Auto DJ panel (design E) ────────────────────────────────────────────
+//
+// The card, top to bottom: Sources and Batch; Filters (Smart filters,
+// Genres, Rating, Length, Skip words); Match (Sonic similarity, with its
+// amount on a second line while it is on and its indented sub-items —
+// Learn from skips, Seeds and, on a federated server, Play from federated
+// servers — then Beat matching, Harmonic mixing and Similar artists).
+// Genres is a value row that opens the Genres drawer (the filter is on
+// exactly while genres are chosen); every other filter's switch is its
+// on/off: its editor shows only while it is on, and turning it off keeps
+// the values. Sonic similarity off dims its sub-items and keeps both seed
+// lists. No hero, status or hint lines: the Start/Stop label (and the
+// player bar's lit DJ glyph) carries the state.
+//
+// The builders are pure: they draw from one ctx that autoDjPanel reads
+// ({ state, server, vpaths, includedSet, lastfmAvailable, genres: { list,
+// loadState }, djOn, limitMax, seeds: AUTODJ.seeds.view() }), so every
+// state draws without the page. The panel then wires the drawn controls,
+// and keeps the Seeds covers and the Start/Stop label live
+// (AUTODJ.seeds.subscribe, MSTREAMPLAYER.onAutoDj) without redrawing.
+
+// A seed row's cover (Facts, or a seeds View row): this server's art
+// through its album-art route, a connected server's through the art proxy
+// — never the ambient peerContext (artUrl), which follows what is being
+// browsed, not whose song it is. No art: null (the caller draws the empty
+// tile).
+function autoDjSeedArtUrl(facts) {
+  if (!facts || !facts.art) { return null; }
+  if (facts.owner !== null && facts.owner !== undefined) {
+    return MSTREAMAPI.peerArtUrl(facts.owner, facts.art, 's');
+  }
+  return `${MSTREAMAPI.currentServer.host}album-art/${encodeURIComponent(facts.art)}?compress=s&token=${MSTREAMAPI.currentServer.token}`;
+}
+
+// Seconds (AUTODJ's wire unit) → the minutes a Length field shows; no
+// bound is an empty field. Trims the float tail: 150 → "2.5", 120 → "2".
+function autoDjSecToMin(s) {
+  const n = Number(s);
+  if (!Number.isFinite(n) || n <= 0) { return ''; }
+  return String(Math.round((n / 60) * 100) / 100);
+}
+
+// Skip words' chips, each with its ×.
+function autoDjChipsHtml(values) {
+  return (values || []).map((v) => {
+    const label = t('autoDJ.keywordFilterTagRemove', { word: v });
+    return `<span class="dj-filter-tag" role="listitem">${escapeHtml(v)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(v)}" aria-label="${escapeHtml(label)}">×</button></span>`;
+  }).join('');
+}
+
+// The Genres row's value (the phone's): "Any" while nothing is chosen, else
+// the chosen genres sorted and joined " · " — "Skip …" under Skip. [set]:
+// the filter is on (the row's active tone).
+function autoDjGenresValue(state) {
+  const v = AUTODJ.genreValue(state);
+  if (!v) { return { text: t('autoDJ.genresAny'), set: false }; }
+  const list = v.names.join(' · ');
+  return { text: v.skip ? t('autoDJ.genresSkipValue', { genres: list }) : list, set: true };
+}
+
+// One switch row (kit d4): the label, then the switch, and the whole row
+// the switch's target (the input takes its name from the wrapping label).
+// o = { id, label, checked, disabled, sub?, desc?, labelId?, descId? }.
+// [sub]: a sub-item's row, dimmed by its .dj-sub (never .is-disabled);
+// [desc]: a title over a subtext (kit d3), named and described by their
+// ids.
+function autoDjSwitchRowHtml(o) {
+  const described = typeof o.desc === 'string';
+  const text = described
+    ? `<span class="dj-sub-text"><span class="dj-sub-title" id="${o.labelId}">${escapeHtml(o.label)}</span><span class="dj-sub-desc" id="${o.descId}">${escapeHtml(o.desc)}</span></span>`
+    : `<span class="dj-row-label">${escapeHtml(o.label)}</span>`;
+  const names = described ? ` aria-labelledby="${o.labelId}" aria-describedby="${o.descId}"` : '';
+  const cls = `dj-row${described ? ' dj-sub-row' : ''}${o.disabled && !o.sub ? ' is-disabled' : ''}`;
+  return `<label class="${cls}">${text}<span class="toggle-sw">`
+    + `<input type="checkbox" role="switch" id="${o.id}"${names}${o.checked ? ' checked' : ''}${o.disabled ? ' disabled' : ''}>`
+    + '<span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span></span></label>';
+}
+
+// What Sonic similarity's sub-items (rows 9–11) can do: dimmed and inert
+// while Sonic similarity is off or the server has no discovery (their
+// values still show). Learn from skips is also inert while the server
+// takes no negatives, and reads "Needs a newer server" when its ping
+// answered a picker generation below 1; before the ping answers it is
+// inert, with no reason (AUTODJ.seeds.takesNegatives / needsNewerServer).
+function autoDjSubState(ctx) {
+  const server = ctx.server || {};
+  const sonicOn = server.discovery === true && ctx.state.sonicEnabled === true;
+  const learnable = sonicOn && AUTODJ.seeds.takesNegatives(server);
+  return {
+    dim: !sonicOn,
+    inert: !sonicOn,
+    learnDim: !learnable,
+    learnInert: !learnable,
+    learnReason: AUTODJ.seeds.needsNewerServer(server) ? 'needsNewer' : null,
+  };
+}
+
+// The Seeds row's covers: the three newest More like rows, newest
+// leftmost (the View's tiles); a row without art is an empty tile.
+function autoDjSeedsTilesHtml(view) {
+  const tiles = view && Array.isArray(view.tiles) ? view.tiles.slice(0, 3) : [];
+  return tiles.map((row) => {
+    const url = autoDjSeedArtUrl(row);
+    return url ? `<img class="dj-seeds-tile" alt="" src="${escapeHtml(url)}">` : '<span class="dj-seeds-tile is-none"></span>';
+  }).join('');
+}
+
+// Rows 9–11, indented under Sonic similarity: Learn from skips (with its
+// subtext, or "Needs a newer server"), Seeds (the covers and a chevron;
+// it opens the Seeds drawer) and, only where the ping has
+// federationBrowse, Play from federated servers.
+function autoDjSubRowsHtml(ctx) {
+  const sub = autoDjSubState(ctx);
+  const s = ctx.state;
+  const learn = `<div class="dj-sub${sub.learnDim ? ' is-dim' : ''}" id="dj-sub-skips">${autoDjSwitchRowHtml({
+    id: 'dj-skips-on', sub: true, labelId: 'dj-skips-t', descId: 'dj-skips-d',
+    label: t('autoDJ.learnFromSkipsLabel'),
+    desc: t(sub.learnReason === 'needsNewer' ? 'autoDJ.needsNewerServer' : 'autoDJ.learnFromSkipsHint'),
+    checked: s.learnFromSkips === true, disabled: sub.learnInert,
+  })}</div>`;
+  const seeds = `<div class="dj-sub${sub.dim ? ' is-dim' : ''}" id="dj-sub-seeds">`
+    + `<button type="button" id="dj-seeds-btn" class="dj-seeds-row" aria-haspopup="dialog" aria-expanded="false"${sub.inert ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-row-label">${escapeHtml(t('autoDJ.seedsLabel'))}</span>`
+    + `<span class="dj-seeds-tiles" id="dj-seeds-tiles" aria-hidden="true">${autoDjSeedsTilesHtml(ctx.seeds)}</span>`
+    + '<svg class="dj-seeds-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>'
+    + '</button></div>';
+  const federated = ctx.server && ctx.server.federationBrowse === true
+    ? `<div class="dj-sub${sub.dim ? ' is-dim' : ''}" id="dj-sub-federated">${autoDjSwitchRowHtml({
+      id: 'dj-federated-on', sub: true, label: t('autoDJ.federatedLabel'),
+      checked: s.federatedEnabled === true, disabled: sub.inert,
+    })}</div>`
+    : '';
+  return learn + seeds + federated;
+}
+
+// The page: Start/Stop, then the card (see the section comment above).
+function autoDjPanelHtml(ctx) {
+  const s = ctx.state;
+  const server = ctx.server || {};
+  const vpaths = ctx.vpaths || [];
+  const block = (row, part) => `<div class="dj-block">${row}${part}</div>`;
+  const editor = (id, shown, inner) => `<div class="dj-editor" id="${id}"${shown ? '' : ' hidden'}>${inner}</div>`;
+
+  const sources = vpaths.length > 1
+    ? `<div class="dj-sources"><span class="dj-sources-label" id="dj-src">${escapeHtml(t('autoDJ.sectionSources'))}</span>`
+      + `<div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-labelledby="dj-src">${vpaths.map((v) => {
+        const on = ctx.includedSet.has(v);
+        return `<button type="button" class="dj-vpath-pill${on ? ' on' : ''}" data-vpath="${escapeHtml(v)}" aria-pressed="${on ? 'true' : 'false'}">${escapeHtml(v)}</button>`;
+      }).join('')}</div></div>`
+    : '';
+
+  const batch = `<div class="dj-field"><label class="dj-field-label" for="dj-limit">${escapeHtml(t('autoDJ.batchLabel'))}</label>`
+    + `<input type="number" id="dj-limit" class="autodj-select browser-default dj-limit-num" min="1" max="${escapeHtml(ctx.limitMax)}" step="1" inputmode="numeric" value="${escapeHtml(s.djLimit)}"></div>`;
+
+  // Smart filters: the browse lists' segments and chips (moodPanelHtml),
+  // only where the server can filter by mood (the route refuses the key
+  // otherwise).
+  const moodOn = s.djMoodEnabled === true;
+  const smart = server.moodFilters === true
+    ? block(autoDjSwitchRowHtml({ id: 'dj-mood-on', label: t('autoDJ.smartFiltersLabel'), checked: moodOn }),
+      editor('dj-mood-editor', moodOn, `<div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...s.djMoods, level: s.djMoodLevel })}</div>`))
+    : '';
+
+  // Genres: a value row (the phone's) that opens the Genres drawer. Off (no
+  // press) while the library's genre list is empty or failed to load and
+  // nothing is chosen; with genres chosen it stays live, so they can always
+  // be let go.
+  const genresOff = ctx.genres.loadState !== 'ready' || ctx.genres.list.length === 0;
+  const genresValue = autoDjGenresValue(s);
+  const genres = block(`<button type="button" id="dj-genres-btn" class="dj-seeds-row dj-genres-row" aria-haspopup="dialog" aria-expanded="false"${genresOff && !AUTODJ.genreFilterOn(s) ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-row-label">${escapeHtml(t('autoDJ.genresLabel'))}</span>`
+    + `<span class="dj-genres-value${genresValue.set ? ' is-set' : ''}" id="dj-genres-value">${escapeHtml(genresValue.text)}</span>`
+    + '<svg class="dj-seeds-chev" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"></path></svg>'
+    + '</button>', '');
+
+  // Rating: 0..10 in half stars, 0 = Any (the server's scale).
+  let ratings = `<option value="0"${s.djMinRating === 0 ? ' selected' : ''}>${escapeHtml(t('autoDJ.ratingAny'))}</option>`;
+  for (let i = 1; i <= 10; i++) {
+    ratings += `<option value="${i}"${s.djMinRating === i ? ' selected' : ''}>★ ${+(i / 2).toFixed(1)}</option>`;
+  }
+  const rating = `<div class="dj-field"><label class="dj-field-label" for="dj-min-rating">${escapeHtml(t('autoDJ.ratingLabel'))}</label>`
+    + `<select class="autodj-select browser-default" id="dj-min-rating">${ratings}</select></div>`;
+
+  // Length: minutes in the fields (AUTODJ keeps seconds); an empty field
+  // is no bound on that side.
+  const durOn = s.djDurationEnabled === true;
+  const durField = (id, caption, name, value) => `<label class="dj-duration-field"><span class="dj-duration-field-label">${escapeHtml(caption)}</span>`
+    + `<input type="number" class="dj-filter-input dj-duration-num browser-default" id="${id}" min="0" max="1440" step="any" placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}" value="${escapeHtml(autoDjSecToMin(value))}" aria-label="${escapeHtml(name)}"></label>`;
+  const length = block(autoDjSwitchRowHtml({ id: 'dj-duration-on', label: t('autoDJ.lengthLabel'), checked: durOn }),
+    editor('dj-duration-editor', durOn,
+      '<div class="dj-duration-inputs">'
+      + durField('dj-duration-min', t('autoDJ.durationMinLabel'), t('autoDJ.durationMinInputLabel'), s.djMinDuration)
+      + durField('dj-duration-max', t('autoDJ.durationMaxLabel'), t('autoDJ.durationMaxInputLabel'), s.djMaxDuration) + '</div>'
+      + autoDjSwitchRowHtml({ id: 'dj-duration-unknown', label: t('autoDJ.durationUnknownLabel'), checked: s.djAllowUnknownDuration === true })));
+
+  const skipOn = s.djFilterEnabled === true;
+  const skipWords = block(autoDjSwitchRowHtml({ id: 'dj-filter-on', label: t('autoDJ.skipWordsLabel'), checked: skipOn }),
+    editor('dj-filter-editor', skipOn,
+      `<div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${autoDjChipsHtml(s.djFilterWords)}</div>`
+      + `<input type="text" class="dj-filter-input browser-default" id="dj-filter-input" placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}" aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">`));
+
+  // Sonic similarity: the switch, and the amount (the raw cosine floor
+  // 0.30–0.90, as a percentage) while it is on. Off without discovery.
+  const discovery = server.discovery === true;
+  const sonicOn = discovery && s.sonicEnabled === true;
+  const pct = Math.round(s.sonicMinSimilarity * 100);
+  const amount = t('autoDJ.sonicAmountValue', { pct });
+  const sonic = block(autoDjSwitchRowHtml({ id: 'dj-sonic-on', label: t('autoDJ.sonicLabel'), checked: sonicOn, disabled: !discovery }),
+    `<div class="dj-amount" id="dj-sonic-amount-row"${sonicOn ? '' : ' hidden'}>`
+    + `<input type="range" id="dj-sonic-sim" class="autodj-slider" min="30" max="90" step="1" value="${pct}" aria-label="${escapeHtml(t('autoDJ.sonicSimilarityLabel'))}" aria-valuetext="${escapeHtml(amount)}">`
+    + `<span class="dj-amount-value" id="dj-sonic-sim-val" aria-hidden="true">${escapeHtml(amount)}</span></div>`);
+
+  // Beat matching: the switch, and its tolerance while it is on.
+  const bpmOn = s.bpmContinuity === true;
+  const tolerance = t('autoDJ.bpmToleranceValue', { n: s.bpmTolerance });
+  const beat = block(autoDjSwitchRowHtml({ id: 'dj-bpm-cont', label: t('autoDJ.beatMatchingLabel'), checked: bpmOn }),
+    `<div class="dj-amount" id="dj-bpm-tol-row"${bpmOn ? '' : ' hidden'}>`
+    + `<input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${escapeHtml(s.bpmTolerance)}" aria-label="${escapeHtml(t('autoDJ.bpmToleranceLabel'))}" aria-valuetext="${escapeHtml(tolerance)}">`
+    + `<span class="dj-amount-value" id="dj-bpm-tol-val" aria-hidden="true">${escapeHtml(tolerance)}</span></div>`);
+
+  const harmonic = autoDjSwitchRowHtml({ id: 'dj-harmonic', label: t('autoDJ.harmonicMixingLabel'), checked: s.harmonicMixing === true });
+  // Similar artists (Last.fm): web-only, the card's last row; off without
+  // the server's Last.fm key.
+  const similar = autoDjSwitchRowHtml({ id: 'dj-similar', label: t('autoDJ.similarLabel'), checked: s.similar === true && ctx.lastfmAvailable === true, disabled: ctx.lastfmAvailable !== true });
+
+  return `<div class="pad-6 autodj-root">`
+    + `<button type="button" class="autodj-toggle${ctx.djOn ? ' on' : ''}" id="autodj-main-btn">${escapeHtml(t(ctx.djOn ? 'autoDJ.btnStop' : 'autoDJ.btnStart'))}</button>`
+    + '<div class="autodj-opts">'
+    + sources + batch
+    + `<h4 class="autodj-section-heading">${escapeHtml(t('autoDJ.sectionFilters'))}</h4>`
+    + smart + genres + rating + length + skipWords
+    + `<h4 class="autodj-section-heading">${escapeHtml(t('autoDJ.sectionMatch'))}</h4>`
+    + sonic + autoDjSubRowsHtml(ctx) + beat + harmonic + similar
+    + '</div></div>';
+}
+
+// Sonic similarity's dependants, in place after its switch: the amount
+// line shows only while it is on, and rows 9–11 dim and go inert while it
+// is off (their values stay, and so do both seed lists).
+function autoDjApplySonicDim() {
+  const sub = autoDjSubState({ state: AUTODJ.state, server: MSTREAMAPI.currentServer });
+  const amount = document.getElementById('dj-sonic-amount-row');
+  if (amount) { amount.hidden = sub.inert; }
+  const apply = (boxId, controlId, dim, inert) => {
+    const box = document.getElementById(boxId);
+    if (box) { box.classList.toggle('is-dim', dim); }
+    const control = document.getElementById(controlId);
+    if (control) { control.disabled = inert; }
+  };
+  apply('dj-sub-skips', 'dj-skips-on', sub.learnDim, sub.learnInert);
+  apply('dj-sub-seeds', 'dj-seeds-btn', sub.dim, sub.inert);
+  apply('dj-sub-federated', 'dj-federated-on', sub.dim, sub.inert);
+}
+
+// The Seeds row's covers, redrawn in place from [view] (a seeds change
+// hands it over) or the current one. False once the panel is gone.
+function autoDjRenderTiles(view) {
+  const el = document.getElementById('dj-seeds-tiles');
+  if (!el) { return false; }
+  el.innerHTML = autoDjSeedsTilesHtml(view || AUTODJ.seeds.view());
+  return true;
+}
+
+// Start/Stop follows the DJ — the player bar's toggle too: its label and
+// its lit look change in place, so the button keeps the keyboard's focus.
+// False once the panel is gone.
+function autoDjRenderToggle() {
+  const btn = document.getElementById('autodj-main-btn');
+  if (!btn) { return false; }
+  const on = MSTREAMPLAYER.playerStats.autoDJ === true;
+  btn.classList.toggle('on', on);
+  btn.textContent = t(on ? 'autoDJ.btnStop' : 'autoDJ.btnStart');
+  return true;
+}
+
+// ── The Seeds drawer (design B) ─────────────────────────────────────
+//
+// A modal drawer from the right over the Auto DJ page (boards B-Drift,
+// B-StayClose, B-AddSong): Drift | Stay close with its line, More like and
+// Less like (each row's cover, title, artist, pin and ⋮ menu, each list
+// ending with Add song), and "Clear pins when the queue is cleared". Add
+// song is its second step: "Pick a song from the library" (the library
+// pick: Sonic Path's capture mode), the search, then Up next, Skipped (Less
+// like only) and Recently played. Its shell is the one the Genres drawer
+// shares (autoDjDrawer*, after the library pick): the scrim, a
+// .dmodal-shadow on body, so the player's hotkeys and YouTube paste stay
+// off under it and the panel's own redraws leave it be; Close; Tab and Esc;
+// a press on the scrim. The seeds, the song, the queue and the
+// Skipped ring redraw it in place, the keyboard kept on its control by the
+// row's key (never by a selector built from it: a path may hold a quote or
+// a bracket). Every title, artist and path is escaped where it is drawn.
+
+// The drawer's one state: open or not, its step ('lists' | 'add'), the
+// list Add song was opened for ('more' | 'less'), the row whose ⋮ menu is
+// open (and whether that menu opens upward), Add song's typed search, its
+// latest hits (Facts) and the request they answer, and the Recently played
+// answer (Facts; null until it lands). The rest is bookkeeping: the asks
+// still out, the songs drawn as pick rows (by key), the step and the part
+// last drawn, a press that began on the scrim, the listeners and the
+// timers.
+const autoDjSeedsUi = {
+  open: false,
+  step: 'lists',
+  list: null,
+  menuKey: null,
+  menuUp: false,
+  query: '',
+  hits: null,
+  reqId: 0,
+  recent: null,
+  recentAsk: 0,
+  picks: null,
+  drawn: null,
+  drawnPart: '',
+  shadeDown: false,
+  offSeeds: null,
+  offPlayer: null,
+  searchTimer: null,
+  expiryTimer: null,
+};
+
+// The drawer's icons (kit d11–d15): stroked or filled in currentColor, but
+// the locked pin's badge, drawn on the window ground.
+const AUTODJ_SEEDS_ICONS = {
+  close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"></path></svg>',
+  back: '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5M11 6l-6 6 6 6"></path></svg>',
+  pin: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z"></path><path d="M12 15v6"></path></svg>',
+  pinned: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z" fill="currentColor"></path><path d="M12 15v6"></path></svg>',
+  locked: '<svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6v6l3 4v2H6v-2l3-4z" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"></path><path d="M12 15v6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path><circle cx="18.5" cy="18.5" r="5.5" fill="#2d333b"></circle><rect x="15.5" y="18" width="6" height="4.5" rx="1" fill="#f5f7fa"></rect><path d="M16.75 18v-1.25a1.75 1.75 0 0 1 3.5 0V18" fill="none" stroke="#f5f7fa" stroke-width="1.5"></path></svg>',
+  more: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="12" cy="5" r="2"></circle><circle cx="12" cy="12" r="2"></circle><circle cx="12" cy="19" r="2"></circle></svg>',
+  add: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+  library: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="3" width="13" height="13" rx="2"></rect><path d="M4 7v12a2 2 0 0 0 2 2h12"></path><circle cx="13.5" cy="12" r="1.5"></circle><path d="M15 12V6.5h2.5"></path></svg>',
+  search: '<svg class="dj-add-search-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#a0a7b3" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5"></path></svg>',
+  check: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#111111" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>',
+  note: '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"></path></svg>',
+};
+
+// A seed row's or a pick row's cover (kit d11): its art (autoDjSeedArtUrl:
+// a connected server's through the art proxy), or the house note on the
+// empty tile.
+function autoDjSeedArtHtml(facts) {
+  const url = autoDjSeedArtUrl(facts);
+  return url
+    ? `<img class="dj-seed-art" alt="" src="${escapeHtml(url)}">`
+    : `<span class="dj-seed-art is-none" aria-hidden="true">${AUTODJ_SEEDS_ICONS.note}</span>`;
+}
+
+// A row's title over its artist (no artist line without one).
+function autoDjSeedTextHtml(title, artist) {
+  return `<span class="dj-seed-text"><span class="dj-seed-title">${escapeHtml(title)}</span>`
+    + `${artist ? `<span class="dj-seed-artist">${escapeHtml(artist)}</span>` : ''}</span>`;
+}
+
+// One row of More like or Less like (kit d11, a seeds View row): cover,
+// title, artist, the pin and the ⋮. The pin is pressed as the row shows
+// pinned; in Stay close every row is locked (pressed, inert, the lock
+// badge); a Less like row the server can't use is dimmed and its pin
+// inert. The ⋮ always works; its menu, when open, is the row's last child.
+// ctx = autoDjSeedsCtx's.
+function autoDjSeedRowHtml(row, ctx) {
+  const dim = row.list === 'less' && !ctx.lessOn;
+  const open = ctx.menuKey === row.key;
+  const icon = row.locked ? AUTODJ_SEEDS_ICONS.locked : (row.shownPinned ? AUTODJ_SEEDS_ICONS.pinned : AUTODJ_SEEDS_ICONS.pin);
+  return `<li class="dj-seed${dim ? ' is-dim' : ''}" data-seed-key="${escapeHtml(row.key)}">`
+    + autoDjSeedArtHtml(row)
+    + autoDjSeedTextHtml(row.displayTitle, row.artist)
+    + '<span class="dj-seed-acts">'
+    + `<button type="button" class="dj-seed-btn dj-seed-pin" data-dj-act="pin" aria-label="${escapeHtml(t('autoDJ.seedPin', { title: row.displayTitle }))}" aria-pressed="${row.shownPinned ? 'true' : 'false'}"${row.locked || dim ? ' aria-disabled="true"' : ''}>${icon}</button>`
+    + `<button type="button" class="dj-seed-btn dj-seed-more" data-dj-act="menu" aria-label="${escapeHtml(t('autoDJ.seedMore', { title: row.displayTitle }))}" aria-haspopup="menu" aria-expanded="${open ? 'true' : 'false'}"${open ? ' aria-controls="dj-seeds-menu"' : ''}>${AUTODJ_SEEDS_ICONS.more}</button>`
+    + '</span>'
+    + (open ? autoDjSeedMenuHtml(row, ctx) : '')
+    + '</li>';
+}
+
+// A row's ⋮ menu (kit d12a): the move to the other list ("Less like this"
+// in More like, "More like this" in Less like), then Remove. The move is
+// off (aria-disabled, still focusable) while the other list can't take the
+// row: it is full, or — into Less like — the server takes no negatives or
+// the song is a connected server's. Remove always works.
+function autoDjSeedMenuHtml(row, ctx) {
+  const toLess = row.list === 'more';
+  const off = toLess ? (!ctx.lessOn || row.owner !== null || !ctx.canAdd.less) : !ctx.canAdd.more;
+  return `<div class="dj-seeds-menu${ctx.menuUp ? ' is-up' : ''}" id="dj-seeds-menu" role="menu" aria-label="${escapeHtml(t('autoDJ.seedMore', { title: row.displayTitle }))}">`
+    + `<button type="button" class="dj-seeds-menu-item" role="menuitem" data-dj-act="move"${off ? ' aria-disabled="true"' : ''}>${escapeHtml(t(toLess ? 'autoDJ.seedLessLikeThis' : 'autoDJ.seedMoreLikeThis'))}</button>`
+    + `<button type="button" class="dj-seeds-menu-item" role="menuitem" data-dj-act="remove">${escapeHtml(t('autoDJ.seedRemove'))}</button>`
+    + '</div>';
+}
+
+// More like and Less like (the lists step's part that follows the seeds):
+// each newest first, then its Add song, off while the list can't take a
+// row. On a server whose ping answered a picker generation below 1, Less
+// like says it needs a newer one; while the server takes no negatives (or
+// before its ping answers) Less like's rows are dimmed and its Add song is
+// off.
+function autoDjSeedsListsHtml(view, ctx) {
+  const addRow = (list, off) => `<li><button type="button" class="dj-seeds-add" data-dj-act="add" data-add="${list}" aria-describedby="dj-seeds-${list}-h"${off ? ' disabled' : ''}>`
+    + `<span class="dj-seeds-add-ic" aria-hidden="true">${AUTODJ_SEEDS_ICONS.add}</span>${escapeHtml(t('autoDJ.addSong'))}</button></li>`;
+  const rows = (list) => (view[list] || []).map((row) => autoDjSeedRowHtml(row, ctx)).join('');
+  const reason = ctx.needsNewer
+    ? `<p class="dj-seeds-reason" id="dj-seeds-less-reason">${escapeHtml(t('autoDJ.needsNewerServer'))}</p>`
+    : '';
+  return `<h3 class="dj-seeds-h" id="dj-seeds-more-h">${escapeHtml(t('autoDJ.seedsMoreLike'))}</h3>`
+    + `<ul class="dj-seeds-list" data-list="more" aria-labelledby="dj-seeds-more-h">${rows('more')}${addRow('more', !ctx.canAdd.more)}</ul>`
+    + `<h3 class="dj-seeds-h" id="dj-seeds-less-h">${escapeHtml(t('autoDJ.seedsLessLike'))}</h3>${reason}`
+    + `<ul class="dj-seeds-list" data-list="less" aria-labelledby="dj-seeds-less-h"${ctx.needsNewer ? ' aria-describedby="dj-seeds-less-reason"' : ''}>`
+    + `${rows('less')}${addRow('less', !ctx.lessOn || !ctx.canAdd.less)}</ul>`;
+}
+
+// The lists step (B-Drift / B-StayClose) under Close: the head, Drift |
+// Stay close with the mode's line, the lists' box (autoDjSeedsListsHtml
+// draws into it) and the box "Clear pins when the queue is cleared".
+function autoDjSeedsStepHtml(view, ctx) {
+  const mode = (m, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="mode" data-mode="${m}" aria-pressed="${view.mode === m ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  return `<div class="dj-seeds-head"><h2 class="dj-seeds-title" id="dj-seeds-title">${escapeHtml(t('autoDJ.seedsLabel'))}</h2></div>`
+    + '<div class="dj-seeds-body" id="dj-seeds-body">'
+    + `<div class="dj-seeds-mode" role="group" aria-label="${escapeHtml(t('autoDJ.seedModeLabel'))}">${mode('rolling', 'autoDJ.seedModeDrift')}${mode('locked', 'autoDJ.seedModeStayClose')}</div>`
+    + `<p class="dj-seeds-mode-desc" id="dj-seeds-mode-desc" aria-live="polite">${escapeHtml(t(view.mode === 'locked' ? 'autoDJ.seedModeStayCloseHint' : 'autoDJ.seedModeDriftHint'))}</p>`
+    + '<div class="dj-seeds-lists" id="dj-seeds-lists"></div>'
+    + '<div class="dj-seeds-foot"><label class="dj-check"><span class="dj-check-ctl">'
+    + `<input type="checkbox" id="dj-seeds-clear-pins"${ctx.clearPins ? ' checked' : ''}>`
+    + `<span class="dj-check-box" aria-hidden="true">${AUTODJ_SEEDS_ICONS.check}</span></span>${escapeHtml(t('autoDJ.seedsClearPins'))}</label></div>`
+    + '</div>';
+}
+
+// The Add song step (B-AddSong) under Close: Go Back and the head, then
+// "Pick a song from the library", the search field (today's Seed song
+// search) and the songs' box (autoDjAddResultsHtml draws into it).
+function autoDjAddSongHtml(ui) {
+  const placeholder = escapeHtml(t('autoDJ.sonicSeedPlaceholder'));
+  return '<div class="dj-seeds-head is-step">'
+    + `<button type="button" class="dj-seeds-back" data-dj-act="back" aria-label="${escapeHtml(t('tooltip.goBack'))}">${AUTODJ_SEEDS_ICONS.back}</button>`
+    + `<h2 class="dj-seeds-title" id="dj-add-title">${escapeHtml(t('autoDJ.addSong'))}</h2></div>`
+    + '<div class="dj-seeds-body" id="dj-add-body">'
+    + `<button type="button" id="dj-add-library" class="dj-seeds-add dj-seeds-library" data-dj-act="library"><span class="dj-seeds-add-ic" aria-hidden="true">${AUTODJ_SEEDS_ICONS.library}</span>${escapeHtml(t('autoDJ.addSongFromLibrary'))}</button>`
+    + `<label class="dj-add-search">${AUTODJ_SEEDS_ICONS.search}<input type="search" id="dj-add-search" class="dj-filter-input browser-default" placeholder="${placeholder}" aria-label="${placeholder}" autocomplete="off" value="${escapeHtml(ui.query || '')}"></label>`
+    + '<div class="dj-add-results" id="dj-add-results"></div>'
+    + '</div>';
+}
+
+// Add song's songs: under two typed characters its sections, each hidden
+// when empty — Up next, Skipped (Less like only: the song playing, marked
+// as the queue marks its row, then the Skipped ring) and Recently played
+// ([sections]: AUTODJ.seeds.addSongSections, this server's songs the list
+// doesn't hold yet, each once); from two, the search's hits in one list
+// (none: nothing). ctx = { taken: Set of the list's keys, playingKey }.
+function autoDjAddResultsHtml(ui, sections, ctx) {
+  if (String(ui.query || '').trim().length >= 2) {
+    const hits = Array.isArray(ui.hits) ? ui.hits : [];
+    return hits.length
+      ? `<ul class="dj-pick-list" id="dj-add-hits">${hits.map((f) => autoDjPickRowHtml(f, { taken: ctx.taken, playingKey: null })).join('')}</ul>`
+      : '';
+  }
+  const section = (id, key, songs, playingKey) => (songs && songs.length
+    ? `<h3 class="dj-seeds-h" id="dj-add-${id}-h">${escapeHtml(t(key))}</h3>`
+      + `<ul class="dj-pick-list" aria-labelledby="dj-add-${id}-h">${songs.map((f) => autoDjPickRowHtml(f, { taken: ctx.taken, playingKey })).join('')}</ul>`
+    : '');
+  return section('upnext', 'autoDJ.addSongUpNext', sections.upNext, null)
+    + (ui.list === 'less' ? section('skipped', 'autoDJ.addSongSkipped', sections.skipped, ctx.playingKey) : '')
+    + section('recent', 'autoDJ.addSongRecent', sections.recent, null);
+}
+
+// One pick row (kit d11 line 17; Facts): the whole row is the button. The
+// song playing is marked as the queue marks its row (aria-current); a song
+// the list holds already (a search hit) is dimmed and inert.
+function autoDjPickRowHtml(facts, ctx) {
+  const key = AUTODJ.seeds.keyOf(facts.owner, facts.path);
+  const title = facts.title || String(facts.path || '').split('/').pop();
+  const taken = !!(ctx.taken && ctx.taken.has(key));
+  return `<li><button type="button" class="dj-pick" data-dj-act="pick" data-seed-key="${escapeHtml(key)}"${ctx.playingKey === key ? ' aria-current="true"' : ''}${taken ? ' aria-disabled="true"' : ''}>`
+    + autoDjSeedArtHtml(facts) + autoDjSeedTextHtml(title, facts.artist) + '</button></li>';
+}
+
+// What the lists draw from: whether this server takes Less like songs (its
+// ping's picker generation and discovery), whether its ping said it needs
+// a newer one, what each list can take, the box, and the open menu.
+function autoDjSeedsCtx(view) {
+  const server = MSTREAMAPI.currentServer || {};
+  return {
+    lessOn: AUTODJ.seeds.takesNegatives(server),
+    needsNewer: AUTODJ.seeds.needsNewerServer(server),
+    canAdd: view.canAdd,
+    menuKey: autoDjSeedsUi.menuKey,
+    menuUp: autoDjSeedsUi.menuUp,
+    clearPins: AUTODJ.state.clearPinsOnQueueClear === true,
+  };
+}
+
+// Add song's sections for its list now — the queue after the current row,
+// the current row (the song playing, while it is that row) and the Skipped
+// ring for Less like, the Recently played answer — and what its rows draw
+// from.
+function autoDjSeedsAddData(view) {
+  const ui = autoDjSeedsUi;
+  const playlist = Array.isArray(MSTREAMPLAYER.playlist) ? MSTREAMPLAYER.playlist : [];
+  const position = MSTREAMPLAYER.positionCache ? MSTREAMPLAYER.positionCache.val : -1;
+  const row = playlist[position];
+  const current = row && typeof MSTREAMPLAYER.getCurrentSong === 'function' && row === MSTREAMPLAYER.getCurrentSong() ? row : null;
+  const sections = AUTODJ.seeds.addSongSections({
+    list: ui.list, playlist, position, current, skips: AUTODJ.seeds.recentSkips(), recent: ui.recent || [], view,
+  });
+  const playing = current && !current.federation ? AUTODJ.seeds.factsFromSong(current) : null;
+  return {
+    sections,
+    ctx: {
+      taken: new Set((view[ui.list] || []).map((r) => r.key)),
+      playingKey: playing ? AUTODJ.seeds.keyOf(null, playing.path) : null,
+    },
+  };
+}
+
+// The drawn row [key] of the lists, compared by key.
+function autoDjSeedsRowEl(key) {
+  const lists = document.getElementById('dj-seeds-lists');
+  if (!lists || key === null || key === undefined) { return null; }
+  return Array.from(lists.querySelectorAll('[data-seed-key]')).find((el) => el.getAttribute('data-seed-key') === key) || null;
+}
+
+// The keyboard to the ⋮ of the row [key]; false when that row is gone.
+function autoDjSeedsFocusRow(key) {
+  const row = autoDjSeedsRowEl(key);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if (!btn) { return false; }
+  btn.focus();
+  return true;
+}
+
+// The keyboard to [list]'s Add song; while that is off (the list is full,
+// or the server takes no Less like songs), to the list's newest row's ⋮,
+// else to Close.
+function autoDjSeedsFocusAdd(list) {
+  const dialog = document.getElementById('dj-seeds-drawer');
+  if (!dialog) { return; }
+  const add = Array.from(dialog.querySelectorAll('.dj-seeds-add')).find((b) => b.getAttribute('data-add') === list);
+  if (add && !add.disabled) { add.focus(); return; }
+  const ul = Array.from(dialog.querySelectorAll('.dj-seeds-list')).find((u) => u.getAttribute('data-list') === list);
+  const more = ul ? ul.querySelector('.dj-seed-more') : null;
+  const close = dialog.querySelector('.dj-seeds-close');
+  if (more) { more.focus(); } else if (close) { close.focus(); }
+}
+
+// What holds the keyboard inside [box], to find again once [box] is
+// redrawn: its row's key and its action (a pick row is its own control),
+// its Add song's list, the list its row is in. null when the keyboard is
+// elsewhere.
+function autoDjSeedsFocusOf(box) {
+  const a = document.activeElement;
+  if (!box || !a || a === box || !box.contains(a) || typeof a.closest !== 'function') { return null; }
+  const row = a.closest('[data-seed-key]');
+  const list = a.closest('[data-list]');
+  return {
+    key: row ? row.getAttribute('data-seed-key') : null,
+    act: a.getAttribute('data-dj-act'),
+    add: a.getAttribute('data-add'),
+    list: list ? list.getAttribute('data-list') : null,
+  };
+}
+
+// The keyboard back on [at]'s control in the redrawn [box]: the same row's
+// same control (a menu item gone with its menu: the row's ⋮); a row that
+// left gives it to its list's Add song; Add song's songs give it to the
+// field.
+function autoDjSeedsRefocus(box, at) {
+  if (!at) { return; }
+  let el = null;
+  if (at.key !== null) {
+    const row = Array.from(box.querySelectorAll('[data-seed-key]')).find((r) => r.getAttribute('data-seed-key') === at.key);
+    if (row) {
+      el = row.getAttribute('data-dj-act') === at.act
+        ? row
+        : (Array.from(row.querySelectorAll('[data-dj-act]')).find((c) => c.getAttribute('data-dj-act') === at.act) || row.querySelector('.dj-seed-more'));
+    }
+  }
+  if (!el && (at.add || at.list)) { autoDjSeedsFocusAdd(at.add || at.list); return; }
+  if (!el) { el = document.getElementById('dj-add-search'); }
+  if (el) { el.focus(); }
+}
+
+// [el]'s contents as [html], unless it holds them already (a redraw that
+// changes nothing leaves the controls, and a press on one, where they
+// are). The keyboard comes back to its control.
+function autoDjSeedsDrawPart(el, html) {
+  const ui = autoDjSeedsUi;
+  if (!el || ui.drawnPart === html) { return false; }
+  const at = autoDjSeedsFocusOf(el);
+  el.innerHTML = html;
+  ui.drawnPart = html;
+  autoDjSeedsRefocus(el, at);
+  return true;
+}
+
+// One timer, re-armed by every draw: the drawer redraws when the next
+// unpinned Less like row runs out (Drift time; none in Stay close).
+function autoDjSeedsArmExpiry() {
+  const ui = autoDjSeedsUi;
+  clearTimeout(ui.expiryTimer);
+  ui.expiryTimer = null;
+  const at = AUTODJ.seeds.nextExpiry();
+  if (at === null || at === undefined) { return; }
+  ui.expiryTimer = setTimeout(() => {
+    ui.expiryTimer = null;
+    if (!ui.open) { return; }
+    AUTODJ.seeds.prune();
+    autoDjSeedsRender();
+  }, Math.max(0, at - Date.now()));
+}
+
+// Draws the open drawer: a new step whole (Close first, then the step's
+// head and body, the dialog named by the step's heading); then, in place,
+// what follows the seeds and the player — the mode and the lists, or Add
+// song's songs (never its field). An open menu whose row left closes.
+function autoDjSeedsRender() {
+  const ui = autoDjSeedsUi;
+  if (!ui.open) { return false; }
+  const dialog = document.getElementById('dj-seeds-drawer');
+  if (!dialog) {
+    // its scrim went some other way: let go of the listeners too
+    autoDjSeedsClose({ noFocus: true });
+    return false;
+  }
+  const view = AUTODJ.seeds.view();
+  if (ui.menuKey !== null && !view.more.concat(view.less).some((r) => r.key === ui.menuKey)) {
+    ui.menuKey = null;
+    ui.menuUp = false;
+  }
+  if (ui.drawn !== ui.step) {
+    dialog.innerHTML = autoDjDrawerCloseHtml()
+      + (ui.step === 'add' ? autoDjAddSongHtml(ui) : autoDjSeedsStepHtml(view, autoDjSeedsCtx(view)));
+    dialog.setAttribute('aria-labelledby', ui.step === 'add' ? 'dj-add-title' : 'dj-seeds-title');
+    ui.drawn = ui.step;
+    ui.drawnPart = null;
+  }
+  if (ui.step === 'add') {
+    const data = autoDjSeedsAddData(view);
+    ui.picks = new Map();
+    for (const f of [...data.sections.upNext, ...data.sections.skipped, ...data.sections.recent, ...(ui.hits || [])]) {
+      ui.picks.set(AUTODJ.seeds.keyOf(f.owner, f.path), f);
+    }
+    autoDjSeedsDrawPart(document.getElementById('dj-add-results'), autoDjAddResultsHtml(ui, data.sections, data.ctx));
+  } else {
+    dialog.querySelectorAll('.dj-seeds-mode-btn').forEach((b) => {
+      b.setAttribute('aria-pressed', b.getAttribute('data-mode') === view.mode ? 'true' : 'false');
+    });
+    const desc = document.getElementById('dj-seeds-mode-desc');
+    const line = t(view.mode === 'locked' ? 'autoDJ.seedModeStayCloseHint' : 'autoDJ.seedModeDriftHint');
+    if (desc && desc.textContent !== line) { desc.textContent = line; }
+    autoDjSeedsDrawPart(document.getElementById('dj-seeds-lists'), autoDjSeedsListsHtml(view, autoDjSeedsCtx(view)));
+  }
+  autoDjSeedsArmExpiry();
+  return true;
+}
+
+// The lists step; the keyboard on [focusAdd]'s Add song (Go Back, a pick,
+// the return from the library pick). Add song's search and any answer
+// still out are dropped.
+function autoDjSeedsShowLists(focusAdd) {
+  const ui = autoDjSeedsUi;
+  clearTimeout(ui.searchTimer);
+  ui.searchTimer = null;
+  ui.step = 'lists';
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recentAsk++;
+  autoDjSeedsRender();
+  if (focusAdd) { autoDjSeedsFocusAdd(focusAdd); }
+}
+
+// The Add song step for [list]: the field takes the keyboard, and
+// Recently played is asked once (it shows when it lands; a failure shows
+// nothing).
+function autoDjSeedsShowAdd(list) {
+  const ui = autoDjSeedsUi;
+  ui.step = 'add';
+  ui.list = list === 'less' ? 'less' : 'more';
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recent = null;
+  const ask = ++ui.recentAsk;
+  autoDjSeedsRender();
+  const field = document.getElementById('dj-add-search');
+  if (field) { field.focus(); }
+  const ignore = MSTREAMPLAYER.ignoreVPaths || {};
+  Promise.resolve()
+    .then(() => MSTREAMAPI.getRecentlyPlayed(20, Object.keys(ignore).filter((v) => ignore[v] === true)))
+    .then((res) => (Array.isArray(res) ? res.map((item) => AUTODJ.seeds.factsFromRecent(item)).filter(Boolean) : []))
+    .catch(() => [])
+    .then((recent) => {
+      if (ask !== ui.recentAsk || !ui.open || ui.step !== 'add') { return; }
+      ui.recent = recent;
+      autoDjSeedsRender();
+    });
+}
+
+// The Seeds drawer, the Seeds row's one way in: opts {} from the row (the
+// keyboard on Close), { list, focus: 'add' } when autoDjPanel({ seeds:
+// list }) comes back from the library pick (the lists, the keyboard on
+// that list's Add song). Its scrim lives on body, so a redraw of the
+// column's markup leaves it be; a view that takes the column closes it
+// (setBrowserRootPanel).
+function autoDjSeedsOpen(opts) {
+  const o = opts || {};
+  const ui = autoDjSeedsUi;
+  if (typeof AUTODJ === 'undefined' || !AUTODJ.seeds) { return false; }
+  const list = o.list === 'more' || o.list === 'less' ? o.list : null;
+  if (!ui.open) {
+    autoDjDrawerMount({
+      shade: 'dj-seeds-shade', dialog: 'dj-seeds-drawer', title: 'dj-seeds-title',
+      onShadeDown: onAutoDjSeedsShadeDown, onShadeClick: onAutoDjSeedsShadeClick,
+      onClick: onAutoDjSeedsClick, onKeydown: onAutoDjSeedsMenuKey, onInput: onAutoDjSeedsInput,
+      onDocKey: onAutoDjSeedsKey,
+    });
+    ui.open = true;
+    ui.drawn = null;
+    ui.offSeeds = AUTODJ.seeds.subscribe(() => { autoDjSeedsRender(); });
+    ui.offPlayer = typeof MSTREAMPLAYER.onAutoDj === 'function'
+      ? MSTREAMPLAYER.onAutoDj((reason) => {
+        if (reason === 'song' || reason === 'queue' || reason === 'skip') { autoDjSeedsRender(); }
+      })
+      : null;
+  }
+  autoDjDrawerOpener('dj-seeds-btn', 'dj-seeds-drawer', true, false);
+  const back = list && o.focus === 'add';
+  autoDjSeedsShowLists(back ? list : null);
+  if (!back) { autoDjDrawerFocusClose('dj-seeds-drawer'); }
+  return true;
+}
+
+// Closes the drawer: the scrim, its listeners and timers go, and the
+// keyboard goes back to the Seeds row (looked up again: the panel may have
+// redrawn). opts.noFocus: the library pick, and any view that takes the
+// column, which leave the page.
+function autoDjSeedsClose(opts) {
+  const ui = autoDjSeedsUi;
+  if (!ui.open) { return false; }
+  const o = opts || {};
+  ui.open = false;
+  clearTimeout(ui.searchTimer);
+  clearTimeout(ui.expiryTimer);
+  ui.searchTimer = null;
+  ui.expiryTimer = null;
+  if (ui.offSeeds) { ui.offSeeds(); }
+  if (ui.offPlayer) { ui.offPlayer(); }
+  ui.offSeeds = null;
+  ui.offPlayer = null;
+  autoDjDrawerUnmount('dj-seeds-shade', onAutoDjSeedsKey);
+  ui.step = 'lists';
+  ui.list = null;
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.query = '';
+  ui.hits = null;
+  ui.reqId++;
+  ui.recent = null;
+  ui.recentAsk++;
+  ui.picks = null;
+  ui.drawn = null;
+  ui.drawnPart = '';
+  ui.shadeDown = false;
+  autoDjDrawerOpener('dj-seeds-btn', 'dj-seeds-drawer', false, !o.noFocus);
+  return true;
+}
+
+// Opens the ⋮ menu of the row [key] in place (no redraw under the
+// pointer), upward when it would hang past the drawer's body; the keyboard
+// on its first item ([at] -1: its last).
+function autoDjSeedsMenuOpen(key, at) {
+  const ui = autoDjSeedsUi;
+  if (ui.menuKey !== null) { autoDjSeedsMenuClose(false); }
+  const view = AUTODJ.seeds.view();
+  const data = view.more.concat(view.less).find((r) => r.key === key);
+  const row = autoDjSeedsRowEl(key);
+  if (!data || !row) { return false; }
+  ui.menuKey = key;
+  ui.menuUp = false;
+  ui.drawnPart = null;
+  row.insertAdjacentHTML('beforeend', autoDjSeedMenuHtml(data, autoDjSeedsCtx(view)));
+  const btn = row.querySelector('.dj-seed-more');
+  btn.setAttribute('aria-expanded', 'true');
+  btn.setAttribute('aria-controls', 'dj-seeds-menu');
+  const menu = document.getElementById('dj-seeds-menu');
+  const body = menu.closest('.dj-seeds-body');
+  if (body && menu.getBoundingClientRect().bottom > body.getBoundingClientRect().bottom) {
+    menu.classList.add('is-up');
+    ui.menuUp = true;
+  }
+  const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+  items[at === -1 ? items.length - 1 : 0].focus();
+  return true;
+}
+
+// Closes the open ⋮ menu in place; [focusButton]: the keyboard back on its
+// ⋮ (an Esc, a Tab) — a press elsewhere keeps where it went.
+function autoDjSeedsMenuClose(focusButton) {
+  const ui = autoDjSeedsUi;
+  const key = ui.menuKey;
+  if (key === null) { return false; }
+  ui.menuKey = null;
+  ui.menuUp = false;
+  ui.drawnPart = null;
+  const menu = document.getElementById('dj-seeds-menu');
+  if (menu) { menu.remove(); }
+  const row = autoDjSeedsRowEl(key);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if (btn) {
+    btn.setAttribute('aria-expanded', 'false');
+    btn.removeAttribute('aria-controls');
+    if (focusButton) { btn.focus(); }
+  }
+  return true;
+}
+
+// The drawer's presses (one delegated listener; data-dj-act): Close, the
+// mode, a row's pin and ⋮, a menu's move and Remove, Add song, Go Back,
+// the library row and a pick. A disabled or aria-disabled control does
+// nothing. The keyboard: a pin and the mode keep it; a move follows the
+// row to its new list; Remove gives it to the row now in its place (the
+// next one), else the one before, else Add song.
+function onAutoDjSeedsClick(e) {
+  const ui = autoDjSeedsUi;
+  const el = ui.open && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-dj-act]') : null;
+  if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') { return; }
+  const act = el.getAttribute('data-dj-act');
+  const row = el.closest('[data-seed-key]');
+  const key = row ? row.getAttribute('data-seed-key') : null;
+  if (act === 'close') {
+    autoDjSeedsClose();
+  } else if (act === 'mode') {
+    AUTODJ.seeds.setMode(el.getAttribute('data-mode'));
+    autoDjSeedsRender();
+    el.focus();
+  } else if (act === 'pin') {
+    AUTODJ.seeds.setPinned(key, el.getAttribute('aria-pressed') !== 'true');
+    autoDjSeedsRender();
+  } else if (act === 'menu') {
+    if (ui.menuKey === key) { autoDjSeedsMenuClose(true); } else { autoDjSeedsMenuOpen(key, 0); }
+  } else if (act === 'move') {
+    ui.menuKey = null;
+    ui.menuUp = false;
+    AUTODJ.seeds.move(key);
+    autoDjSeedsRender();
+    autoDjSeedsFocusRow(key);
+  } else if (act === 'remove') {
+    const view = AUTODJ.seeds.view();
+    const list = view.less.some((r) => r.key === key) ? 'less' : 'more';
+    const rows = view[list];
+    const i = rows.findIndex((r) => r.key === key);
+    const next = i >= 0 && rows[i + 1] ? rows[i + 1].key : null;
+    const prev = i > 0 ? rows[i - 1].key : null;
+    ui.menuKey = null;
+    ui.menuUp = false;
+    AUTODJ.seeds.remove(key);
+    autoDjSeedsRender();
+    if (!autoDjSeedsFocusRow(next) && !autoDjSeedsFocusRow(prev)) { autoDjSeedsFocusAdd(list); }
+  } else if (act === 'add') {
+    autoDjSeedsShowAdd(el.getAttribute('data-add'));
+  } else if (act === 'back') {
+    autoDjSeedsShowLists(ui.list);
+  } else if (act === 'library') {
+    autoDjSeedsPickFromLibrary(ui.list);
+  } else if (act === 'pick') {
+    // A hand-added (pinned) row of the list Add song was opened for, then
+    // back to the lists. A list that filled meanwhile takes nothing. A
+    // More like song may start a DJ stalled on an empty queue.
+    const facts = ui.picks ? ui.picks.get(key) : null;
+    const list = ui.list;
+    if (!facts) { return; }
+    if (AUTODJ.seeds.add(list, facts) && list === 'more' && typeof MSTREAMPLAYER.autoDjKick === 'function') {
+      MSTREAMPLAYER.autoDjKick();
+    }
+    autoDjSeedsShowLists(list);
+  }
+}
+
+// Keys inside the drawer: Enter in Add song's field searches at once; on a
+// row's ⋮, Down opens its menu on the first item and Up on the last; in an
+// open menu (ytdl's menuMixin) Up and Down cycle, Home and End jump, Esc
+// closes the menu — only the menu: the drawer stays — and gives its ⋮ the
+// keyboard, and Tab closes it from its ⋮ (the browser's Tab moves on from
+// there). An IME's keys are its own.
+function onAutoDjSeedsMenuKey(e) {
+  const ui = autoDjSeedsUi;
+  const el = e.target;
+  if (!ui.open || !el || e.isComposing || e.keyCode === 229) { return; }
+  if (el.id === 'dj-add-search' && e.key === 'Enter') {
+    e.preventDefault();
+    clearTimeout(ui.searchTimer);
+    ui.searchTimer = null;
+    autoDjSeedsSearch(el.value);
+    return;
+  }
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && el.classList && el.classList.contains('dj-seed-more')) {
+    e.preventDefault();
+    const row = el.closest('[data-seed-key]');
+    if (row) { autoDjSeedsMenuOpen(row.getAttribute('data-seed-key'), e.key === 'ArrowDown' ? 0 : -1); }
+    return;
+  }
+  if (ui.menuKey === null) { return; }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    autoDjSeedsMenuClose(true);
+    return;
+  }
+  const menu = document.getElementById('dj-seeds-menu');
+  if (!menu || !menu.contains(el)) { return; }
+  const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+  const at = items.indexOf(el);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[e.key === 'ArrowDown' ? (at + 1) % items.length : (at - 1 + items.length) % items.length].focus();
+  } else if (e.key === 'Home' || e.key === 'End') {
+    e.preventDefault();
+    items[e.key === 'Home' ? 0 : items.length - 1].focus();
+  } else if (e.key === 'Tab') {
+    autoDjSeedsMenuClose(true);
+  }
+}
+
+// Add song's field and the box. The field: from two typed characters the
+// search runs once typing pauses (300 ms), the last hits staying until the
+// next answer; under two, the sections come back at once and a search
+// still out is dropped. The box: "Clear pins when the queue is cleared".
+function onAutoDjSeedsInput(e) {
+  const ui = autoDjSeedsUi;
+  const el = e.target;
+  if (!ui.open || !el) { return; }
+  if (el.id === 'dj-seeds-clear-pins') {
+    if (e.type === 'change') { AUTODJ.setState({ clearPinsOnQueueClear: el.checked === true }); }
+    return;
+  }
+  if (el.id !== 'dj-add-search' || e.type !== 'input') { return; }
+  ui.query = String(el.value || '');
+  clearTimeout(ui.searchTimer);
+  ui.searchTimer = null;
+  if (ui.query.trim().length < 2) {
+    ui.reqId++;
+    ui.hits = null;
+  } else {
+    ui.searchTimer = setTimeout(() => {
+      ui.searchTimer = null;
+      autoDjSeedsSearch(ui.query);
+    }, 300);
+  }
+  autoDjSeedsRender();
+}
+
+// The drawer holds the keyboard while it is open (the house window's way:
+// VUEPLAYERCORE.dmTabbables / dmTrapTarget): Tab and Shift+Tab wrap inside
+// it, and Esc closes it from either step (an open menu takes its own Esc
+// first). An IME's keys are its own.
+function onAutoDjSeedsKey(e) {
+  autoDjDrawerKey(e, autoDjSeedsUi.open ? document.getElementById('dj-seeds-drawer') : null, autoDjSeedsClose);
+}
+
+// A press on the scrim closes the drawer only when it both began and ended
+// there (a drag out of a field is no press outside: ytdl's windows), and
+// was no later press of a multi-click: a double-click on the Seeds row
+// opens the drawer, and its second press lands on the scrim (a touch's
+// detail is 0). Any press outside an open row menu and its ⋮ closes the
+// menu, in place.
+function onAutoDjSeedsShadeDown(e) {
+  const ui = autoDjSeedsUi;
+  ui.shadeDown = autoDjDrawerPressStart(e);
+  if (ui.menuKey === null) { return; }
+  const menu = document.getElementById('dj-seeds-menu');
+  const row = autoDjSeedsRowEl(ui.menuKey);
+  const btn = row ? row.querySelector('.dj-seed-more') : null;
+  if ((menu && menu.contains(e.target)) || (btn && btn.contains(e.target))) { return; }
+  autoDjSeedsMenuClose(false);
+}
+
+function onAutoDjSeedsShadeClick(e) {
+  const ui = autoDjSeedsUi;
+  const outside = autoDjDrawerPressEnd(e, ui.shadeDown);
+  ui.shadeDown = false;
+  if (outside) { autoDjSeedsClose(); }
+}
+
+// Add song's title search (today's Seed song search): this server's title
+// hits for [q], the first eight. An answer that is no longer the newest
+// ask's is dropped.
+async function autoDjSeedsSearch(q) {
+  const ui = autoDjSeedsUi;
+  const term = String(q || '').trim();
+  if (!ui.open || ui.step !== 'add' || term.length < 2) { return false; }
+  const rid = ++ui.reqId;
+  let hits = [];
+  try {
+    const res = await MSTREAMAPI.search({ search: term, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true });
+    hits = (res && Array.isArray(res.title) ? res.title : []).slice(0, 8);
+  } catch (err) {
+    console.error('seed search failed', err);
+  }
+  if (rid !== ui.reqId || !ui.open || ui.step !== 'add') { return false; }
+  ui.hits = hits.map((h) => AUTODJ.seeds.factsFromSearchHit(h)).filter(Boolean);
+  autoDjSeedsRender();
+  return true;
+}
+
+// Add song's "Pick a song from the library" (the phone's library row):
+// Sonic Path's capture mode for [list]. The drawer closes, the banner names
+// the list and the File Explorer opens; the next single row click anywhere
+// (onFileClick; bulk actions and DB search hits never come through) adds
+// that song pinned, its title, artist and art looked up, and the Auto DJ
+// page comes back with the drawer open on its lists. Cancel comes back the
+// same way with nothing added. A connected server's row is refused there
+// and the pick stays armed: seeds are this server's songs. Coming back
+// while a connected server is browsed goes home first, as the Discover
+// page's return does (in that library every row is refused, so Cancel is
+// the way out).
+function autoDjSeedsPickFromLibrary(list) {
+  const l = list === 'less' ? 'less' : 'more';
+  autoDjSeedsClose({ noFocus: true });
+  const back = () => {
+    if (peerContext) {
+      peerContext = null;
+      browseGeneration++;
+      fileExplorerArray = [];
+      applyServerContext();
+    }
+    changeView(() => autoDjPanel({ seeds: l }), document.getElementById('nav-auto-dj'));
+  };
+  const capture = async (song) => {
+    sonicPathHideBanner();
+    const raw = String((song && song.filepath) || '');
+    const path = raw.replace(/^\/+/, '');
+    let meta = (song && song.metadata) || {};
+    if (path && !meta.title) {
+      try {
+        const response = await MSTREAMAPI.lookupMetadata(raw);
+        if (response && response.metadata) { meta = response.metadata; }
+      } catch (_err) { /* the file name stands in */ }
+    }
+    if (path && AUTODJ.seeds.add(l, AUTODJ.seeds.factsFromMeta(path, meta)) && l === 'more'
+      && typeof MSTREAMPLAYER.autoDjKick === 'function') {
+      MSTREAMPLAYER.autoDjKick();
+    }
+    back();
+  };
+  capture.seeds = l;
+  VUEPLAYERCORE.songCapture = capture;
+  showPickBanner(t(l === 'less' ? 'autoDJ.seedPickBannerLess' : 'autoDJ.seedPickBannerMore'), back);
+  changeView(loadFileExplorer, document.querySelector('.side-nav-item[data-panel="fileExplorer"]') || document.querySelector('.side-nav-item'));
+}
+
+// ── The Auto DJ page's drawers: one shell (Seeds, Genres) ───────────────
+//
+// A modal drawer from the right (kit d13b) on its own scrim, a .dmodal-shadow
+// on body — so the player's hotkeys and YouTube paste stay off under it and
+// the panel's redraws leave it be — both wearing the Seeds drawer's .dj-seeds*
+// kit (spa.css). The shell builds and removes the scrim and its listeners,
+// marks the opener row, draws Close, holds the keyboard (Tab wraps, Esc
+// closes) and tells a press on the scrim from a drag out of the drawer or a
+// multi-click's later press.
+
+// The scrim and its empty dialog on body, the drawer's listeners on them and
+// its key listener on the document. d = { shade, dialog, title (the ids of
+// the scrim, the dialog and the heading that names it), onShadeDown,
+// onShadeClick, onClick, onKeydown?, onInput?, onDocKey }. Returns the
+// dialog.
+function autoDjDrawerMount(d) {
+  const shade = document.createElement('div');
+  shade.className = 'dmodal-shadow dj-seeds-shade';
+  shade.id = d.shade;
+  shade.innerHTML = `<div class="dj-seeds" id="${d.dialog}" role="dialog" aria-modal="true" aria-labelledby="${d.title}" tabindex="-1"></div>`;
+  shade.addEventListener('mousedown', d.onShadeDown);
+  shade.addEventListener('touchstart', d.onShadeDown, { passive: true });
+  shade.addEventListener('click', d.onShadeClick);
+  const dialog = shade.querySelector('.dj-seeds');
+  dialog.addEventListener('click', d.onClick);
+  if (d.onKeydown) { dialog.addEventListener('keydown', d.onKeydown); }
+  if (d.onInput) {
+    dialog.addEventListener('input', d.onInput);
+    dialog.addEventListener('change', d.onInput);
+  }
+  document.body.appendChild(shade);
+  document.addEventListener('keydown', d.onDocKey);
+  return dialog;
+}
+
+// The scrim [shadeId] and every listener gone.
+function autoDjDrawerUnmount(shadeId, onDocKey) {
+  document.removeEventListener('keydown', onDocKey);
+  const shade = document.getElementById(shadeId);
+  if (shade) { shade.remove(); }
+}
+
+// The row a drawer opens from says whether it is open, and which; closing
+// with [focus] gives it the keyboard back (looked up again: the panel may
+// have redrawn).
+function autoDjDrawerOpener(btnId, dialogId, open, focus) {
+  const btn = document.getElementById(btnId);
+  if (!btn) { return; }
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open) { btn.setAttribute('aria-controls', dialogId); } else { btn.removeAttribute('aria-controls'); }
+  if (focus) { btn.focus(); }
+}
+
+// Close, a drawer's first child.
+function autoDjDrawerCloseHtml() {
+  return `<button type="button" class="dj-seeds-close" data-dj-act="close" aria-label="${escapeHtml(t('modal.close'))}">${AUTODJ_SEEDS_ICONS.close}</button>`;
+}
+
+// The keyboard on Close as a drawer opens (Close is always in view: no
+// scroll while the drawer slides in).
+function autoDjDrawerFocusClose(dialogId) {
+  const dialog = document.getElementById(dialogId);
+  const close = dialog ? dialog.querySelector('.dj-seeds-close') : null;
+  if (close) { close.focus({ preventScroll: true }); }
+}
+
+// A key while a drawer is open (the house window's way: VUEPLAYERCORE
+// .dmTabbables / dmTrapTarget): Tab and Shift+Tab wrap inside [dialog], Esc
+// runs [close]. An IME's keys are its own.
+function autoDjDrawerKey(e, dialog, close) {
+  if (!dialog || e.isComposing || e.keyCode === 229) { return; }
+  if (e.key === 'Tab') {
+    if (typeof VUEPLAYERCORE === 'undefined' || typeof VUEPLAYERCORE.dmTabbables !== 'function') { return; }
+    const to = VUEPLAYERCORE.dmTrapTarget(VUEPLAYERCORE.dmTabbables(dialog), document.activeElement, e.shiftKey);
+    if (to) {
+      e.preventDefault();
+      to.focus();
+    }
+    return;
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    close();
+  }
+}
+
+// A press on the scrim closes a drawer only when it began there and was no
+// later press of a multi-click (a double-click on the opener row lands its
+// second press on the new scrim; a touch's detail is 0) …
+function autoDjDrawerPressStart(e) {
+  return e.target === e.currentTarget && !(e.detail > 1);
+}
+
+// … and ended there too (a drag out of a field is no press outside: ytdl's
+// windows).
+function autoDjDrawerPressEnd(e, started) {
+  return started === true && e.target === e.currentTarget;
+}
+
+// ── The Genres drawer ───────────────────────────────────────────────────
+//
+// The Genres row's drawer (the phone's Genres sheet) in the Seeds drawer's
+// shell: "Genres" ("200 max" beside it while the list is full), Only |
+// Skip, Generated | Tags | Mixed (only where the server has genres of both
+// kinds and is known to take the kind), the search, and one box per genre
+// of the kind shown — the chosen ones first, pinned as the drawer opened
+// and grown at each kind change, so a tick never moves a row and a genre
+// the server no longer reports can still be let go. Every change applies
+// at once (AUTODJ.setGenreFilter) and redraws the row's value; closing
+// writes nothing. A filter that is off opens with nothing ticked, its
+// stored list kept until the first change. Every name is escaped where it
+// is drawn and found again by comparing data-genre, never by a selector
+// built from it (a name may hold a quote or a bracket).
+
+// The drawer's one state: open or not, the filter as edited (written
+// through at each change), the typed search, each kind's list once it
+// answered ('both' | 'tag' | 'model' → names), the asks still out and the
+// ones that failed, how many genres of each kind the latest answer said
+// the server has (null: none yet, or a server that sends none), whether
+// the server is known to take the kind (/api/'s version, read as the
+// drawer opens and at each answer), the names that lead the list, this
+// open's ask (an answer for another is dropped), the list's last markup
+// and a press that began on the scrim.
+const autoDjGenresUi = {
+  open: false,
+  draft: null,
+  query: '',
+  lists: {},
+  loading: {},
+  failed: {},
+  sources: null,
+  takes: false,
+  pinned: [],
+  ask: 0,
+  drawnList: '',
+  shadeDown: false,
+};
+
+// The Genres row's value in place, after a change in the drawer: its text
+// and its tone. False once the panel is gone.
+function autoDjGenresRenderValue() {
+  const el = document.getElementById('dj-genres-value');
+  if (!el) { return false; }
+  const v = autoDjGenresValue(AUTODJ.state);
+  if (el.textContent !== v.text) { el.textContent = v.text; }
+  el.classList.toggle('is-set', v.set);
+  return true;
+}
+
+// The names that lead the list: the chosen ones, one per name whatever its
+// case (the first kept), sorted as the row's value is. Strings only (one
+// left in storage by hand is never a row; the first change drops it), and
+// no rule on length: a stored name stays a row to let go.
+function autoDjGenresPinned(names) {
+  const seen = new Set();
+  const out = [];
+  for (const name of Array.isArray(names) ? names : []) {
+    if (typeof name !== 'string' || seen.has(name.toLowerCase())) { continue; }
+    seen.add(name.toLowerCase());
+    out.push(name);
+  }
+  return out.sort(AUTODJ.compareGenreNames);
+}
+
+// One kind's list from a genres answer's names: read as the pinned ones
+// are, and no blank name.
+function autoDjGenresSorted(names) {
+  return autoDjGenresPinned(names).filter((name) => name !== '');
+}
+
+// Whether Generated | Tags | Mixed is offered: the latest answer says the
+// server has genres of both kinds, and the server is known to take the
+// kind (/api/'s version) — read as the drawer opens and at each answer,
+// where its list may change kind. So a drawer opened before /api/ answered
+// shows no switch until its next answer or open: the list drawn stays, and
+// a change stores what it shows.
+function autoDjGenresOffered() {
+  const s = autoDjGenresUi.sources;
+  return !!s && s.tag > 0 && s.model > 0 && autoDjGenresUi.takes;
+}
+
+// The kind the list shows: the chosen one where the switch is offered,
+// every kind ('both') where it isn't.
+function autoDjGenresShown() {
+  const source = autoDjGenresUi.draft ? autoDjGenresUi.draft.source : null;
+  return autoDjGenresOffered() && source ? source : 'both';
+}
+
+// What the list holds now (the phone's order of checks): 'loading' while
+// the shown kind's list is out; 'error' or 'none' with nothing pinned or
+// chosen and a failed or empty list (decided before the search, so typing
+// never turns one into the other); 'error' or 'nomatch' when the search
+// leaves no row; else the rows — the pinned ones matching the search, then
+// the kind's others — each ticked when the edited filter holds its name in
+// any case. [failed]: the shown kind's list failed (its line goes above the
+// pinned rows); [full]: 200 are chosen.
+function autoDjGenresView() {
+  const ui = autoDjGenresUi;
+  const kind = autoDjGenresShown();
+  const list = ui.lists[kind];
+  const failed = ui.failed[kind] === true;
+  const draft = ui.draft.genres.filter((g) => typeof g === 'string');
+  const full = ui.draft.genres.length >= AUTODJ.GENRES_MAX;
+  const out = (state, rows) => ({ state, failed, full, rows: rows || [] });
+  if (ui.loading[kind] || (!list && !failed)) { return out('loading'); }
+  if (ui.pinned.length === 0 && draft.length === 0) {
+    if (failed) { return out('error'); }
+    if (!list || list.length === 0) { return out('none'); }
+  }
+  const chosen = new Set(draft.map((g) => g.toLowerCase()));
+  const pinned = new Set(ui.pinned.map((g) => g.toLowerCase()));
+  const q = ui.query.trim().toLowerCase();
+  const matches = (name) => q === '' || name.toLowerCase().includes(q);
+  const names = [...ui.pinned.filter(matches), ...(list || []).filter((name) => !pinned.has(name.toLowerCase()) && matches(name))];
+  if (names.length === 0) { return out(failed ? 'error' : 'nomatch'); }
+  return out('rows', names.map((name) => ({ name, on: chosen.has(name.toLowerCase()) })));
+}
+
+// The list's markup for [view]: a spinner, a line, or the rows (under the
+// error line when the kind's list failed), one box each — an unticked one
+// off while 200 are chosen.
+function autoDjGenresListHtml(view) {
+  if (view.state === 'loading') { return `<div class="dj-genres-state">${getLoadingSvg()}</div>`; }
+  const line = (key, error) => `<p class="dj-genres-state${error ? ' is-error' : ''}">${escapeHtml(t(key))}</p>`;
+  if (view.state === 'error') { return line('autoDJ.genresLoadError', true); }
+  if (view.state === 'none') { return line('autoDJ.genresNone'); }
+  if (view.state === 'nomatch') { return line('autoDJ.genresNoMatches'); }
+  const rows = view.rows.map((row) => {
+    const off = !row.on && view.full;
+    return `<li><label class="dj-check dj-genres-item${off ? ' is-off' : ''}"><span class="dj-check-ctl">`
+      + `<input type="checkbox" data-genre="${escapeHtml(row.name)}"${row.on ? ' checked' : ''}${off ? ' disabled' : ''}>`
+      + `<span class="dj-check-box" aria-hidden="true">${AUTODJ_SEEDS_ICONS.check}</span></span>${escapeHtml(row.name)}</label></li>`;
+  }).join('');
+  return (view.failed ? line('autoDJ.genresLoadError', true) : '')
+    + `<ul class="dj-genres-rows" aria-labelledby="dj-genres-title">${rows}</ul>`;
+}
+
+// Generated | Tags | Mixed (the phone's order), pressed by the kind shown.
+function autoDjGenresKindHtml() {
+  const shown = autoDjGenresShown();
+  const btn = (kind, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="kind" data-kind="${kind}" aria-pressed="${shown === kind ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  return `<div class="dj-seeds-mode dj-genres-kind" role="group" aria-label="${escapeHtml(t('genres.sourceLabel'))}">`
+    + btn('model', 'genres.sourceGenerated') + btn('tag', 'genres.sourceTags') + btn('both', 'autoDJ.genresMixed')
+    + '</div>';
+}
+
+// Under Close: the head ("200 max" goes into its live region while the
+// list is full), then Only | Skip, the kind's box (autoDjGenresRender fills
+// it while the switch is offered), the search, and the list's box.
+function autoDjGenresStepHtml() {
+  const mode = (m, key) => `<button type="button" class="dj-seeds-mode-btn" data-dj-act="mode" data-mode="${m}" aria-pressed="${autoDjGenresUi.draft.mode === m ? 'true' : 'false'}">${escapeHtml(t(key))}</button>`;
+  const search = escapeHtml(t('tooltip.search'));
+  return '<div class="dj-seeds-head dj-genres-head">'
+    + `<h2 class="dj-seeds-title" id="dj-genres-title">${escapeHtml(t('autoDJ.genresLabel'))}</h2>`
+    + '<span class="dj-genres-max" id="dj-genres-max" aria-live="polite"></span></div>'
+    + '<div class="dj-seeds-body" id="dj-genres-body">'
+    + `<div class="dj-seeds-mode" role="group" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">${mode('whitelist', 'autoDJ.genresOnly')}${mode('blacklist', 'autoDJ.genresSkip')}</div>`
+    + '<div class="dj-genres-kind-box" id="dj-genres-kind-box"></div>'
+    + `<label class="dj-add-search dj-genres-search">${AUTODJ_SEEDS_ICONS.search}<input type="search" id="dj-genres-search" class="dj-filter-input browser-default" placeholder="${search}" aria-label="${search}" autocomplete="off" value=""></label>`
+    + '<div class="dj-genres-list" id="dj-genres-list"></div>'
+    + '</div>';
+}
+
+// The list's box as [html], unless it holds it already (a redraw that
+// changes nothing leaves the boxes, and a press on one, where they are).
+// The keyboard on a box comes back to the box of the same name.
+function autoDjGenresDrawList(el, html) {
+  const ui = autoDjGenresUi;
+  if (!el || ui.drawnList === html) { return false; }
+  const a = document.activeElement;
+  const at = a && a !== el && el.contains(a) && typeof a.getAttribute === 'function' ? a.getAttribute('data-genre') : null;
+  el.innerHTML = html;
+  ui.drawnList = html;
+  if (at !== null) {
+    const box = Array.from(el.querySelectorAll('input[data-genre]')).find((b) => b.getAttribute('data-genre') === at);
+    if (box) { box.focus(); }
+  }
+  return true;
+}
+
+// The boxes and the head in place, no redraw (a tick keeps the keyboard and
+// the scroll): each box ticked while the edited filter holds its name in
+// any case, an unticked one off while 200 are chosen, and "200 max" in the
+// head while they are.
+function autoDjGenresSyncTicks() {
+  const ui = autoDjGenresUi;
+  const dialog = document.getElementById('dj-genres-drawer');
+  if (!ui.open || !dialog) { return; }
+  const chosen = new Set(ui.draft.genres.filter((g) => typeof g === 'string').map((g) => g.toLowerCase()));
+  const full = ui.draft.genres.length >= AUTODJ.GENRES_MAX;
+  dialog.querySelectorAll('input[data-genre]').forEach((box) => {
+    const on = chosen.has(String(box.getAttribute('data-genre')).toLowerCase());
+    const off = !on && full;
+    box.checked = on;
+    box.disabled = off;
+    const label = box.closest('label');
+    if (label) { label.classList.toggle('is-off', off); }
+  });
+  const max = document.getElementById('dj-genres-max');
+  const text = full ? t('autoDJ.genresMax', { count: AUTODJ.GENRES_MAX }) : '';
+  if (max && max.textContent !== text) { max.textContent = text; }
+}
+
+// Draws the open drawer in place: Only | Skip and the kind pressed, the
+// kind's switch drawn only as it comes or goes (a pressed kind keeps the
+// keyboard; one that goes with the keyboard on it gives it to the pressed
+// Only | Skip), then the list and its boxes.
+function autoDjGenresRender() {
+  const ui = autoDjGenresUi;
+  if (!ui.open) { return false; }
+  const dialog = document.getElementById('dj-genres-drawer');
+  if (!dialog) {
+    // its scrim went some other way: let go of the listeners too
+    autoDjGenresClose({ noFocus: true });
+    return false;
+  }
+  dialog.querySelectorAll('[data-dj-act="mode"]').forEach((b) => {
+    b.setAttribute('aria-pressed', b.getAttribute('data-mode') === ui.draft.mode ? 'true' : 'false');
+  });
+  const box = document.getElementById('dj-genres-kind-box');
+  if (box) {
+    const offered = autoDjGenresOffered();
+    if (offered !== (box.querySelector('[data-dj-act="kind"]') !== null)) {
+      const held = box.contains(document.activeElement);
+      box.innerHTML = offered ? autoDjGenresKindHtml() : '';
+      if (held && !offered) {
+        const pressed = dialog.querySelector('[data-dj-act="mode"][aria-pressed="true"]');
+        if (pressed) { pressed.focus(); }
+      }
+    }
+    const shown = autoDjGenresShown();
+    box.querySelectorAll('[data-dj-act="kind"]').forEach((b) => {
+      b.setAttribute('aria-pressed', b.getAttribute('data-kind') === shown ? 'true' : 'false');
+    });
+  }
+  autoDjGenresDrawList(document.getElementById('dj-genres-list'), autoDjGenresListHtml(autoDjGenresView()));
+  autoDjGenresSyncTicks();
+  return true;
+}
+
+// Writes the edited filter whole and redraws the row's value. Once an
+// answer is in and the switch isn't offered, the list shows every kind, so
+// the change stores Mixed (what the list showed is what the filter
+// matches); before any answer the stored kind stays.
+function autoDjGenresApply() {
+  const ui = autoDjGenresUi;
+  if (ui.sources !== null && !autoDjGenresOffered()) { ui.draft.source = null; }
+  const stored = AUTODJ.setGenreFilter(ui.draft);
+  ui.draft = { ...stored };
+  autoDjGenresRenderValue();
+}
+
+// Asks for [kind]'s list ('both': every kind) unless it is in or out
+// already; a failed one is asked again. The answer, when it is still this
+// open's: whether the server takes the kind (/api/ may have answered
+// since), the list, how many genres of each kind the server has (an answer
+// without both kinds takes a stored Generated or Tags back to Mixed) and,
+// for every kind, the panel's cache too; then the kind the list now shows
+// is asked for, if it is another one, and the drawer redraws.
+function autoDjGenresLoad(kind) {
+  const ui = autoDjGenresUi;
+  if (ui.lists[kind] || ui.loading[kind]) { return; }
+  ui.loading[kind] = true;
+  delete ui.failed[kind];
+  const ask = ui.ask;
+  Promise.resolve()
+    .then(() => MSTREAMAPI.getGenres(kind === 'both' ? undefined : kind))
+    .catch(() => ({ status: 'error' }))
+    .then((res) => {
+      if (ask !== ui.ask || !ui.open) { return; }
+      delete ui.loading[kind];
+      ui.takes = AUTODJ.takesGenreSource(MSTREAMAPI.currentServer);
+      if (res && res.status === 'ok') {
+        ui.lists[kind] = autoDjGenresSorted(res.value);
+        ui.sources = res.sources || null;
+        if (kind === 'both') { AUTODJ.setCachedGenresList(res.value, res.sources); }
+        AUTODJ.noteGenreSources(res.sources);
+        ui.draft.source = AUTODJ.state.djGenreSource;
+      } else {
+        ui.failed[kind] = true;
+      }
+      if (autoDjGenresShown() !== kind) { autoDjGenresLoad(autoDjGenresShown()); }
+      autoDjGenresRender();
+    });
+}
+
+// The Genres drawer, the Genres row's one way in: the keyboard on Close.
+// Its Mixed list is the panel's cached answer while fresh, else asked for;
+// a stored kind opens on its own list. Its scrim lives on body, so a redraw
+// of the column's markup leaves it be; a view that takes the column closes
+// it (setBrowserRootPanel).
+function autoDjGenresOpen() {
+  const ui = autoDjGenresUi;
+  if (typeof AUTODJ === 'undefined' || typeof AUTODJ.setGenreFilter !== 'function') { return false; }
+  if (ui.open) { return true; }
+  const dialog = autoDjDrawerMount({
+    shade: 'dj-genres-shade', dialog: 'dj-genres-drawer', title: 'dj-genres-title',
+    onShadeDown: onAutoDjGenresShadeDown, onShadeClick: onAutoDjGenresShadeClick,
+    onClick: onAutoDjGenresClick, onInput: onAutoDjGenresInput, onDocKey: onAutoDjGenresKey,
+  });
+  ui.open = true;
+  ui.ask++;
+  ui.draft = AUTODJ.genreDraft();
+  ui.query = '';
+  ui.lists = {};
+  ui.loading = {};
+  ui.failed = {};
+  ui.drawnList = '';
+  ui.shadeDown = false;
+  ui.pinned = autoDjGenresPinned(ui.draft.genres);
+  const cached = AUTODJ.getCachedGenresList();
+  if (cached) { ui.lists.both = autoDjGenresSorted(cached); }
+  ui.sources = cached ? AUTODJ.getCachedGenreSources() : null;
+  ui.takes = AUTODJ.takesGenreSource(MSTREAMAPI.currentServer);
+  dialog.innerHTML = autoDjDrawerCloseHtml() + autoDjGenresStepHtml();
+  autoDjDrawerOpener('dj-genres-btn', 'dj-genres-drawer', true, false);
+  autoDjGenresLoad(autoDjGenresShown());
+  autoDjGenresRender();
+  autoDjDrawerFocusClose('dj-genres-drawer');
+  return true;
+}
+
+// Closes the drawer, writing nothing: the scrim and its listeners go, an
+// answer still out is dropped, and the keyboard goes back to the Genres
+// row (looked up again: the panel may have redrawn). opts.noFocus: a view
+// that takes the column.
+function autoDjGenresClose(opts) {
+  const ui = autoDjGenresUi;
+  if (!ui.open) { return false; }
+  ui.open = false;
+  ui.ask++;
+  autoDjDrawerUnmount('dj-genres-shade', onAutoDjGenresKey);
+  ui.draft = null;
+  ui.query = '';
+  ui.lists = {};
+  ui.loading = {};
+  ui.failed = {};
+  ui.sources = null;
+  ui.takes = false;
+  ui.pinned = [];
+  ui.drawnList = '';
+  ui.shadeDown = false;
+  autoDjDrawerOpener('dj-genres-btn', 'dj-genres-drawer', false, !(opts && opts.noFocus));
+  return true;
+}
+
+// The drawer's presses (one delegated listener; data-dj-act): Close, Only |
+// Skip and the kind. Pressing the pressed one changes nothing; a press
+// keeps the keyboard. A new kind keeps the chosen genres ticked and in view
+// (they join the pinned rows) and asks for its list.
+function onAutoDjGenresClick(e) {
+  const ui = autoDjGenresUi;
+  const el = ui.open && e.target && typeof e.target.closest === 'function' ? e.target.closest('[data-dj-act]') : null;
+  if (!el || el.disabled || el.getAttribute('aria-disabled') === 'true') { return; }
+  const act = el.getAttribute('data-dj-act');
+  if (act === 'close') {
+    autoDjGenresClose();
+  } else if (act === 'mode') {
+    const mode = el.getAttribute('data-mode');
+    if ((mode !== 'whitelist' && mode !== 'blacklist') || mode === ui.draft.mode) { return; }
+    ui.draft.mode = mode;
+    autoDjGenresApply();
+    autoDjGenresRender();
+    el.focus();
+  } else if (act === 'kind') {
+    const kind = el.getAttribute('data-kind');
+    if (!['model', 'tag', 'both'].includes(kind) || kind === autoDjGenresShown()) { return; }
+    ui.draft.source = kind === 'both' ? null : kind;
+    ui.pinned = autoDjGenresPinned([...ui.pinned, ...ui.draft.genres]);
+    autoDjGenresApply();
+    autoDjGenresLoad(kind);
+    autoDjGenresRender();
+    el.focus();
+  }
+}
+
+// The search (each keystroke narrows the list; no ask) and the boxes: a
+// tick adds its genre unless one of that name in any case is chosen or 200
+// are, an untick lets go of every case of it, and the boxes then show what
+// was stored. (A box fires input too: only its change counts.)
+function onAutoDjGenresInput(e) {
+  const ui = autoDjGenresUi;
+  const el = e.target;
+  if (!ui.open || !el || typeof el.getAttribute !== 'function') { return; }
+  if (el.id === 'dj-genres-search') {
+    if (e.type !== 'input') { return; }
+    ui.query = String(el.value || '');
+    autoDjGenresRender();
+    return;
+  }
+  const name = el.getAttribute('data-genre');
+  if (name === null || e.type !== 'change') { return; }
+  const lc = name.toLowerCase();
+  const same = (g) => typeof g === 'string' && g.toLowerCase() === lc;
+  const held = ui.draft.genres.some(same);
+  if (el.checked && !held && ui.draft.genres.length < AUTODJ.GENRES_MAX) {
+    ui.draft.genres = [...ui.draft.genres, name];
+    autoDjGenresApply();
+  } else if (!el.checked && held) {
+    ui.draft.genres = ui.draft.genres.filter((g) => !same(g));
+    autoDjGenresApply();
+  }
+  autoDjGenresSyncTicks();
+}
+
+// The drawer holds the keyboard while it is open: Tab and Shift+Tab wrap
+// inside it, Esc closes it (from the search too). An IME's keys are its own.
+function onAutoDjGenresKey(e) {
+  autoDjDrawerKey(e, autoDjGenresUi.open ? document.getElementById('dj-genres-drawer') : null, autoDjGenresClose);
+}
+
+// A press on the scrim closes the drawer only when it began and ended
+// there, and was no later press of a multi-click (autoDjDrawerPressStart).
+function onAutoDjGenresShadeDown(e) {
+  autoDjGenresUi.shadeDown = autoDjDrawerPressStart(e);
+}
+
+function onAutoDjGenresShadeClick(e) {
+  const ui = autoDjGenresUi;
+  const outside = autoDjDrawerPressEnd(e, ui.shadeDown);
+  ui.shadeDown = false;
+  if (outside) { autoDjGenresClose(); }
+}
+
 let _autoDjPanelAbortController = null;
 
-async function autoDjPanel() {
+// The Auto DJ page. opts = { seeds: 'more' | 'less' } when it comes back
+// from the Seeds drawer's library pick: the drawer opens again on its
+// lists. The side nav passes nothing.
+async function autoDjPanel(opts) {
+  const o = opts || {};
+  // A Seeds library pick left armed (its banner still up) ends when the
+  // page is entered again: no armed pick without its banner. The pick's
+  // own return finds the slot empty already.
+  if (VUEPLAYERCORE.songCapture && VUEPLAYERCORE.songCapture.seeds) {
+    VUEPLAYERCORE.songCapture = null;
+    sonicPathHideBanner();
+  }
   _autoDjPanelAbortController?.abort();
   _autoDjPanelAbortController = new AbortController();
   const _autoDjPanelSignal = _autoDjPanelAbortController.signal;
@@ -6358,22 +9069,23 @@ async function autoDjPanel() {
   const lastfm = await _fetchLastfmStatus();
   const lastfmAvailable = !!lastfm.serverEnabled;
 
-  // Library genres list — feeds the suggestion dropdown in the genre
-  // filter row. Cached for 5 min (see AUTODJ.getCachedGenresList);
-  // a stale cache returns null so we re-fetch transparently. Network
-  // / auth errors are non-blocking: the panel still renders, the
-  // dropdown just shows the appropriate inline hint.
+  // The library's genre list (every kind) and how many genres of each kind
+  // the server has — the Genres row's off state, and the Genres drawer's
+  // Mixed list and its Generated | Tags | Mixed offer. Cached for 5 min (see
+  // AUTODJ.getCachedGenresList); a stale cache returns null so we re-fetch
+  // transparently. An answer without genres of both kinds takes a stored
+  // Generated or Tags back to Mixed (AUTODJ.noteGenreSources). A failed
+  // load is non-blocking: the panel still renders, the Genres row off
+  // unless genres are chosen.
   let genresListLoadState = 'ready';   // 'ready' | 'auth' | 'error'
   let cachedGenresList = AUTODJ.getCachedGenresList();
   if (!cachedGenresList) {
     const res = await MSTREAMAPI.getGenres();
     if (res.status === 'ok') {
-      AUTODJ.setCachedGenresList(res.value);
+      AUTODJ.setCachedGenresList(res.value, res.sources);
+      AUTODJ.noteGenreSources(res.sources);
       cachedGenresList = AUTODJ.getCachedGenresList();
     } else {
-      // 401 from the server when unauthenticated → soft-disable the
-      // toggle and surface the auth hint. Any other error (5xx, 0 =
-      // network) gets the generic "couldn't load" message.
       genresListLoadState = res.code === 401 ? 'auth' : 'error';
       cachedGenresList = [];
     }
@@ -6385,434 +9097,25 @@ async function autoDjPanel() {
     AUTODJ.state.djVpaths.length > 0 ? AUTODJ.state.djVpaths : allVpaths,
   );
 
-  const sourcesBlock = allVpaths.length > 1 ? `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div>
-        <div class="autodj-opt-label">${t('autoDJ.sectionSources')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.sourcesHint')}</div>
-      </div>
-      <div class="dj-vpath-pills" id="dj-vpaths" role="group" aria-label="${escapeHtml(t('autoDJ.sectionSources'))}">
-        ${allVpaths.map(v => `
-          <button type="button" class="dj-vpath-pill${includedSet.has(v) ? ' on' : ''}" data-vpath="${escapeHtml(v)}" aria-pressed="${includedSet.has(v) ? 'true' : 'false'}">${escapeHtml(v)}</button>
-        `).join('')}
-      </div>
-    </div>` : '';
+  document.getElementById('filelist').innerHTML = autoDjPanelHtml({
+    state: AUTODJ.state,
+    server: MSTREAMAPI.currentServer,
+    vpaths: allVpaths,
+    includedSet,
+    lastfmAvailable,
+    genres: { list: cachedGenresList, loadState: genresListLoadState },
+    djOn: MSTREAMPLAYER.playerStats.autoDJ === true,
+    limitMax: AUTODJ.LIMIT_MAX,
+    seeds: AUTODJ.seeds.view(),
+  });
 
-  // Min-rating select: 0..10 in 0.5-star increments. Labels match
-  // velvet's "★" visual vocabulary so the panel reads as a rating
-  // chooser at a glance — backend stays continuous so half-star
-  // ratings still work (e.g. ★ 3 catches 3, 3.5, 4, 4.5, 5).
-  // 0 is rendered as "Any" via `autoDJ.ratingAny`.
-  let ratingOptions = `<option value="0" ${AUTODJ.state.djMinRating === 0 ? 'selected' : ''}>${t('autoDJ.ratingAny')}</option>`;
-  for (let i = 1; i <= 10; i++) {
-    const stars = +(i / 2).toFixed(1); // 0.5, 1, 1.5, …, 5
-    const label = `★ ${stars}`;
-    ratingOptions += `<option value="${i}" ${AUTODJ.state.djMinRating === i ? 'selected' : ''}>${label}</option>`;
-  }
+  // ── Wire the drawn controls ─────────────────────────────────────
 
-  // Similar-artists toggle row. When no API key is configured the
-  // toggle is rendered disabled with an explanatory hint so the
-  // user understands WHY it's not available.
-  //
-  // a11y note: the `.toggle-sw` input is opacity:0 (the visible
-  // affordance is the .toggle-sw-track sibling), so it needs an
-  // explicit aria-labelledby pointing to the label div — screen
-  // readers won't otherwise associate the description text with the
-  // checkbox.
-  const similarRow = `
-    <div class="autodj-opt-row${lastfmAvailable ? '' : ' autodj-opt-disabled'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-similar-label">${t('autoDJ.similarLabel')}</div>
-        <div class="autodj-opt-hint">${lastfmAvailable ? t('autoDJ.similarHint') : '<em>' + t('autoDJ.similarHintNoKey') + '</em>'}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-similar" aria-labelledby="dj-similar-label" ${AUTODJ.state.similar && lastfmAvailable ? 'checked' : ''} ${lastfmAvailable ? '' : 'disabled'}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  const bpmContinuityRow = `
-    <div class="autodj-opt-row">
-      <div>
-        <div class="autodj-opt-label" id="dj-bpm-cont-label">${t('autoDJ.bpmContinuityLabel')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.bpmContinuityHint')}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-bpm-cont" aria-labelledby="dj-bpm-cont-label" ${AUTODJ.state.bpmContinuity ? 'checked' : ''}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  // BPM tolerance slider — hidden when BPM continuity is off so the
-  // panel doesn't waste vertical space on an inert control.
-  const bpmToleranceRow = `
-    <div class="autodj-opt-row" id="dj-bpm-tol-row" style="${AUTODJ.state.bpmContinuity ? '' : 'display:none'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-bpm-tol-label">${t('autoDJ.bpmToleranceLabel')}</div>
-        <div class="autodj-opt-hint" id="dj-bpm-tol-val">${t('autoDJ.bpmToleranceValue', { n: AUTODJ.state.bpmTolerance })}</div>
-      </div>
-      <input type="range" id="dj-bpm-tol" class="autodj-slider" min="1" max="20" step="1" value="${AUTODJ.state.bpmTolerance}" aria-labelledby="dj-bpm-tol-label" aria-valuemin="1" aria-valuemax="20" aria-valuenow="${AUTODJ.state.bpmTolerance}">
-    </div>`;
-
-  const harmonicRow = `
-    <div class="autodj-opt-row">
-      <div>
-        <div class="autodj-opt-label" id="dj-harmonic-label">${t('autoDJ.harmonicMixingLabel')}</div>
-        <div class="autodj-opt-hint">${t('autoDJ.harmonicMixingHint')}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-harmonic" aria-labelledby="dj-harmonic-label" ${AUTODJ.state.harmonicMixing ? 'checked' : ''}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>`;
-
-  // Keyword filter — full-width row (autodj-opt-col stacks the
-  // toggle row above the tag chips + input field). The chip list
-  // is rendered initially here; subsequent add/remove operations
-  // call the inline `_renderFilterTags()` helper below to avoid
-  // a full panel re-render (which would lose input focus + steal
-  // the typed-but-not-yet-Enter'd word from the field).
-  const filterTagsHtml = AUTODJ.state.djFilterWords.map(w => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-    </span>
-  `).join('');
-  const keywordFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-filter-label">${t('autoDJ.keywordFilterLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.keywordFilterHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-filter-on" aria-labelledby="dj-filter-label" ${AUTODJ.state.djFilterEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-filter-tags" id="dj-filter-tags" role="list" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagsLabel'))}">${filterTagsHtml}</div>
-      <input
-        type="text"
-        class="dj-filter-input"
-        id="dj-filter-input"
-        placeholder="${escapeHtml(t('autoDJ.keywordFilterPlaceholder'))}"
-        ${AUTODJ.state.djFilterEnabled ? '' : 'disabled'}
-        aria-label="${escapeHtml(t('autoDJ.keywordFilterInputLabel'))}">
-    </div>`;
-
-  // Genre filter row. Mirrors keywordFilterRow's outer shape (head with
-  // label/hint/toggle + chip list + input). Differences:
-  //   • A two-button segmented control between the head and the chip
-  //     list selects whitelist vs blacklist mode (aria-pressed reflects
-  //     the active mode).
-  //   • The input has a sibling suggestion dropdown (.dj-genre-suggest)
-  //     populated from the cached library-genres list. Free-text adds
-  //     are allowed (Enter / comma commits whatever's typed, even if
-  //     it's not in the dropdown) so the user can target a scanner-
-  //     produced typo'd genre name.
-  //
-  // Empty-library / error states disable the toggle + mode buttons +
-  // input. The hint text below the label swaps to the appropriate
-  // explanation. genresListLoadState (auth / error / ready) and
-  // cachedGenresList.length are the two inputs driving the state.
-  const genreTagsHtml = AUTODJ.state.djGenres.map(g => `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-    </span>
-  `).join('');
-  const genreFilterDisabled = (genresListLoadState !== 'ready') || (cachedGenresList.length === 0);
-  const genreInputDisabled = genreFilterDisabled || !AUTODJ.state.djGenreEnabled;
-  let genreHintKey = 'autoDJ.genreFilterHint';
-  if (genresListLoadState === 'auth')         { genreHintKey = 'autoDJ.genreHintAuth'; }
-  else if (genresListLoadState === 'error')   { genreHintKey = 'autoDJ.genreHintError'; }
-  else if (cachedGenresList.length === 0)     { genreHintKey = 'autoDJ.genreHintEmpty'; }
-  const genreMode = AUTODJ.state.djGenreMode;
-  const genreFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-genre-label">${t('autoDJ.genreFilterLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-genre-hint">${t(genreHintKey)}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-genre-on" aria-labelledby="dj-genre-label" ${AUTODJ.state.djGenreEnabled ? 'checked' : ''} ${genreFilterDisabled ? 'disabled' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.genreModeLabel'))}">
-        <button type="button" class="dj-genre-mode-btn" data-mode="whitelist" aria-pressed="${genreMode === 'whitelist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeWhitelist')}</button>
-        <button type="button" class="dj-genre-mode-btn" data-mode="blacklist" aria-pressed="${genreMode === 'blacklist'}" ${genreFilterDisabled ? 'disabled' : ''}>${t('autoDJ.genreModeBlacklist')}</button>
-      </div>
-      <div class="dj-filter-tags" id="dj-genre-tags" role="list" aria-label="${escapeHtml(t('autoDJ.genreTagsLabel'))}">${genreTagsHtml}</div>
-      <div class="dj-genre-combo">
-        <input
-          type="text"
-          class="dj-filter-input"
-          id="dj-genre-input"
-          placeholder="${escapeHtml(t('autoDJ.genrePlaceholder'))}"
-          ${genreInputDisabled ? 'disabled' : ''}
-          autocomplete="off"
-          aria-autocomplete="list"
-          aria-controls="dj-genre-suggest"
-          aria-label="${escapeHtml(t('autoDJ.genreInputLabel'))}">
-        <div class="dj-genre-suggest" id="dj-genre-suggest" role="listbox" hidden></div>
-      </div>
-    </div>`;
-
-  // ── Track-length window ────────────────────────────────────────
-  //
-  // Toggle + two bounds + an unknown-length switch. AUTODJ stores
-  // SECONDS (wire units); the inputs are MINUTES because that's how
-  // people think about track length, and the handlers convert at the
-  // edge (Math.round(minutes * 60), so 0.5 → 30s).
-  //
-  // `step="any"` rather than a fixed grid: the conversion accepts any
-  // decimal, so a grid would mark perfectly valid entries like 1.25 or
-  // 0.1 as :invalid — asserting a constraint the code doesn't have,
-  // and one that would start rendering as an error the moment anything
-  // styles :invalid. The spinner arrows are hidden in CSS, so there is
-  // no stepping affordance a grid would serve anyway.
-  //
-  // An empty / 0 field means "no bound on this side", so a user can
-  // set only a floor or only a ceiling. Both empty is a no-op even
-  // with the toggle on — same "toggled on but nothing entered yet"
-  // grace the keyword and genre filters give.
-  //
-  // The unknown-length switch maps to the server's
-  // allowUnknownDuration. Default off = tracks the scanner never read
-  // a length from are excluded, which is the strict reading of the
-  // window; on = they ride along. Worth surfacing because a partially
-  // scanned library can otherwise lose far more of the pool than the
-  // user expects.
-  //
-  // It reuses the panel-wide `.toggle-sw` switch (text left, control
-  // right) rather than a native checkbox: every other on/off control
-  // in this panel is that switch, and .toggle-sw already carries the
-  // Materialize suppression a bare checkbox would need to re-solve.
-  // Like the other .toggle-sw rows the caption is a sibling div, not
-  // a wrapping <label>, so the input gets aria-labelledby.
-  const _secToMin = (s) => {
-    const n = Number(s);
-    if (!Number.isFinite(n) || n <= 0) { return ''; }
-    // Trim the float tail: 150s → 2.5, 120s → 2 (not 2.0).
-    return String(Math.round((n / 60) * 100) / 100);
-  };
-  // Mood — the browse lists' segments and chips (moodPanelHtml), kept as
-  // AUTODJ.state.djMoods. Only where the server can filter by mood (the
-  // ping's `moodFilters`): the route refuses the key otherwise.
-  const moodFilterRow = MSTREAMAPI.currentServer.moodFilters === true ? `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div class="autodj-opt-label" id="dj-mood-label">${t('autoDJ.moodFilterLabel')}</div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-mood-on" aria-labelledby="dj-mood-label" ${AUTODJ.state.djMoodEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-moods" id="dj-moods">${moodPanelHtml('autodj', { ...AUTODJ.state.djMoods, level: AUTODJ.state.djMoodLevel })}</div>
-    </div>` : '';
-
-  const durationOn = AUTODJ.state.djDurationEnabled;
-  const durationFilterRow = `
-    <div class="autodj-opt-row autodj-opt-col">
-      <div class="dj-filter-head">
-        <div>
-          <div class="autodj-opt-label" id="dj-duration-label">${t('autoDJ.durationFilterLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.durationFilterHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-duration-on" aria-labelledby="dj-duration-label" ${durationOn ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-      <div class="dj-duration-inputs">
-        <label class="dj-duration-field">
-          <span class="dj-duration-field-label">${t('autoDJ.durationMinLabel')}</span>
-          <input
-            type="number"
-            class="dj-filter-input dj-duration-num"
-            id="dj-duration-min"
-            min="0" max="1440" step="any"
-            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
-            value="${escapeHtml(_secToMin(AUTODJ.state.djMinDuration))}"
-            ${durationOn ? '' : 'disabled'}
-            aria-label="${escapeHtml(t('autoDJ.durationMinInputLabel'))}">
-        </label>
-        <label class="dj-duration-field">
-          <span class="dj-duration-field-label">${t('autoDJ.durationMaxLabel')}</span>
-          <input
-            type="number"
-            class="dj-filter-input dj-duration-num"
-            id="dj-duration-max"
-            min="0" max="1440" step="any"
-            placeholder="${escapeHtml(t('autoDJ.durationNoLimit'))}"
-            value="${escapeHtml(_secToMin(AUTODJ.state.djMaxDuration))}"
-            ${durationOn ? '' : 'disabled'}
-            aria-label="${escapeHtml(t('autoDJ.durationMaxInputLabel'))}">
-        </label>
-      </div>
-      <div class="dj-duration-unknown">
-        <div>
-          <div class="dj-duration-unknown-label" id="dj-duration-unknown-label">${t('autoDJ.durationUnknownLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.durationUnknownHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-duration-unknown" aria-labelledby="dj-duration-unknown-label" ${AUTODJ.state.djAllowUnknownDuration ? 'checked' : ''} ${durationOn ? '' : 'disabled'}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>
-    </div>`;
-
-  // ── Sonic similarity (discovery embeddings) ─────────────────────
-  //
-  // Server capability comes from the ping response (same flag that
-  // gates the Discover panel). When absent the section renders
-  // disabled with an explanatory hint — same treatment as the
-  // similar-artists row without a Last.fm key.
-  //
-  // The slider stores the RAW cosine threshold (0.30–0.90); the hint
-  // translates it to a perceptual word + percentage so users don't
-  // need to know what cosine similarity is.
-  const discoveryAvailable = MSTREAMAPI.currentServer.discovery === true;
-  const sonicOn = AUTODJ.state.sonicEnabled && discoveryAvailable;
-  const sonicSeed = AUTODJ.getSonicSeed();
-  const anchorMode = AUTODJ.state.sonicAnchorMode;
-  function _sonicSimHint(cos) {
-    const pct = Math.round(cos * 100);
-    let word = t('autoDJ.sonicSimLockedIn');
-    if (cos < 0.45)      { word = t('autoDJ.sonicSimAdventurous'); }
-    else if (cos < 0.6)  { word = t('autoDJ.sonicSimBalanced'); }
-    else if (cos < 0.75) { word = t('autoDJ.sonicSimFocused'); }
-    return t('autoDJ.sonicSimValue', { word, pct });
-  }
-  const sonicSeedChip = sonicSeed ? `
-    <span class="dj-filter-tag" role="listitem">
-      ${escapeHtml(sonicSeed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
-    </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
-  const sonicBlock = `
-    <h4 class="autodj-section-heading">${t('autoDJ.sectionSonic')}</h4>
-    <div class="autodj-opt-row${discoveryAvailable ? '' : ' autodj-opt-disabled'}">
-      <div>
-        <div class="autodj-opt-label" id="dj-sonic-label">${t('autoDJ.sonicLabel')}</div>
-        <div class="autodj-opt-hint">${discoveryAvailable ? t('autoDJ.sonicHint') : '<em>' + t('autoDJ.sonicHintNoDiscovery') + '</em>'}</div>
-      </div>
-      <label class="toggle-sw">
-        <input type="checkbox" id="dj-sonic-on" aria-labelledby="dj-sonic-label" ${sonicOn ? 'checked' : ''} ${discoveryAvailable ? '' : 'disabled'}>
-        <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-      </label>
-    </div>
-    <div id="dj-sonic-opts" style="${sonicOn ? '' : 'display:none'}">
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label" id="dj-sonic-sim-label">${t('autoDJ.sonicSimilarityLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-sonic-sim-val">${_sonicSimHint(AUTODJ.state.sonicMinSimilarity)}</div>
-        </div>
-        <input type="range" id="dj-sonic-sim" class="autodj-slider" min="30" max="90" step="1" value="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}" aria-labelledby="dj-sonic-sim-label" aria-valuemin="30" aria-valuemax="90" aria-valuenow="${Math.round(AUTODJ.state.sonicMinSimilarity * 100)}">
-      </div>
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label">${t('autoDJ.sonicAnchorLabel')}</div>
-          <div class="autodj-opt-hint" id="dj-sonic-anchor-hint">${t(anchorMode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint')}</div>
-        </div>
-        <div class="dj-genre-mode" role="radiogroup" aria-label="${escapeHtml(t('autoDJ.sonicAnchorLabel'))}">
-          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="rolling" aria-pressed="${anchorMode === 'rolling'}">${t('autoDJ.sonicAnchorRolling')}</button>
-          <button type="button" class="dj-genre-mode-btn dj-sonic-anchor-btn" data-anchor="locked" aria-pressed="${anchorMode === 'locked'}">${t('autoDJ.sonicAnchorLocked')}</button>
-        </div>
-      </div>
-      ${MSTREAMAPI.currentServer.federationBrowse === true ? `
-      <div class="autodj-opt-row">
-        <div>
-          <div class="autodj-opt-label" id="dj-federated-label">${t('autoDJ.federatedLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.federatedHint')}</div>
-        </div>
-        <label class="toggle-sw">
-          <input type="checkbox" id="dj-federated-on" aria-labelledby="dj-federated-label" ${AUTODJ.state.federatedEnabled ? 'checked' : ''}>
-          <span class="toggle-sw-track"><span class="toggle-sw-thumb"></span></span>
-        </label>
-      </div>` : ''}
-      <div class="autodj-opt-row autodj-opt-col">
-        <div>
-          <div class="autodj-opt-label">${t('autoDJ.sonicSeedLabel')}</div>
-          <div class="autodj-opt-hint">${t('autoDJ.sonicSeedHint')}</div>
-        </div>
-        <div class="dj-filter-tags" id="dj-sonic-seed-tag" role="list" aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">${sonicSeedChip}</div>
-        <div class="dj-genre-combo">
-          <input
-            type="text"
-            class="dj-filter-input"
-            id="dj-sonic-seed-input"
-            placeholder="${escapeHtml(t('autoDJ.sonicSeedPlaceholder'))}"
-            autocomplete="off"
-            aria-autocomplete="list"
-            aria-controls="dj-sonic-seed-suggest"
-            aria-label="${escapeHtml(t('autoDJ.sonicSeedLabel'))}">
-          <div class="dj-genre-suggest" id="dj-sonic-seed-suggest" role="listbox" hidden></div>
-        </div>
-      </div>
-    </div>`;
-
-  const html = `
-    <div class="pad-6 autodj-root">
-      <div class="autodj-hero">
-        <h2>${t('panel.autoDJ')}</h2>
-        <p class="autodj-hero-desc">${t('autoDJ.heroDescription')}</p>
-      </div>
-
-      <button type="button" class="autodj-toggle${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-main-btn">
-        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.btnStop') : t('autoDJ.btnStart')}
-      </button>
-      <div class="autodj-status${MSTREAMPLAYER.playerStats.autoDJ ? ' on' : ''}" id="autodj-status-msg">
-        ${MSTREAMPLAYER.playerStats.autoDJ ? t('autoDJ.statusOn') : t('autoDJ.statusOff')}
-      </div>
-
-      <div class="autodj-opts">
-        ${sourcesBlock}
-
-        <div class="autodj-opt-row">
-          <div class="autodj-opt-label">${t('autoDJ.minRating')}</div>
-          <!-- .browser-default opts out of Materialize's select-replacement
-               wrapper so we can style the native control directly. -->
-          <select class="autodj-select browser-default" id="dj-min-rating">${ratingOptions}</select>
-        </div>
-
-        <div class="autodj-opt-row">
-          <div>
-            <div class="autodj-opt-label" id="dj-limit-label">${t('autoDJ.limitLabel')}</div>
-            <div class="autodj-opt-hint">${t('autoDJ.limitHint', { max: AUTODJ.LIMIT_MAX })}</div>
-          </div>
-          <input
-            type="number"
-            class="autodj-select browser-default dj-limit-num"
-            id="dj-limit"
-            min="1" max="${AUTODJ.LIMIT_MAX}" step="1" inputmode="numeric"
-            value="${AUTODJ.state.djLimit}"
-            aria-labelledby="dj-limit-label">
-        </div>
-
-        <h4 class="autodj-section-heading">${t('autoDJ.sectionContinuity')}</h4>
-        ${similarRow}
-        ${bpmContinuityRow}
-        ${bpmToleranceRow}
-        ${harmonicRow}
-
-        ${sonicBlock}
-
-        <h4 class="autodj-section-heading">${t('autoDJ.sectionFilters')}</h4>
-        ${keywordFilterRow}
-        ${genreFilterRow}
-        ${moodFilterRow}
-        ${durationFilterRow}
-      </div>
-    </div>`;
-
-  document.getElementById('filelist').innerHTML = html;
-
-  // ── Wire event handlers (post-innerHTML attach) ─────────────────
-
-  // Start/stop button — delegates to the existing player module.
+  // Start/Stop — the player toggles; the label follows in place (the
+  // player's 'dj' event below says so too, for the player bar's toggle).
   document.getElementById('autodj-main-btn').onclick = () => {
     MSTREAMPLAYER.toggleAutoDJ();
-    // Re-render so the button label + status text flip immediately.
-    autoDjPanel();
+    autoDjRenderToggle();
   };
 
   // Vpath pills — click to toggle inclusion.
@@ -6827,8 +9130,8 @@ async function autoDjPanel() {
       } else {
         current.add(vpath);
       }
-      // Disallow deselecting every vpath — matches the previous panel
-      // behaviour. Re-add the just-removed one with a toast.
+      // Disallow deselecting every vpath — re-add the just-removed one
+      // with a toast.
       if (current.size === 0) {
         current.add(vpath);
         iziToast.warning({
@@ -6843,466 +9146,33 @@ async function autoDjPanel() {
       const next = current.size === allVpaths.length ? [] : [...current];
       AUTODJ.setState({ djVpaths: next });
       _syncVpathsToLegacy();
-      // Visual update without full re-render — flip the class on
-      // the clicked pill AND its aria-pressed attribute (screen
-      // readers depend on the latter to announce the new state).
+      // Flip the class AND aria-pressed in place (screen readers depend
+      // on the latter to announce the new state).
       btn.classList.toggle('on');
       btn.setAttribute('aria-pressed', current.has(vpath) ? 'true' : 'false');
     }, { signal: _autoDjPanelSignal });
   }
 
-  // Min-rating select.
+  // Rating.
   document.getElementById('dj-min-rating').onchange = (e) => {
     const val = Math.max(0, Math.min(10, parseInt(e.target.value, 10)));
     AUTODJ.setState({ djMinRating: val });
   };
 
-  // Songs per fetch. `change` (blur / Enter), not `input`, so "12" isn't
-  // clamped the moment the user types "1". AUTODJ owns the integer +
-  // range rule and hands back what it stored, which is written into the
-  // field so it always shows what the next request will send.
+  // Batch. `change` (blur / Enter), not `input`, so "12" isn't clamped the
+  // moment the user types "1". AUTODJ owns the integer + range rule and
+  // hands back what it stored, which is written into the field so it
+  // always shows what the next request will send.
   const limitEl = document.getElementById('dj-limit');
   limitEl.onchange = () => { limitEl.value = AUTODJ.setLimit(limitEl.value); };
 
-  // Similar-artists toggle (no-op while disabled, but the event still
-  // fires on label-click in some browsers).
-  const simEl = document.getElementById('dj-similar');
-  if (simEl && !simEl.disabled) {
-    simEl.onchange = (e) => {
-      AUTODJ.setState({ similar: !!e.target.checked });
-    };
-  }
-
-  // BPM continuity toggle. Show/hide the tolerance row reactively.
-  // Toggling OFF clears the rolling BPM history — re-enabling should
-  // re-anchor on whatever's playing then, not on stale data from a
-  // previous session segment.
-  document.getElementById('dj-bpm-cont').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ bpmContinuity: on });
-    if (!on) { AUTODJ.clearBpmHistory(); }
-    document.getElementById('dj-bpm-tol-row').style.display = on ? '' : 'none';
-  };
-
-  // BPM tolerance slider — update the displayed value AND persist.
-  // Sync aria-valuenow so screen readers announce the current
-  // tolerance as the user drags.
-  const tolEl = document.getElementById('dj-bpm-tol');
-  tolEl.oninput = (e) => {
-    const val = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
-    AUTODJ.setState({ bpmTolerance: val });
-    document.getElementById('dj-bpm-tol-val').textContent =
-      t('autoDJ.bpmToleranceValue', { n: val });
-    e.target.setAttribute('aria-valuenow', String(val));
-  };
-
-  // Harmonic mixing toggle. Same anchor-reset semantics as BPM
-  // continuity: turning OFF clears the locked Camelot anchor so the
-  // next ON-cycle re-locks on the current song.
-  document.getElementById('dj-harmonic').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ harmonicMixing: on });
-    if (!on) { AUTODJ.clearCamelotAnchor(); }
-  };
-
-  // ── Sonic similarity ───────────────────────────────────────────
-  //
-  // Toggle shows/hides the sub-options and clears the per-session
-  // anchors on OFF (same semantics as BPM/harmonic: re-enabling
-  // should re-anchor on whatever's playing then). The explicit seed
-  // survives the toggle.
-  const sonicOnEl = document.getElementById('dj-sonic-on');
-  if (sonicOnEl && !sonicOnEl.disabled) {
-    sonicOnEl.onchange = (e) => {
-      const on = !!e.target.checked;
-      AUTODJ.setState({ sonicEnabled: on });
-      if (!on) { AUTODJ.clearSonicAnchors(); }
-      document.getElementById('dj-sonic-opts').style.display = on ? '' : 'none';
-    };
-  }
-
-  // Similarity slider — stores the raw cosine; hint shows the
-  // perceptual word + percentage.
-  const sonicSimEl = document.getElementById('dj-sonic-sim');
-  if (sonicSimEl) {
-    sonicSimEl.oninput = (e) => {
-      const val = Math.max(30, Math.min(90, parseInt(e.target.value, 10))) / 100;
-      AUTODJ.setState({ sonicMinSimilarity: val });
-      document.getElementById('dj-sonic-sim-val').textContent = _sonicSimHint(val);
-      e.target.setAttribute('aria-valuenow', String(Math.round(val * 100)));
-    };
-  }
-
-  // Anchor mode segmented control. Switching modes drops the pinned
-  // locked-anchor so 'locked' re-pins fresh on the next pick.
-  document.querySelectorAll('.dj-sonic-anchor-btn').forEach((btn) => {
-    btn.onclick = () => {
-      const mode = btn.dataset.anchor;
-      AUTODJ.setState({ sonicAnchorMode: mode, sonicLockedAnchor: null });
-      document.querySelectorAll('.dj-sonic-anchor-btn').forEach((b) => {
-        b.setAttribute('aria-pressed', b.dataset.anchor === mode ? 'true' : 'false');
-      });
-      document.getElementById('dj-sonic-anchor-hint').textContent =
-        t(mode === 'locked' ? 'autoDJ.sonicAnchorLockedHint' : 'autoDJ.sonicAnchorRollingHint');
-    };
-  });
-
-  // Federated session toggle — present only when the server advertises
-  // federationBrowse (rendered inside the sonic block, so it is already
-  // gated on sonic being on). A pure preference: the player decides per
-  // pick whether a cross-server pick can actually run.
-  const fedOnEl = document.getElementById('dj-federated-on');
-  if (fedOnEl) {
-    fedOnEl.onchange = (e) => { AUTODJ.setState({ federatedEnabled: !!e.target.checked }); };
-  }
-
-  // Seed picker — title search against /api/v1/db/search (titles
-  // only), debounced; picking a result stores the seed and, if
-  // Auto-DJ is already running against an empty queue (the "enabled
-  // sonic on an empty queue" flow), kicks the stalled session into
-  // its first pick.
-  const sonicSeedTagEl = document.getElementById('dj-sonic-seed-tag');
-  const sonicSeedInpEl = document.getElementById('dj-sonic-seed-input');
-  const sonicSeedSugEl = document.getElementById('dj-sonic-seed-suggest');
-  function _renderSonicSeedChip() {
-    const seed = AUTODJ.getSonicSeed();
-    sonicSeedTagEl.innerHTML = seed ? `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(seed.title)}<button type="button" class="dj-filter-tag-rm" id="dj-sonic-seed-rm" aria-label="${escapeHtml(t('autoDJ.sonicSeedRemove'))}">×</button>
-      </span>` : `<span class="autodj-opt-hint">${t('autoDJ.sonicSeedNone')}</span>`;
-  }
-  // Chip remove — delegated so the re-rendered chip stays wired.
-  if (sonicSeedTagEl) {
-    sonicSeedTagEl.addEventListener('click', (e) => {
-      if (e.target.closest('#dj-sonic-seed-rm')) {
-        AUTODJ.clearSonicSeed();
-        _renderSonicSeedChip();
-      }
-    }, { signal: _autoDjPanelSignal });
-  }
-  let _sonicSeedDebounce = null;
-  if (sonicSeedInpEl) {
-    sonicSeedInpEl.addEventListener('input', () => {
-      clearTimeout(_sonicSeedDebounce);
-      const q = sonicSeedInpEl.value.trim();
-      if (q.length < 2) { sonicSeedSugEl.hidden = true; return; }
-      _sonicSeedDebounce = setTimeout(async () => {
-        let hits = [];
-        try {
-          const res = await MSTREAMAPI.search({
-            search: q, noArtists: true, noAlbums: true, noFiles: true, noLyrics: true,
-          });
-          hits = (res.title || []).slice(0, 8);
-        } catch (err) {
-          console.error('sonic seed search failed', err);
-        }
-        if (hits.length === 0) { sonicSeedSugEl.hidden = true; return; }
-        sonicSeedSugEl.innerHTML = hits.map(h => `
-          <div class="dj-genre-suggest-row" role="option"
-               data-filepath="${escapeHtml(h.filepath)}"
-               data-title="${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? escapeHtml(' — ' + h.metadata.artist) : ''}">
-            ${escapeHtml(h.name)}${h.metadata && h.metadata.artist ? ` <small>${escapeHtml(h.metadata.artist)}</small>` : ''}
-          </div>`).join('');
-        sonicSeedSugEl.hidden = false;
-      }, 300);
-    }, { signal: _autoDjPanelSignal });
-    sonicSeedInpEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') { sonicSeedSugEl.hidden = true; }
-    }, { signal: _autoDjPanelSignal });
-  }
-  if (sonicSeedSugEl) {
-    sonicSeedSugEl.addEventListener('click', (e) => {
-      const item = e.target.closest('.dj-genre-suggest-row');
-      if (!item) { return; }
-      AUTODJ.setSonicSeed(item.dataset.filepath, item.dataset.title);
-      _renderSonicSeedChip();
-      sonicSeedInpEl.value = '';
-      sonicSeedSugEl.hidden = true;
-      // The "enabled Auto-DJ on an empty queue" flow ends here: the
-      // seed just arrived, so nudge the stalled session into picking.
-      MSTREAMPLAYER.autoDjKick();
-    }, { signal: _autoDjPanelSignal });
-  }
-
-  // ── Keyword filter ─────────────────────────────────────────────
-  //
-  // Re-renders ONLY the tag chip list so the user's typed-but-
-  // unsubmitted input stays in the field. Full panel re-render
-  // would also lose focus, which is jarring when the user is
-  // adding multiple words in a row.
-  const filterTagsEl = document.getElementById('dj-filter-tags');
-  const filterInpEl  = document.getElementById('dj-filter-input');
-  function _renderFilterTags() {
-    const words = AUTODJ.getFilterWords();
-    filterTagsEl.innerHTML = words.map(w => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(w)}<button type="button" class="dj-filter-tag-rm" data-word="${escapeHtml(w)}" aria-label="${escapeHtml(t('autoDJ.keywordFilterTagRemove', { word: w }))}">×</button>
-      </span>
-    `).join('');
-  }
-
-  // Toggle controls just the filter on/off; the word list survives
-  // toggling so the user can keep their list and flip the feature
-  // on/off without rebuilding.
-  document.getElementById('dj-filter-on').onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ djFilterEnabled: on });
-    filterInpEl.disabled = !on;
-  };
-
-  // Enter OR comma commits the typed word. Comma lets users paste a
-  // CSV-shaped list and have each piece chip-ify as they go.
-  filterInpEl.onkeydown = (e) => {
-    if (e.key !== 'Enter' && e.key !== ',') { return; }
-    e.preventDefault();
-    const raw = filterInpEl.value;
-    const added = AUTODJ.addFilterWord(raw);
-    if (added) {
-      filterInpEl.value = '';
-      _renderFilterTags();
-    }
-    // On dup / empty / cap-hit, leave the input alone so the user
-    // can edit and retry. No toast — the silent no-op matches
-    // velvet's behaviour and avoids spam on rapid-fire input.
-  };
-
-  // Event-delegation on the chip container so we don't have to re-
-  // bind individual × buttons after each re-render.
-  filterTagsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dj-filter-tag-rm');
-    if (!btn) { return; }
-    AUTODJ.removeFilterWord(btn.dataset.word);
-    _renderFilterTags();
-  }, { signal: _autoDjPanelSignal });
-
-  // ── Genre filter ───────────────────────────────────────────────
-  //
-  // Three pieces of state, three handlers + a fourth handler for the
-  // suggestion dropdown:
-  //
-  //   • Toggle (#dj-genre-on)   — onchange flips djGenreEnabled, also
-  //                               toggles input + suggestion enablement.
-  //   • Mode buttons (.dj-genre-mode-btn) — click flips
-  //                               aria-pressed on both buttons + writes
-  //                               djGenreMode via AUTODJ.setGenreMode.
-  //   • Input (#dj-genre-input) — input event filters the suggestion
-  //                               dropdown; keydown handles Enter /
-  //                               Comma / Esc / Arrow keys.
-  //   • Chips (#dj-genre-tags)  — same event-delegated × pattern as
-  //                               the keyword filter.
-  const genreTagsEl  = document.getElementById('dj-genre-tags');
-  const genreInpEl   = document.getElementById('dj-genre-input');
-  const genreOnEl    = document.getElementById('dj-genre-on');
-  const genreSuggEl  = document.getElementById('dj-genre-suggest');
-  const genreModeBtns = document.querySelectorAll('.dj-genre-mode-btn');
-
-  // Re-render the chip list only (same surgical-update rationale as
-  // _renderFilterTags). Also reused after the suggestion dropdown's
-  // "click to add" handler.
-  function _renderGenreTags() {
-    const gs = AUTODJ.getGenres();
-    genreTagsEl.innerHTML = gs.map(g => `
-      <span class="dj-filter-tag" role="listitem">
-        ${escapeHtml(g)}<button type="button" class="dj-filter-tag-rm" data-genre="${escapeHtml(g)}" aria-label="${escapeHtml(t('autoDJ.genreTagRemove', { genre: g }))}">×</button>
-      </span>
-    `).join('');
-  }
-
-  // Render the suggestion dropdown. Filters the cached genres list
-  // case-insensitively by the input's current value; excludes genres
-  // already in the user's list; caps at 50 visible rows with a
-  // "+N more" footer so the dropdown never grows unwieldy on huge
-  // libraries.
-  const SUGGEST_VISIBLE_LIMIT = 50;
-  function _renderGenreSuggest() {
-    if (!genreSuggEl || !genreInpEl) { return; }
-    // Read live DOM state, not the closure variable. `genreInputDisabled`
-    // was captured at panel-render time as `!djGenreEnabled` — when the
-    // user later flipped the toggle ON, the toggle handler enabled the
-    // input element but the closure stayed stale at `true`, so this
-    // function early-returned and the dropdown never showed. Reading
-    // `genreInpEl.disabled` reflects the live state the toggle handler
-    // mutates, so a typed character after toggle-on now surfaces matches.
-    if (genreInpEl.disabled) {
-      genreSuggEl.setAttribute('hidden', '');
-      return;
-    }
-    const q = String(genreInpEl.value || '').trim().toLowerCase();
-    if (!q) {
-      genreSuggEl.setAttribute('hidden', '');
-      genreSuggEl.innerHTML = '';
-      return;
-    }
-    const selected = new Set(AUTODJ.getGenres().map(g => g.toLowerCase()));
-    const matches = cachedGenresList
-      .filter(g => g.toLowerCase().includes(q) && !selected.has(g.toLowerCase()));
-    if (matches.length === 0) {
-      genreSuggEl.innerHTML = `<div class="dj-genre-suggest-empty">${t('autoDJ.genreNoMatchesHint')}</div>`;
-      genreSuggEl.removeAttribute('hidden');
-      return;
-    }
-    const visible = matches.slice(0, SUGGEST_VISIBLE_LIMIT);
-    const extra   = matches.length - visible.length;
-    genreSuggEl.innerHTML = visible.map((g, i) => `
-      <div class="dj-genre-suggest-row" role="option" data-genre="${escapeHtml(g)}" id="dj-genre-suggest-row-${i}">${escapeHtml(g)}</div>
-    `).join('') + (extra > 0
-      ? `<div class="dj-genre-suggest-more">${t('autoDJ.genreMoreSuggestions', { n: extra })}</div>`
-      : '');
-    genreSuggEl.removeAttribute('hidden');
-  }
-
-  // Outer toggle: flips djGenreEnabled. The toggle itself may be
-  // disabled (no library genres / auth error / load error) — in
-  // those states this handler doesn't fire.
-  if (genreOnEl) {
-    genreOnEl.onchange = (e) => {
-      const on = !!e.target.checked;
-      AUTODJ.setState({ djGenreEnabled: on });
-      // Input + suggestion enablement tracks the toggle.
-      if (genreInpEl) {
-        genreInpEl.disabled = !on;
-      }
-      if (!on && genreSuggEl) {
-        genreSuggEl.setAttribute('hidden', '');
-      }
-    };
-  }
-
-  // Mode buttons: click flips djGenreMode and updates aria-pressed
-  // on both buttons. Disabled state inherited from the disabled
-  // attribute on the buttons themselves (set in markup).
-  genreModeBtns.forEach((btn) => {
-    btn.onclick = () => {
-      if (btn.disabled) { return; }
-      const mode = btn.dataset.mode;
-      if (!AUTODJ.setGenreMode(mode)) { return; }
-      genreModeBtns.forEach((b) => {
-        b.setAttribute('aria-pressed', b.dataset.mode === mode ? 'true' : 'false');
-      });
-    };
-  });
-
-  if (genreInpEl) {
-    // Filter the dropdown on each keystroke.
-    genreInpEl.oninput = () => { _renderGenreSuggest(); };
-
-    // Enter / comma commit; Esc closes the dropdown; Tab / blur lets
-    // the browser handle focus normally. Up/Down arrow navigation
-    // through the dropdown isn't wired here — keeping the keyboard
-    // surface minimal to match the keyword filter's UX. (Future
-    // enhancement: aria-activedescendant + ↑/↓ if usability feedback
-    // asks for it.)
-    genreInpEl.onkeydown = (e) => {
-      if (e.key === 'Escape') {
-        if (genreSuggEl) { genreSuggEl.setAttribute('hidden', ''); }
-        return;
-      }
-      if (e.key !== 'Enter' && e.key !== ',') { return; }
-      e.preventDefault();
-      const raw = genreInpEl.value;
-      const added = AUTODJ.addGenre(raw);
-      if (added) {
-        genreInpEl.value = '';
-        _renderGenreTags();
-        _renderGenreSuggest();
-      }
-      // Silent no-op on dup / empty / cap-hit — same UX as keyword.
-    };
-
-    // Click on a suggestion row → add it.
-    if (genreSuggEl) {
-      genreSuggEl.addEventListener('mousedown', (e) => {
-        // Use mousedown not click so the blur handler doesn't fire
-        // first (the suggestion dropdown disappears on blur otherwise
-        // and the click never lands).
-        const row = e.target.closest('.dj-genre-suggest-row');
-        if (!row) { return; }
-        e.preventDefault();
-        AUTODJ.addGenre(row.dataset.genre);
-        genreInpEl.value = '';
-        _renderGenreTags();
-        _renderGenreSuggest();
-        genreInpEl.focus();
-      }, { signal: _autoDjPanelSignal });
-      // Blur the input → hide the dropdown. 150ms grace lets the
-      // mousedown handler above fire before the dropdown vanishes.
-      genreInpEl.onblur = () => {
-        setTimeout(() => { genreSuggEl.setAttribute('hidden', ''); }, 150);
-      };
-    }
-  }
-
-  // Chip remove — event-delegated, same pattern as keyword.
-  genreTagsEl.addEventListener('click', (e) => {
-    const btn = e.target.closest('.dj-filter-tag-rm');
-    if (!btn) { return; }
-    AUTODJ.removeGenre(btn.dataset.genre);
-    _renderGenreTags();
-  }, { signal: _autoDjPanelSignal });
-
-  // ── Track-length window ────────────────────────────────────────
-  //
-  // Four controls. The inputs are MINUTES and AUTODJ stores SECONDS,
-  // so this layer converts and AUTODJ.setDurationBounds does the
-  // clamping + backwards-window repair (it owns those rules so they
-  // hold for any caller, not just this panel).
-  const durOnEl      = document.getElementById('dj-duration-on');
-  const durMinEl     = document.getElementById('dj-duration-min');
-  const durMaxEl     = document.getElementById('dj-duration-max');
-  const durUnknownEl = document.getElementById('dj-duration-unknown');
-
-  // Minutes (as typed) → seconds. A blank field gives Number('') === 0,
-  // which is exactly the "no bound on this side" sentinel; the guard
-  // makes that intentional rather than incidental and also absorbs a
-  // typed '-' or 'e'.
-  function _minutesToSeconds(raw) {
-    const mins = Number(raw);
-    if (!Number.isFinite(mins) || mins <= 0) { return 0; }
-    return Math.round(mins * 60);
-  }
-
-  // `edited` names the side the user just changed — setDurationBounds
-  // keeps that one and pushes the other, so the repair never fights
-  // the field being typed in. Persisted values are written back so the
-  // inputs always show what the next request will actually send.
-  function _commitDuration(edited) {
-    const { min, max } = AUTODJ.setDurationBounds(
-      _minutesToSeconds(durMinEl.value),
-      _minutesToSeconds(durMaxEl.value),
-      edited === 'max' ? 'max' : 'min',
-    );
-    durMinEl.value = _secToMin(min);
-    durMaxEl.value = _secToMin(max);
-  }
-
-  // Toggle gates the three inputs. The bounds survive toggling so the
-  // user can flip the feature off and back on without re-entering
-  // them — same contract the keyword and genre filters give.
-  durOnEl.onchange = (e) => {
-    const on = !!e.target.checked;
-    AUTODJ.setState({ djDurationEnabled: on });
-    durMinEl.disabled = !on;
-    durMaxEl.disabled = !on;
-    durUnknownEl.disabled = !on;
-  };
-
-  // `change` (not `input`) so the commit fires on blur / Enter rather
-  // than mid-typing — otherwise "12" would clamp-and-rewrite the
-  // moment the user typed "1".
-  durMinEl.onchange = () => { _commitDuration('min'); };
-  durMaxEl.onchange = () => { _commitDuration('max'); };
-
-  durUnknownEl.onchange = (e) => {
-    AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
-  };
-
-  // ── Mood ───────────────────────────────────────────────────────
+  // ── Smart filters ──────────────────────────────────────────────
   //
   // The buttons carry no handlers (moodPanelHtml's Auto DJ form): one
-  // listener on the row reads the pressed button and stores the new
-  // filter, then the pressed states change in place so the focused
-  // button keeps focus. The toggle gates the buttons; the filter
-  // survives toggling, like the genre list.
+  // listener on the editor reads the pressed button and stores the new
+  // filter, then the pressed states change in place so the focused button
+  // keeps focus. The switch shows and hides the editor; the filter
+  // survives it.
   const moodOnEl = document.getElementById('dj-mood-on');
   const moodBox = document.getElementById('dj-moods');
   if (moodOnEl && moodBox) {
@@ -7318,12 +9188,11 @@ async function autoDjPanel() {
         b.setAttribute('aria-pressed', String(AUTODJ.state.djMoodLevel === b.getAttribute('data-mood-level')));
       });
       moodBox.querySelector('.mood-clear')?.classList.toggle('super-hide', AUTODJ.cleanMoods(f) === null);
-      moodBox.querySelectorAll('button').forEach((b) => { b.disabled = !AUTODJ.state.djMoodEnabled; });
     };
-    syncMoods();
     moodOnEl.onchange = (e) => {
-      AUTODJ.setState({ djMoodEnabled: !!e.target.checked });
-      syncMoods();
+      const on = !!e.target.checked;
+      AUTODJ.setState({ djMoodEnabled: on });
+      document.getElementById('dj-mood-editor').hidden = !on;
     };
     moodBox.onclick = (e) => {
       const btn = e.target.closest('button');
@@ -7348,7 +9217,7 @@ async function autoDjPanel() {
       } else if (btn.classList.contains('mood-clear')) {
         AUTODJ.setState({ djMoods: {}, djMoodLevel: 'standard' });
         syncMoods();
-        // Clear hides itself: the keyboard goes back to the toggle.
+        // Clear hides itself: the keyboard goes back to the switch.
         moodOnEl.focus();
         return;
       } else {
@@ -7359,11 +9228,194 @@ async function autoDjPanel() {
     };
   }
 
-  // Initial sync — the `ignoreVPaths` legacy global IS still read by
-  // every browse/search panel in m.js, so we keep it in lockstep with
-  // AUTODJ.state.djVpaths. (The minRating legacy global is dead — see
-  // the comment block above _syncMinRatingToLegacy's removed position.)
+  // ── Genres ─────────────────────────────────────────────────────
+  //
+  // The row opens the Genres drawer (no press while the row is off: the
+  // library's genre list can't load and nothing is chosen).
+  const genresBtn = document.getElementById('dj-genres-btn');
+  genresBtn.onclick = () => {
+    if (genresBtn.disabled) { return; }
+    if (typeof autoDjGenresOpen === 'function') { autoDjGenresOpen(); }
+  };
+
+  // ── Length ─────────────────────────────────────────────────────
+  //
+  // The fields are MINUTES and AUTODJ stores SECONDS, so this layer
+  // converts and AUTODJ.setDurationBounds does the clamping and the
+  // backwards-window repair. The switch shows and hides the editor; the
+  // bounds survive it.
+  const durMinEl = document.getElementById('dj-duration-min');
+  const durMaxEl = document.getElementById('dj-duration-max');
+
+  // Minutes (as typed) → seconds. A blank field gives Number('') === 0,
+  // the "no bound on this side" sentinel; the guard also absorbs a typed
+  // '-' or 'e'.
+  function _minutesToSeconds(raw) {
+    const mins = Number(raw);
+    if (!Number.isFinite(mins) || mins <= 0) { return 0; }
+    return Math.round(mins * 60);
+  }
+
+  // `edited` names the side the user just changed — setDurationBounds
+  // keeps that one and pushes the other. The stored values are written
+  // back so the fields always show what the next request will send.
+  function _commitDuration(edited) {
+    const { min, max } = AUTODJ.setDurationBounds(
+      _minutesToSeconds(durMinEl.value),
+      _minutesToSeconds(durMaxEl.value),
+      edited === 'max' ? 'max' : 'min',
+    );
+    durMinEl.value = autoDjSecToMin(min);
+    durMaxEl.value = autoDjSecToMin(max);
+  }
+
+  document.getElementById('dj-duration-on').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djDurationEnabled: on });
+    document.getElementById('dj-duration-editor').hidden = !on;
+  };
+  // `change` (not `input`) so the commit fires on blur / Enter rather
+  // than mid-typing.
+  durMinEl.onchange = () => { _commitDuration('min'); };
+  durMaxEl.onchange = () => { _commitDuration('max'); };
+  document.getElementById('dj-duration-unknown').onchange = (e) => {
+    AUTODJ.setState({ djAllowUnknownDuration: !!e.target.checked });
+  };
+
+  // ── Skip words ─────────────────────────────────────────────────
+  //
+  // Re-renders ONLY the chips so a typed-but-unsubmitted word stays in the
+  // field. The switch shows and hides the editor; the words survive it.
+  const filterTagsEl = document.getElementById('dj-filter-tags');
+  const filterInpEl = document.getElementById('dj-filter-input');
+  const _renderFilterTags = () => { filterTagsEl.innerHTML = autoDjChipsHtml(AUTODJ.getFilterWords()); };
+  document.getElementById('dj-filter-on').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ djFilterEnabled: on });
+    document.getElementById('dj-filter-editor').hidden = !on;
+  };
+  // Enter OR comma commits the typed word (a pasted CSV-shaped list chip-
+  // ifies as it goes). On dup / empty / cap-hit the field is left alone.
+  filterInpEl.onkeydown = (e) => {
+    if (e.key !== 'Enter' && e.key !== ',') { return; }
+    e.preventDefault();
+    if (AUTODJ.addFilterWord(filterInpEl.value)) {
+      filterInpEl.value = '';
+      _renderFilterTags();
+    }
+  };
+  filterTagsEl.addEventListener('click', (e) => {
+    const btn = e.target.closest('.dj-filter-tag-rm');
+    if (!btn) { return; }
+    AUTODJ.removeFilterWord(btn.dataset.word);
+    _renderFilterTags();
+  }, { signal: _autoDjPanelSignal });
+
+  // ── Match ──────────────────────────────────────────────────────
+
+  // Sonic similarity: its amount line and its sub-items follow the switch
+  // in place. Off stops sending seeds but keeps both seed lists (and every
+  // sub-item's value) as they are.
+  const sonicOnEl = document.getElementById('dj-sonic-on');
+  if (!sonicOnEl.disabled) {
+    sonicOnEl.onchange = (e) => {
+      AUTODJ.setState({ sonicEnabled: !!e.target.checked });
+      autoDjApplySonicDim();
+    };
+  }
+  // The amount: the raw cosine floor, shown and announced as a percentage.
+  document.getElementById('dj-sonic-sim').oninput = (e) => {
+    const pct = Math.max(30, Math.min(90, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ sonicMinSimilarity: pct / 100 });
+    const text = t('autoDJ.sonicAmountValue', { pct });
+    document.getElementById('dj-sonic-sim-val').textContent = text;
+    e.target.setAttribute('aria-valuetext', text);
+  };
+
+  // Learn from skips (a disabled switch fires nothing while it can't work).
+  document.getElementById('dj-skips-on').onchange = (e) => {
+    AUTODJ.setState({ learnFromSkips: !!e.target.checked });
+  };
+
+  // Seeds: the drawer. Disabled (no press) while Sonic similarity is off.
+  const seedsBtn = document.getElementById('dj-seeds-btn');
+  seedsBtn.onclick = () => {
+    if (seedsBtn.disabled) { return; }
+    if (typeof autoDjSeedsOpen === 'function') { autoDjSeedsOpen({}); }
+  };
+
+  // Play from federated servers — only where the ping has
+  // federationBrowse. A pure preference: the player decides per pick
+  // whether a cross-server pick can run.
+  const fedOnEl = document.getElementById('dj-federated-on');
+  if (fedOnEl) {
+    fedOnEl.onchange = (e) => { AUTODJ.setState({ federatedEnabled: !!e.target.checked }); };
+  }
+
+  // Beat matching: its tolerance line follows the switch. Off clears the
+  // rolling BPM history, so turning it back on anchors on the song
+  // playing then, not on stale data.
+  document.getElementById('dj-bpm-cont').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ bpmContinuity: on });
+    if (!on) { AUTODJ.clearBpmHistory(); }
+    document.getElementById('dj-bpm-tol-row').hidden = !on;
+  };
+  document.getElementById('dj-bpm-tol').oninput = (e) => {
+    const n = Math.max(1, Math.min(20, parseInt(e.target.value, 10)));
+    AUTODJ.setState({ bpmTolerance: n });
+    const text = t('autoDJ.bpmToleranceValue', { n });
+    document.getElementById('dj-bpm-tol-val').textContent = text;
+    e.target.setAttribute('aria-valuetext', text);
+  };
+
+  // Harmonic mixing. Off clears the locked Camelot anchor so the next
+  // on re-locks on the current song.
+  document.getElementById('dj-harmonic').onchange = (e) => {
+    const on = !!e.target.checked;
+    AUTODJ.setState({ harmonicMixing: on });
+    if (!on) { AUTODJ.clearCamelotAnchor(); }
+  };
+
+  // Similar artists (disabled, with no handler, without a Last.fm key).
+  const simEl = document.getElementById('dj-similar');
+  if (!simEl.disabled) {
+    simEl.onchange = (e) => { AUTODJ.setState({ similar: !!e.target.checked }); };
+  }
+
+  // ── Live: the Seeds covers and the Start/Stop label ─────────────
+  //
+  // The covers follow the seeds (a DJ pick joins, a row rotates out, a
+  // learned skip, an edit in the drawer, a lookup filling a cover) and the
+  // song; the label follows the DJ, the player bar's toggle included.
+  // Neither redraws the panel. Both listeners live as long as this draw:
+  // the next one aborts them, and each lets go by itself once another
+  // view took the column.
+  const offSeeds = AUTODJ.seeds.subscribe((view) => {
+    if (!autoDjRenderTiles(view)) { offSeeds(); }
+  });
+  _autoDjPanelSignal.addEventListener('abort', offSeeds);
+  if (typeof MSTREAMPLAYER.onAutoDj === 'function') {
+    const offPlayer = MSTREAMPLAYER.onAutoDj((reason) => {
+      if (!document.getElementById('autodj-main-btn')) { offPlayer(); return; }
+      if (reason === 'dj') { autoDjRenderToggle(); }
+      if (reason === 'song') { autoDjRenderTiles(); }
+    });
+    _autoDjPanelSignal.addEventListener('abort', offPlayer);
+  }
+  // Seed rows still waiting for their title and cover (the migrated seed
+  // song, a file-browser row) are looked up, once per page.
+  if (typeof MSTREAMPLAYER.fillBareSeeds === 'function') { MSTREAMPLAYER.fillBareSeeds(); }
+
+  // Keep the `ignoreVPaths` legacy global (still read by every browse /
+  // search panel) in lockstep with AUTODJ.state.djVpaths.
   _syncVpathsToLegacy();
+
+  // Back from the library pick: the drawer opens again on its lists.
+  if (o.seeds && typeof autoDjSeedsOpen === 'function'
+    && MSTREAMAPI.currentServer.discovery === true && AUTODJ.state.sonicEnabled === true) {
+    autoDjSeedsOpen({ list: o.seeds, focus: 'add' });
+  }
 }
 
 ////////////// Jukebox
@@ -7824,6 +9876,7 @@ const PANELS_BY_STATE = {
   discovery: () => discoveryPanel(),
   // (opts a switch home carried: ytdlPanel from a connected server)
   addFromYoutube: () => ytdlPanel(programState[0] && programState[0].state === 'addFromYoutube' ? programState[0].open : undefined),
+  peerRecs: () => peerRecsPanel(),
 };
 
 // Which of those a federated server can actually answer: its library, and

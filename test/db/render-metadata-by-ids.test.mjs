@@ -156,6 +156,24 @@ describe('renderMetadataByIds', () => {
     assert.equal(noUser.get(t1).metadata['play-count'], null);
   });
 
+  test("replaygain-track carries the stored gain, 0 dB included", () => {
+    // The web player reads this key to scale playback; a missing gain falls
+    // back to a fixed -10 dB, so a real 0 dB must not render as null.
+    const d = dbManager.getDB();
+    const setGain = d.prepare('UPDATE tracks SET replaygain_track_db = ? WHERE id = ?');
+    setGain.run(-6.5, t1);
+    setGain.run(0, t2);
+    try {
+      const map = renderMetadataByIds([t1, t2, t3]);
+      assert.equal(map.get(t1).metadata['replaygain-track'], -6.5);
+      assert.equal(map.get(t2).metadata['replaygain-track'], 0);
+      assert.equal(map.get(t3).metadata['replaygain-track'], null);
+    } finally {
+      setGain.run(null, t1);
+      setGain.run(null, t2);
+    }
+  });
+
   test('empty / invalid input returns an empty map', () => {
     assert.equal(renderMetadataByIds([]).size, 0);
     assert.equal(renderMetadataByIds(null).size, 0);
