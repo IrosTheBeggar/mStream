@@ -28,13 +28,21 @@
  *     folder they show again and open on it, a pick going into it; as
  *     before, neither at the root list, Create Folder off by the
  *     server's switch, and neither on a connected server's folder or
- *     under a view that hides the bar.
+ *     under a view that hides the bar;
+ *   - Back from a page opened over the folder (an album, an artist; on a
+ *     connected server's folder too) lists that folder again where it
+ *     was left, not its parent, and the next Back goes up one; from an
+ *     album over an open .m3u, the .m3u's songs again, its entry as it
+ *     was, and this server's: from a page that followed a song onto a
+ *     connected server the app comes home first (that page's late answer
+ *     dropped); from a folder or an .m3u, the folder holding it, as before.
  *
  * m.js's own Dropzone block runs over a stub Dropzone that keeps its
  * handlers, as webapp-transfer-toasts.test.mjs runs its 'error' handler.
  * For the bar, the column's own code runs with it (makeColumn): the
  * explorer's listing, the pages opened over a folder, Back, the bar's
- * refresh and the two windows, over a server stub that answers at once.
+ * refresh, the two windows and the app's moves between servers (a row's
+ * data-peer followed), over a server stub that answers at once.
  */
 
 import { describe, test } from 'node:test';
@@ -97,32 +105,50 @@ function findFn(name) {
 const settle = async () => { for (let i = 0; i < 5; i++) { await new Promise((r) => setImmediate(r)); } };
 const IN_FOLDER = ['demo', 'ALM', 'Free Instrumentals Vol.1'];
 const elWith = (attrs) => ({ getAttribute: (n) => (n in attrs ? attrs[n] : null), hasAttribute: (n) => n in attrs });
-// the now-playing card's album link (vp.js goToAlbum), an .m3u's row
-const nowPlayingAlbum = () => elWith({ 'data-album': 'Free Instrumentals Vol.1', 'data-year': '2014' });
+// The now-playing card's album and artist links (vp.js goToAlbum,
+// goToArtist), which carry the playing song's server when it is a
+// connected one's (`peer`) — as the song window's View album and View
+// artist always do; an .m3u's row.
+const onPeer = (peer) => (peer ? { 'data-peer': String(peer.id) } : {});
+const nowPlayingAlbum = (peer) => elWith({ 'data-album': 'Free Instrumentals Vol.1', 'data-year': '2014', ...onPeer(peer) });
+const nowPlayingArtist = (peer) => elWith({ 'data-artist': 'ALM', ...onPeer(peer) });
 const m3uRow = () => elWith({ 'data-directory': 'mix.m3u' });
+// the column's title over the explorer (setBrowserRootPanel)
+const explorerTitle = (peer) => `${peer ? `${peer.name} &middot; ` : ''}<span data-i18n="panel.fileExplorer">${tEn('panel.fileExplorer')}</span>`;
 
 // The bar's ways into the folder, hidden until a folder shows them
 // (index.html), and every element the column's code below reaches.
 const WAYS_IN = ['upload_btn', 'mkdir_btn', 'ytdl_btn', 'ytdl_strip'];
 const COLUMN_IDS = ['directory_bar', 'directoryName', 'filelist', 'localSearchBar', 'search_folders', 'upload-progress-inner',
   'upload_filepath', 'upload_file_input', 'torrent_file_input', 'torrent_magnet', 'torrent_directory', 'torrent_file_name',
-  'torrent_destination_preview', 'torrent_preflight_msg', 'torrent_rename_root', 'mkdir_filepath', 'mkdir_name', 'mkdir_submit', ...WAYS_IN];
-const COLUMN_FNS = ['getFileExplorerPath', 'senddir', 'handleDirClick', 'onFilePlaylistClick', 'getAlbumsOnClick', 'getAlbumSongs', 'getArtistz',
-  'onBackButton', 'ytdlServerAllows', 'ytdlAllowed', 'ytdlExplorerFolder', 'ytdlRefreshExplorer',
+  'torrent_destination_preview', 'torrent_preflight_msg', 'torrent_rename_root', 'mkdir_filepath', 'mkdir_name', 'mkdir_submit',
+  'local_search_btn', 'browse-head', ...WAYS_IN];
+const COLUMN_FNS = ['peerOf', 'adoptPeer', 'setBrowserRootPanel', 'getFileExplorerPath', 'senddir', 'handleDirClick', 'onFilePlaylistClick',
+  'getAlbumsOnClick', 'getAlbumSongs', 'getArtistz', 'onBackButton', 'ytdlServerAllows', 'ytdlAllowed', 'ytdlExplorerFolder', 'ytdlRefreshExplorer',
   'openUploadModal', 'handleFileUpload', 'openMkdirModal', 'submitMkdir'];
 const LIBRARIES = { path: '/', directories: [{ name: 'demo' }, { name: 'other' }], files: [] };
 
 // The column on m.js's own code: the Dropzone block, the explorer's
 // listing (senddir), the pages a folder can have opened over it, Back,
 // the bar's refresh (ytdlRefreshExplorer: the ping, a job's change and
-// every listing call it too) and the Upload and Create Folder windows. It
-// starts on `dirs` (this server's, or `peer`'s), the bar up; the server
-// answers at once, and what is asked of it is kept in order (`asked`: a
-// folder's listing, an .m3u's songs, an album's, an artist's page, a new
-// folder), every window opened (`opened`).
-function makeColumn({ dirs = IN_FOLDER, peer = null, server = {} } = {}) {
+// every listing call it too), the Upload and Create Folder windows, and
+// the app's moves between servers (adoptPeer follows a row's data-peer;
+// setBrowserRootPanel draws the column's chrome). It starts on `dirs`
+// (this server's, or `peer`'s), the bar up; the server answers at once
+// (an album's songs, `slow`, only at land()), and what is asked of it is
+// kept in order (`asked`: a folder's listing, an .m3u's songs, an
+// album's, an artist's page, a new folder), every window opened
+// (`opened`), each move by the server it lands on (`moves`: what
+// applyServerContext syncs the switcher and the side-nav to) and each
+// list by the server it is drawn as (`drawn`: printdir marks every row
+// with the server browsed, data-peer, and tops a connected server's
+// folder with its Keep a copy header, browseFolderPage).
+function makeColumn({ dirs = IN_FOLDER, peer = null, server = {}, slow = false } = {}) {
   const asked = [];
   const opened = [];
+  const moves = [];
+  const drawn = [];
+  const late = [];
   const seen = { toasts: [], removed: [], closed: 0 };
   const node = () => {
     const classes = new Set();
@@ -137,6 +163,11 @@ function makeColumn({ dirs = IN_FOLDER, peer = null, server = {} } = {}) {
   };
   const els = Object.fromEntries(COLUMN_IDS.map((id) => [id, node()]));
   WAYS_IN.forEach((id) => els[id].classes.add('super-hide'));
+  // a connected server's page header (#browse-head), and the column's
+  // title: the h5 and the phone's tab (panel_one_name)
+  els['browse-head'].classes.add('super-hide');
+  const titles = [node(), node()];
+  titles.forEach((el) => { el.innerHTML = explorerTitle(peer); });
   const listing = (dir) => (dir === '~' ? LIBRARIES : { path: `/${dir}`, directories: [], files: [] });
   const dz = { files: [], on: (type, fn) => { dz.handlers[type] = fn; }, handlers: {} };
   // as Dropzone's own addFile: the file is taken, then 'addedfile'
@@ -145,9 +176,13 @@ function makeColumn({ dirs = IN_FOLDER, peer = null, server = {} } = {}) {
   dz.removeAllFiles = () => { dz.files = []; };
   const toast = (kind) => (o) => seen.toasts.push([kind, o.title]);
   const noop = () => {};
+  // a connected server's page header (#browse-head) up or down
+  const showHead = (on) => els['browse-head'].classList.toggle('super-hide', !on);
   const globals = {
     Dropzone: function Dropzone() { return dz; },
-    document: { body: {}, getElementById: (id) => els[id] || null },
+    document: { body: {}, getElementById: (id) => els[id] || null, getElementsByClassName: (c) => (c === 'panel_one_name' ? titles : []) },
+    knownPeers: new Map([[SAM.id, SAM]]),
+    asked, moves, drawn, showHead,
     iziToast: { error: toast('error'), success: toast('success'), warning: toast('warning') },
     t: tEn,
     escapeHtml: (s) => String(s),
@@ -158,19 +193,17 @@ function makeColumn({ dirs = IN_FOLDER, peer = null, server = {} } = {}) {
       mkdir: (dir) => { asked.push(['mkdir', dir]); return Promise.resolve({}); },
       peer: { dirparser: (id, dir) => { asked.push(['folder', dir]); return Promise.resolve(listing(dir)); } },
     },
-    browseApi: (name) => { asked.push([name]); return Promise.resolve([]); },
-    // the artist's page draws the column's chrome again
-    // (setBrowserRootPanel): the bar's ways in go
-    getArtistsAlbums: (name) => { asked.push(['artist', name]); WAYS_IN.forEach((id) => els[id].classes.add('super-hide')); return Promise.resolve(); },
+    browseApi: (name) => { asked.push([name]); return slow ? new Promise((answer) => late.push(() => answer([]))) : Promise.resolve([]); },
     myModal: { open: (id) => { opened.push(id); }, close: () => { seen.closed++; } },
     // a call that failed is the test's own failure
     boilerplateFailure: (err) => { throw err; },
-    // a new list starts at its top
-    printdir: () => { els.filelist.scrollTop = 0; },
     getLoadingSvg: () => 'LOADING',
-    switchUploadTab: noop, browseKeepReset: noop, browseKeepDrawn: noop, browseKeepBack: () => false, keepGateFor: () => Promise.resolve(),
-    discoveryHideHead: noop, hideMoodFilters: noop, albumSongsBody: () => ({}), createMusicFileHtml: () => '', browseAlbumHead: noop,
-    YTDLUI: { renderStrip: noop },
+    // a new page's load takes the header down; a connected server's album
+    // page draws its own
+    browseKeepReset: () => showHead(false), browseAlbumHead: () => showHead(true),
+    switchUploadTab: noop, browseKeepDrawn: noop, browseKeepBack: () => false, keepGateFor: () => Promise.resolve(),
+    discoveryHideHead: noop, hideMoodFilters: noop, albumSongsBody: () => ({}), createMusicFileHtml: () => '',
+    YTDLUI: { renderStrip: noop, unmountPanel: noop },
     Event: class { constructor(type) { this.type = type; } },
   };
   const S = new Function(...Object.keys(globals), `
@@ -180,20 +213,41 @@ function makeColumn({ dirs = IN_FOLDER, peer = null, server = {} } = {}) {
     let fileExplorerArray = ${JSON.stringify(dirs)};
     let currentBrowsingList = [];
     let browseGeneration = 0;
-    // every row here is the page's own server's
-    function adoptPeer() { return peerContext; }
+    function applyServerContext() { moves.push(peerContext ? peerContext.name : 'this server'); }
+    // a list drawn, at its top (a connected server's folder below its
+    // library list under its own header)
+    function printdir() {
+      const server = peerContext ? peerContext.name : 'this server';
+      drawn.push(server);
+      if (peerContext && fileExplorerArray.length >= 2) { showHead(true); }
+      document.getElementById('filelist').innerHTML = 'the rows, ' + server + '\\'s';
+      document.getElementById('filelist').scrollTop = 0;
+    }
+    // the artist's page draws the column's chrome again (setBrowserRootPanel:
+    // the bar's ways in go), a connected server's under its header
+    async function getArtistsAlbums(name) {
+      asked.push(['artist', name]);
+      setBrowserRootPanel('panel.albums');
+      if (peerContext) { showHead(true); }
+    }
     ${BLOCK}
     ${COLUMN_FNS.map(findFn).join('\n')}
     return {
       ${COLUMN_FNS.join(', ')},
+      peer: () => peerContext,
       dirs: () => fileExplorerArray.slice(),
       state: () => programState.map((s) => s.state + (s.m3u === true ? ' .m3u' : '')),
     };
   `)(...Object.values(globals));
-  // the bar's Upload and Create Folder that show; the column's last list
+  // the bar's Upload and Create Folder that show; the column's last list;
+  // its title (the phone's tab says the same); whether a connected
+  // server's page header is up
   const shown = () => ['upload_btn', 'mkdir_btn'].filter((id) => !els[id].classes.has('super-hide'));
   const listed = () => asked.filter(([kind]) => kind === 'folder' || kind === 'm3u').pop();
-  return { S, els, asked, opened, seen, shown, listed };
+  const title = () => titles[0].innerHTML;
+  const headerUp = () => !els['browse-head'].classes.has('super-hide');
+  const land = () => late.splice(0).forEach((answer) => answer());
+  return { S, els, asked, opened, moves, drawn, seen, shown, listed, title, headerUp, land };
 }
 
 describe('a file dropped on the page', () => {
@@ -320,11 +374,11 @@ describe('the bar\'s Upload and Create Folder', () => {
     const writes = () => WAYS_IN.slice(0, 3).filter((id) => !sam.els[id].classes.has('super-hide'));
     await sam.S.senddir();
     assert.deepEqual([sam.listed(), writes()], [['folder', 'music/Rock/'], []], 'a connected server\'s folder takes no writes: no Upload, Create Folder or Add from YouTube here');
-    sam.S.getAlbumsOnClick(nowPlayingAlbum());
+    sam.S.getAlbumsOnClick(nowPlayingAlbum(SAM));
     await settle();
     assert.deepEqual(writes(), [], 'an album over it');
     await sam.S.onBackButton();
-    assert.deepEqual(writes(), [], 'back on its folder');
+    assert.deepEqual([writes(), sam.S.peer()], [[], SAM], 'back on its folder');
 
     // Auto DJ, Transcode and the like keep the stack and hide the bar,
     // its buttons with it (setBrowserRootPanel(…, false)); the ping or a
@@ -335,5 +389,113 @@ describe('the bar\'s Upload and Create Folder', () => {
     WAYS_IN.forEach((id) => dj.els[id].classes.add('super-hide'));
     dj.S.ytdlRefreshExplorer();
     assert.deepEqual(dj.shown(), [], 'a view that hides the bar');
+  });
+});
+
+describe('Back from a page opened over the folder', () => {
+  const FOLDER_LISTED = ['folder', 'demo/ALM/Free Instrumentals Vol.1/'];
+  // the song's server, when a connected one's: `peer`
+  const openAlbum = async (c, peer) => { c.S.getAlbumsOnClick(nowPlayingAlbum(peer)); await settle(); };
+  const openArtist = async (c, peer) => { c.S.getArtistz(nowPlayingArtist(peer)); await settle(); };
+
+  test('lists that folder again where it was left, not its parent, and the next Back goes up one', async () => {
+    const pages = [
+      ['an album from the now-playing card', openAlbum, 1],
+      ['an artist\'s page (its link)', openArtist, 1],
+      ['an artist\'s page from the album\'s, Back twice', async (c) => { await openAlbum(c); await openArtist(c); }, 2],
+    ];
+    for (const [page, open, backs] of pages) {
+      const c = makeColumn();
+      await c.S.senddir();
+      c.els.filelist.scrollTop = 130;
+      await open(c);
+      for (let i = 0; i < backs; i++) { await c.S.onBackButton(); }
+      assert.deepEqual([c.listed(), c.S.dirs(), c.S.state(), c.els.filelist.scrollTop],
+        [FOLDER_LISTED, IN_FOLDER, ['fileExplorer', 'fileExplorer', 'fileExplorer', 'fileExplorer'], 130], `${page}: the folder, where it was left`);
+      assert.deepEqual(c.shown(), ['upload_btn', 'mkdir_btn'], `${page}: its Upload and Create Folder`);
+      await c.S.onBackButton();
+      assert.deepEqual([c.listed(), c.S.dirs(), c.S.state().length], [['folder', 'demo/ALM/'], ['demo', 'ALM'], 3], `${page}: the next Back, one folder up`);
+    }
+    // a connected server's folder, the album its own
+    const sam = makeColumn({ dirs: ['music', 'Rock'], peer: SAM });
+    await sam.S.senddir();
+    await openAlbum(sam, SAM);
+    await sam.S.onBackButton();
+    assert.deepEqual([sam.listed(), sam.S.dirs(), sam.S.peer(), sam.drawn.at(-1)], [['folder', 'music/Rock/'], ['music', 'Rock'], SAM, 'Sam'],
+      'a connected server\'s folder, listed on it');
+  });
+
+  test('from an album opened over an open .m3u: the .m3u\'s songs again, its entry as it was; then its folder', async () => {
+    const c = makeColumn();
+    await c.S.senddir();
+    c.els.filelist.scrollTop = 130;
+    await c.S.onFilePlaylistClick(m3uRow());
+    c.els.filelist.scrollTop = 40;
+    await openAlbum(c);
+    await c.S.onBackButton();
+    assert.deepEqual([c.listed(), c.S.dirs(), c.S.state().pop(), c.els.filelist.scrollTop],
+      [['m3u', 'demo/ALM/Free Instrumentals Vol.1/mix.m3u/'], [...IN_FOLDER, 'mix.m3u'], 'fileExplorer .m3u', 40], 'the playlist read again, where it was left — never its file listed as a folder');
+    assert.deepEqual(c.shown(), [], 'an .m3u on screen: no Upload or Create Folder');
+    await c.S.onBackButton();
+    assert.deepEqual([c.listed(), c.S.dirs(), c.S.state().length, c.els.filelist.scrollTop], [FOLDER_LISTED, IN_FOLDER, 4, 130],
+      'Back from the .m3u: its folder, where the .m3u was opened from');
+    assert.deepEqual(c.shown(), ['upload_btn', 'mkdir_btn']);
+  });
+
+  test('from a page that followed a song onto a connected server, over an open .m3u: home first, the .m3u\'s songs this server\'s again', async () => {
+    const M3U_LISTED = ['m3u', 'demo/ALM/Free Instrumentals Vol.1/mix.m3u/'];
+    const pages = [
+      // [page, open, Backs to the .m3u, the moves the page made]
+      ['this server\'s song\'s album (the now-playing card)', (c) => openAlbum(c), 1, []],
+      ['Sam\'s song\'s album (the now-playing card, the song window\'s View album)', (c) => openAlbum(c, SAM), 1, ['Sam']],
+      ['Sam\'s song\'s artist (the now-playing card, the song window\'s View artist)', (c) => openArtist(c, SAM), 1, ['Sam']],
+      ['Sam\'s artist from Sam\'s album, Back twice', async (c) => { await openAlbum(c, SAM); await openArtist(c, SAM); }, 2, ['Sam']],
+    ];
+    for (const [page, open, backs, followed] of pages) {
+      const c = makeColumn();
+      await c.S.senddir();
+      await c.S.onFilePlaylistClick(m3uRow());
+      c.els.filelist.scrollTop = 40;
+      await open(c);
+      const onSam = followed.length > 0;
+      assert.deepEqual([c.S.peer(), c.moves, c.headerUp()], [onSam ? SAM : null, followed, onSam], `${page}: the page, on the song's server`);
+      for (let i = 0; i < backs; i++) { await c.S.onBackButton(); }
+      assert.deepEqual([c.S.peer(), c.moves, c.listed(), c.drawn.at(-1), c.S.state().pop(), c.els.filelist.scrollTop],
+        [null, onSam ? ['Sam', 'this server'] : [], M3U_LISTED, 'this server', 'fileExplorer .m3u', 40],
+        `${page}: Back moves the app home (the switcher, the side-nav) before the .m3u is read, its rows this server's, where they were left`);
+      assert.deepEqual([c.title(), c.headerUp(), c.shown()], [explorerTitle(null), false, []],
+        `${page}: the column's title the explorer's, this server's; no Keep a copy header; no Upload or Create Folder on an .m3u`);
+      await c.S.onBackButton();
+      assert.deepEqual([c.S.peer(), c.listed(), c.drawn.at(-1), c.shown()], [null, FOLDER_LISTED, 'this server', ['upload_btn', 'mkdir_btn']],
+        `${page}: the next Back, its folder on this server`);
+    }
+
+    // Back while Sam's album still loads: its answer, landing after the
+    // app came home, draws nothing over the .m3u (the move home starts a
+    // new browse generation)
+    const c = makeColumn({ slow: true });
+    await c.S.senddir();
+    await c.S.onFilePlaylistClick(m3uRow());
+    c.S.getAlbumsOnClick(nowPlayingAlbum(SAM));
+    await settle();
+    await c.S.onBackButton();
+    assert.equal(c.els.filelist.innerHTML, 'the rows, this server\'s', 'the .m3u read again');
+    c.land();
+    await settle();
+    assert.deepEqual([c.S.peer(), c.els.filelist.innerHTML, c.headerUp(), c.S.state().pop()], [null, 'the rows, this server\'s', false, 'fileExplorer .m3u'],
+      'Sam\'s album answering late: dropped, the .m3u stays');
+  });
+
+  test('as before: Back from a folder or from an .m3u lists the folder holding it', async () => {
+    const c = makeColumn();
+    await c.S.senddir();
+    c.S.handleDirClick(elWith({ 'data-directory': 'Live' }));
+    await settle();
+    assert.deepEqual(c.listed(), ['folder', 'demo/ALM/Free Instrumentals Vol.1/Live/']);
+    await c.S.onBackButton();
+    assert.deepEqual([c.listed(), c.S.dirs(), c.S.state().length], [FOLDER_LISTED, IN_FOLDER, 4], 'a folder');
+    await c.S.onFilePlaylistClick(m3uRow());
+    await c.S.onBackButton();
+    assert.deepEqual([c.listed(), c.S.dirs(), c.S.state().length], [FOLDER_LISTED, IN_FOLDER, 4], 'an .m3u');
   });
 });

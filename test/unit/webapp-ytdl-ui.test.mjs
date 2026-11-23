@@ -1676,7 +1676,7 @@ describe('m.js: the explorer\'s side', () => {
     x.S.set({ state: [{ state: 'fileExplorer' }, { state: 'fileExplorer' }, { state: 'fileExplorer' }], dirs: ['Music', 'Daft Punk'] });
     assert.equal(x.S.ytdlExplorerFolder(), '/Music/Daft Punk/');
     const open = findFn('onFilePlaylistClick');
-    assert.match(open, /programState\.push\(\{\n\s*state: 'fileExplorer',\n\s*m3u: true,/);
+    assert.match(open, /programState\.push\((?:entry \|\| )?\{\n\s*state: 'fileExplorer',\n\s*m3u: true,/);
     assert.ok(open.indexOf('ytdlRefreshExplorer();') > open.indexOf('m3u: true') && open.indexOf('ytdlRefreshExplorer();') < open.indexOf('await MSTREAMAPI.loadFileplaylist'), 'the button goes before the playlist lists');
   });
 

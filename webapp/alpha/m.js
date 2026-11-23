@@ -711,12 +711,14 @@ async function recursiveAddDir(el) {
   }
 }
 
-async function onFilePlaylistClick(el) {
+// `entry`: the .m3u's programState entry, put back as it was (Back, from
+// a page opened over its songs) — the explorer's path still ends with it.
+async function onFilePlaylistClick(el, entry) {
   try {
-    fileExplorerArray.push(el.getAttribute("data-directory"));
+    if (!entry) { fileExplorerArray.push(el.getAttribute("data-directory")); }
     // `m3u`: the explorer shows a playlist's songs, no folder to add into
     // (ytdlExplorerFolder) — Add from YouTube here and its strip go
-    programState.push({
+    programState.push(entry || {
       state: 'fileExplorer',
       m3u: true,
       previousScroll: document.getElementById('filelist').scrollTop,
@@ -2785,8 +2787,31 @@ async function onBackButton() {
   } else if (backState.state === 'genre') {
     await getGenreSongs(backState.name, backState.source);
   } else if (backState.state === 'fileExplorer') {
-    fileExplorerArray.pop();
-    await senddir();
+    // Only a folder or an .m3u left takes its name off the explorer's
+    // path: a page opened over one (an album from the now-playing card or
+    // the song window, an artist) put none on it, and the folder under it
+    // is listed again, not its parent.
+    if (thisState.state === 'fileExplorer') { fileExplorerArray.pop(); }
+    if (backState.m3u === true) {
+      // An .m3u's songs under it: the playlist read again, its entry put
+      // back as it was (a folder listing of the file is a 404) — on this
+      // server, whose file it is (printdir lists no .m3u on a connected
+      // server). A page that followed a song onto a connected server (the
+      // now-playing card's album or artist, the song window's View album
+      // or View artist) comes home first, as Discover's page does: the
+      // switcher, the column's title and the page's Keep a copy header
+      // this server's again, and the songs never drawn as that server's.
+      if (peerContext) {
+        peerContext = null;
+        browseGeneration++;
+        applyServerContext();
+        setBrowserRootPanel('panel.fileExplorer');
+      }
+      programState.pop();
+      await onFilePlaylistClick(null, backState);
+    } else {
+      await senddir();
+    }
   } else if (backState.state === 'searchPanel') {
     setupSearchPanel(backState.searchTerm, undefined);
   } else if (backState.state === 'album') {
