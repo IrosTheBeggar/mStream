@@ -1195,7 +1195,11 @@ function handleFileUpload(files) {
   myModal.close();
 }
 
+// Upload and Create Folder write into the explorer's folder: only while
+// the column shows it, as a drop (dropzoneOnExplorer) — a page opened over
+// it (an album, an open .m3u) hides their buttons (ytdlRefreshExplorer).
 function openUploadModal() {
+  if (!dropzoneOnExplorer()) { return; }
   document.getElementById('upload_filepath').textContent = getFileExplorerPath();
 
   // Reset upload tab
@@ -1217,12 +1221,25 @@ function openUploadModal() {
 }
 
 function openMkdirModal() {
+  if (!dropzoneOnExplorer()) { return; }
   document.getElementById('mkdir_filepath').textContent = getFileExplorerPath();
   document.getElementById('mkdir_name').value = '';
   myModal.open('#mkdirModal');
 }
 
 async function submitMkdir() {
+  // Its window can outlast the folder on screen (a toast's Details takes
+  // the column under it): then nothing is made, nor drawn over the page,
+  // and the window closes and says so — its Create is never a dead button.
+  if (!dropzoneOnExplorer()) {
+    myModal.close();
+    iziToast.error({
+      title: t('toast.folderCreateFailed'),
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
   const folderName = document.getElementById('mkdir_name').value.trim();
   if (!folderName) { return; }
 
@@ -4328,11 +4345,15 @@ function ytdlExplorerFolder() {
   return '/' + getFileExplorerPath();
 }
 
-// The bar's Add from YouTube here and the strip under it, for what the
-// column shows now: from the ping, the tracker (a job started, settled)
-// and every explorer listing.
+// The bar's ways into the folder on screen (Upload, Create Folder, Add
+// from YouTube here) and the strip under it, for what the column shows
+// now: from the ping, the tracker (a job started, settled), every
+// explorer listing, and a page opened over a folder (an album, an open
+// .m3u), which keeps the bar the folder left.
 function ytdlRefreshExplorer() {
   const folder = ytdlExplorerFolder();
+  document.getElementById('upload_btn')?.classList.toggle('super-hide', !folder);
+  document.getElementById('mkdir_btn')?.classList.toggle('super-hide', !folder || MSTREAMAPI.currentServer.noMkdir === true);
   document.getElementById('ytdl_btn')?.classList.toggle('super-hide', !(folder && ytdlServerAllows()));
   if (typeof YTDLUI !== 'undefined') { YTDLUI.renderStrip(folder); }
 }

@@ -2035,8 +2035,10 @@ describe('what Add from YouTube retired', () => {
     const doc = { getElementById: (id) => (ids.has(id) ? el(id) : null) };
     const opened = [];
     let preflights = 0;
-    const S = new Function('document', 'getFileExplorerPath', 'myModal', 'runTorrentPreflight', `${findFn('switchUploadTab')}\n${findFn('openUploadModal')}\nreturn { switchUploadTab, openUploadModal };`)(
-      doc, () => 'Music/Daft Punk/', { open: (s) => opened.push(s) }, () => { preflights++; },
+    // (opened over the folder on screen, where the bar's Upload shows:
+    // dropzoneOnExplorer)
+    const S = new Function('document', 'getFileExplorerPath', 'myModal', 'runTorrentPreflight', 'dropzoneOnExplorer', `${findFn('switchUploadTab')}\n${findFn('openUploadModal')}\nreturn { switchUploadTab, openUploadModal };`)(
+      doc, () => 'Music/Daft Punk/', { open: (s) => opened.push(s) }, () => { preflights++; }, () => true,
     );
     S.openUploadModal();
     assert.deepEqual(opened, ['#uploadModal']);
