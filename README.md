@@ -5,6 +5,19 @@
 <p align="center"><b>Own Your Music</b></p>
 
 <p align="center">
+  <b>English</b> ·
+  <a href="docs/readme/README.es.md">Español</a> ·
+  <a href="docs/readme/README.zh.md">中文</a> ·
+  <a href="docs/readme/README.fr.md">Français</a> ·
+  <a href="docs/readme/README.de.md">Deutsch</a> ·
+  <a href="docs/readme/README.pt.md">Português</a> ·
+  <a href="docs/readme/README.ja.md">日本語</a> ·
+  <a href="docs/readme/README.ru.md">Русский</a> ·
+  <a href="docs/readme/README.it.md">Italiano</a> ·
+  <a href="docs/readme/README.pl.md">Polski</a>
+</p>
+
+<p align="center">
   <a href="https://demo.mstream.io/"><b>▶ Try the live demo</b></a>
   <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
   <a href="https://mstream.io/"><b>Website</b></a>
