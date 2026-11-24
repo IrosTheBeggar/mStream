@@ -28,7 +28,7 @@
 
 ## Install mStream Server
 
-#### Docker
+### Docker
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
@@ -42,7 +42,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [See this page for setting up mStream with docker compose](https://github.com/linuxserver/docker-mstream#usage)
 
-#### Binaries for Download
+### Binaries for Download
 
 The binary builds come with some extra features not available in the docker version: 
 
@@ -50,15 +50,9 @@ The binary builds come with some extra features not available in the docker vers
 * Server side audio playback
 * A GUI for setup
 
-| Platform | Download |
-|---|---|
-| Windows x64 | [Installer (`setup.exe`) or portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
-| macOS (Apple Silicon and Intel) | [Installer (`.pkg`) or portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
-| Linux (x64 and arm64) | [`.deb`, `.rpm` or portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+The binaries can be downloaded at [mstream.io/server](https://mstream.io/server).
 
-Direct download buttons for the current version are at [mstream.io/server](https://mstream.io/server).
-
-#### CLI Scripts
+### CLI Scripts
 
 These install the binary versions of mStream through the command line
 

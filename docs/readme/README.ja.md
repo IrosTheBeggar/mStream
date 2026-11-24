@@ -29,7 +29,7 @@
 
 ## mStream サーバーのインストール
 
-#### Docker
+### Docker
 
 [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
@@ -43,7 +43,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [Docker Compose で mStream をセットアップする方法はこちらのページをご覧ください](https://github.com/linuxserver/docker-mstream#usage)
 
-#### バイナリのダウンロード
+### バイナリのダウンロード
 
 バイナリ版には、Docker 版にはない追加機能があります。
 
@@ -51,15 +51,9 @@ docker run -d --name=mstream -p 3000:3000 \
 * サーバー側でのオーディオ再生
 * セットアップ用の GUI
 
-| プラットフォーム | ダウンロード |
-|---|---|
-| Windows x64 | [インストーラー (`setup.exe`) またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
-| macOS (Apple シリコン / Intel) | [インストーラー (`.pkg`) またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
-| Linux (x64 / arm64) | [`.deb`、`.rpm`、またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+バイナリは [mstream.io/server](https://mstream.io/server) からダウンロードできます。
 
-最新バージョンの直接ダウンロードボタンは [mstream.io/server](https://mstream.io/server) にあります。
-
-#### CLI スクリプト
+### CLI スクリプト
 
 これらのスクリプトは、コマンドラインから mStream のバイナリ版をインストールします
 
