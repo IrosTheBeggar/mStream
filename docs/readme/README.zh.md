@@ -1,8 +1,4 @@
 <!-- Translation of README.md as of 2026-11-24. Machine-translated; not yet reviewed by a native speaker. -->
-<p align="center">
-  <img src="../../webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>你的音乐，由你做主</b></p>
 
 <p align="center">
@@ -19,23 +15,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ 试用在线演示</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>官方网站</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="../designs/readme-hero.png" alt="mStream 网页播放器和移动应用" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ 试用在线演示</b></a> ·
+  <a href="https://discord.gg/AM896Rr">加入我们的 Discord</a> ·
+  <a href="https://mstream.io/"><b>官方网站</b></a>
+</p>
+
 
 ## 安装 mStream 服务器
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 运行以下命令即可试用。
 
@@ -47,7 +41,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [使用 Docker Compose 部署 mStream 的方法请参阅此页面](https://github.com/linuxserver/docker-mstream#usage)
 
-**二进制文件下载**
+#### 二进制文件下载
 
 安装程序和便携版二进制文件[适用于 macOS、Windows 和 Linux](https://mstream.io/server)。二进制版本还提供一些 Docker 版本没有的额外功能：
 
@@ -55,7 +49,7 @@ docker run -d --name=mstream -p 3000:3000 \
 * 服务器端音频播放
 * 用于设置的图形界面
 
-**命令行脚本**
+#### 命令行脚本
 
 这些脚本通过命令行安装 mStream 的二进制版本
 

@@ -1,8 +1,4 @@
 <!-- Translation of README.md as of 2026-11-24. Machine-translated; not yet reviewed by a native speaker. -->
-<p align="center">
-  <img src="../../webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>Deine Musik gehört dir</b></p>
 
 <p align="center">
@@ -19,23 +15,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ Live-Demo ausprobieren</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>Website</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="../designs/readme-hero.png" alt="mStream-Webplayer und mobile App" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ Live-Demo ausprobieren</b></a> ·
+  <a href="https://discord.gg/AM896Rr">Tritt unserem Discord bei</a> ·
+  <a href="https://mstream.io/"><b>Website</b></a>
+</p>
+
 
 ## mStream Server installieren
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Probiere es mit dem folgenden Befehl aus.
 
@@ -47,7 +41,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [Auf dieser Seite steht, wie du mStream mit Docker Compose einrichtest](https://github.com/linuxserver/docker-mstream#usage)
 
-**Binärdateien zum Download**
+#### Binärdateien zum Download
 
 Installer und portable Binärdateien sind [für macOS, Windows und Linux verfügbar](https://mstream.io/server). Diese Binär-Builds bieten einige zusätzliche Funktionen, die es in der Docker-Version nicht gibt:
 
@@ -55,7 +49,7 @@ Installer und portable Binärdateien sind [für macOS, Windows und Linux verfüg
 * Audiowiedergabe direkt auf dem Server
 * Eine grafische Oberfläche für die Einrichtung
 
-**CLI-Skripte**
+#### CLI-Skripte
 
 Diese Skripte installieren die Binärversionen von mStream über die Kommandozeile
 

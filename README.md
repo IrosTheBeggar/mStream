@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>Own Your Music</b></p>
 
 <p align="center">
@@ -18,23 +14,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ Try the live demo</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>Website</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="docs/designs/readme-hero.png" alt="mStream web player and mobile app" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ Try the live demo</b></a> ·
+  <a href="https://discord.gg/AM896Rr">Join our Discord</a> ·
+  <a href="https://mstream.io/"><b>Website</b></a>
+</p>
+
 
 ## Install mStream Server
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Test it out by running the following command.
 
@@ -46,7 +40,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [See this page for setting up mStream with docker compose](https://github.com/linuxserver/docker-mstream#usage)
 
-**Binaries for Download**
+#### Binaries for Download
 
 Installers and portable binaries are [available for macOS, Windows, and Linux](https://mstream.io/server). These binary builds come with some extra features not available in the docker version: 
 
@@ -54,7 +48,7 @@ Installers and portable binaries are [available for macOS, Windows, and Linux](h
 * Server side audio playback
 * A GUI for setup
 
-**CLI Scripts**
+#### CLI Scripts
 
 These install the binary versions of mStream through the command line
 

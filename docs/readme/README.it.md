@@ -1,8 +1,4 @@
 <!-- Translation of README.md as of 2026-11-24. Machine-translated; not yet reviewed by a native speaker. -->
-<p align="center">
-  <img src="../../webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>La tua musica è tua</b></p>
 
 <p align="center">
@@ -19,23 +15,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ Prova la demo live</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>Sito web</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="../designs/readme-hero.png" alt="Player web e app mobile di mStream" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ Prova la demo live</b></a> ·
+  <a href="https://discord.gg/AM896Rr">Unisciti al nostro Discord</a> ·
+  <a href="https://mstream.io/"><b>Sito web</b></a>
+</p>
+
 
 ## Installare mStream Server
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Provalo eseguendo il seguente comando.
 
@@ -47,7 +41,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [Consulta questa pagina per configurare mStream con Docker Compose](https://github.com/linuxserver/docker-mstream#usage)
 
-**Binari da scaricare**
+#### Binari da scaricare
 
 Programmi di installazione e binari portabili sono [disponibili per macOS, Windows e Linux](https://mstream.io/server). Queste versioni binarie includono alcune funzionalità aggiuntive non disponibili nella versione Docker:
 
@@ -55,7 +49,7 @@ Programmi di installazione e binari portabili sono [disponibili per macOS, Windo
 * Riproduzione audio lato server
 * Un'interfaccia grafica per la configurazione
 
-**Script CLI**
+#### Script CLI
 
 Questi script installano le versioni binarie di mStream dalla riga di comando
 
