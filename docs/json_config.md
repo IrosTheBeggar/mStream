@@ -202,9 +202,15 @@ applies to every codec, so it stays within what they all take.)
 binaries (weekly auto-update; set `autoUpdate` to `false` to pin the current
 build). If you place your own binaries in a custom `ffmpegDirectory`, mStream
 uses them as-is and never auto-updates them. It never deletes or downloads over
-them either. If they are older than ffmpeg 6, or will not run, mStream logs an
-error and leaves them in place: replace them, or empty the directory to let
-mStream download its own.
+them either. If they are older than ffmpeg 6, or will not run, mStream logs a
+warning, leaves them in place, and downloads its own build into its default
+location (`bin/ffmpeg` under the data directory) instead. Debian 12's
+`/usr/bin`, which holds ffmpeg 5, is the usual case. To have mStream manage
+the directory you configured, empty it.
+
+The default location also takes the download when the configured directory
+holds no ffmpeg and mStream cannot write to it. The boot log names both
+directories either way.
 
 `bulkConcurrency` (default `2`, 1-64) is how many transcodes flagged as bulk
 work (`?bulk=1`: one file of a long job, such as a library converted onto a

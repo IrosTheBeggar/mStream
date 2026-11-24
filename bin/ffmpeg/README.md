@@ -37,6 +37,14 @@ when the committed pins change (checked locally — no network polling). Set
 changes. Binaries you place in a custom `ffmpegDirectory` yourself are never
 touched — mStream only updates builds it installed itself.
 
+A custom `ffmpegDirectory` that mStream cannot use is left exactly as it is,
+and the default directory (`bin/ffmpeg` under the data root) takes the
+install instead. That covers a directory holding binaries mStream did not
+install and cannot run (older than ffmpeg 6, or only half the pair — never
+deleted, never installed over) and one it would have to install into but
+cannot write to. A YunoHost install is both: `ffmpegDirectory` is `/usr/bin`,
+which holds Debian 12's ffmpeg 5 and is read-only for the service.
+
 Air-gapped hosts: `MSTREAM_FFMPEG_MIRROR` replaces the download base with a
 flat namespace (the BtbN archive under its pinned file name; the macOS
 binaries as `ffmpeg.zip` / `ffprobe.zip`; the pruned-pin fallback under
