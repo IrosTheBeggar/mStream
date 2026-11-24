@@ -29,7 +29,9 @@
 
 ## mStream サーバーのインストール
 
-#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 次のコマンドを実行して試せます。
 
@@ -43,11 +45,19 @@ docker run -d --name=mstream -p 3000:3000 \
 
 #### バイナリのダウンロード
 
-インストーラーとポータブル版のバイナリを [macOS、Windows、Linux 向けに提供しています](https://mstream.io/server)。バイナリ版には、Docker 版にはない追加機能があります。
+バイナリ版には、Docker 版にはない追加機能があります。
 
 * 自動アップデート
 * サーバー側でのオーディオ再生
 * セットアップ用の GUI
+
+| プラットフォーム | ダウンロード |
+|---|---|
+| Windows x64 | [インストーラー (`setup.exe`) またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| macOS (Apple シリコン / Intel) | [インストーラー (`.pkg`) またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| Linux (x64 / arm64) | [`.deb`、`.rpm`、またはポータブル版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+
+最新バージョンの直接ダウンロードボタンは [mstream.io/server](https://mstream.io/server) にあります。
 
 #### CLI スクリプト
 

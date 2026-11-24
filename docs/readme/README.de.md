@@ -29,7 +29,9 @@
 
 ## mStream Server installieren
 
-#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Probiere es mit dem folgenden Befehl aus.
 
@@ -43,11 +45,19 @@ docker run -d --name=mstream -p 3000:3000 \
 
 #### Binärdateien zum Download
 
-Installer und portable Binärdateien sind [für macOS, Windows und Linux verfügbar](https://mstream.io/server). Diese Binär-Builds bieten einige zusätzliche Funktionen, die es in der Docker-Version nicht gibt:
+Die Binär-Builds bieten einige zusätzliche Funktionen, die es in der Docker-Version nicht gibt:
 
 * Automatische Updates
 * Audiowiedergabe direkt auf dem Server
 * Eine grafische Oberfläche für die Einrichtung
+
+| Plattform | Download |
+|---|---|
+| Windows x64 | [Installer (`setup.exe`) oder portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| macOS (Apple Silicon und Intel) | [Installer (`.pkg`) oder portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| Linux (x64 und arm64) | [`.deb`, `.rpm` oder portable `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+
+Direkte Download-Buttons für die aktuelle Version gibt es auf [mstream.io/server](https://mstream.io/server).
 
 #### CLI-Skripte
 

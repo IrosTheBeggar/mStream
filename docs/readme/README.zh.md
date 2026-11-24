@@ -29,7 +29,9 @@
 
 ## 安装 mStream 服务器
 
-#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 运行以下命令即可试用。
 
@@ -43,11 +45,19 @@ docker run -d --name=mstream -p 3000:3000 \
 
 #### 二进制文件下载
 
-安装程序和便携版二进制文件[适用于 macOS、Windows 和 Linux](https://mstream.io/server)。二进制版本还提供一些 Docker 版本没有的额外功能：
+二进制版本提供一些 Docker 版本没有的额外功能：
 
 * 自动更新
 * 服务器端音频播放
 * 用于设置的图形界面
+
+| 平台 | 下载 |
+|---|---|
+| Windows x64 | [安装程序 (`setup.exe`) 或便携版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| macOS（Apple 芯片和 Intel） | [安装程序 (`.pkg`) 或便携版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| Linux（x64 和 arm64） | [`.deb`、`.rpm` 或便携版 `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+
+当前版本的直接下载按钮位于 [mstream.io/server](https://mstream.io/server)。
 
 #### 命令行脚本
 

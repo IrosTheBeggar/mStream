@@ -29,7 +29,9 @@
 
 ## Установка сервера mStream
 
-#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker
+
+[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Попробуйте, выполнив следующую команду.
 
@@ -43,11 +45,19 @@ docker run -d --name=mstream -p 3000:3000 \
 
 #### Бинарные сборки для скачивания
 
-Установщики и портативные сборки [доступны для macOS, Windows и Linux](https://mstream.io/server). В бинарных сборках есть несколько дополнительных возможностей, которых нет в версии для Docker:
+В бинарных сборках есть несколько дополнительных возможностей, которых нет в версии для Docker:
 
 * Автоматические обновления
 * Воспроизведение звука на стороне сервера
 * Графический интерфейс для настройки
+
+| Платформа | Скачать |
+|---|---|
+| Windows x64 | [Установщик (`setup.exe`) или портативный `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| macOS (Apple Silicon и Intel) | [Установщик (`.pkg`) или портативный `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+| Linux (x64 и arm64) | [`.deb`, `.rpm` или портативный `.zip`](https://github.com/IrosTheBeggar/mStream/releases/latest) |
+
+Кнопки прямой загрузки текущей версии находятся на [mstream.io/server](https://mstream.io/server).
 
 #### CLI-скрипты
 
