@@ -1,8 +1,4 @@
 <!-- Translation of README.md as of 2026-11-24. Machine-translated; not yet reviewed by a native speaker. -->
-<p align="center">
-  <img src="../../webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>あなたの音楽を、あなたの手に</b></p>
 
 <p align="center">
@@ -19,23 +15,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ ライブデモを試す</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>ウェブサイト</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="../designs/readme-hero.png" alt="mStream のウェブプレーヤーとモバイルアプリ" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ ライブデモを試す</b></a> ·
+  <a href="https://discord.gg/AM896Rr">Discord に参加</a> ·
+  <a href="https://mstream.io/"><b>ウェブサイト</b></a>
+</p>
+
 
 ## mStream サーバーのインストール
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 次のコマンドを実行して試せます。
 
@@ -47,7 +41,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [Docker Compose で mStream をセットアップする方法はこちらのページをご覧ください](https://github.com/linuxserver/docker-mstream#usage)
 
-**バイナリのダウンロード**
+#### バイナリのダウンロード
 
 インストーラーとポータブル版のバイナリを [macOS、Windows、Linux 向けに提供しています](https://mstream.io/server)。バイナリ版には、Docker 版にはない追加機能があります。
 
@@ -55,7 +49,7 @@ docker run -d --name=mstream -p 3000:3000 \
 * サーバー側でのオーディオ再生
 * セットアップ用の GUI
 
-**CLI スクリプト**
+#### CLI スクリプト
 
 これらのスクリプトは、コマンドラインから mStream のバイナリ版をインストールします
 

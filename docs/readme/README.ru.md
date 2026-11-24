@@ -1,8 +1,4 @@
 <!-- Translation of README.md as of 2026-11-24. Machine-translated; not yet reviewed by a native speaker. -->
-<p align="center">
-  <img src="../../webapp/assets/img/mstream-logo.png" alt="mStream" width="320" />
-</p>
-
 <p align="center"><b>Ваша музыка принадлежит вам</b></p>
 
 <p align="center">
@@ -19,23 +15,21 @@
 </p>
 
 <p align="center">
-  <a href="https://demo.mstream.io/"><b>▶ Попробовать демо</b></a>
-  <a href="https://discord.gg/AM896Rr"><img src="https://img.shields.io/badge/Discord-join-5865F2?logo=discord&logoColor=white" alt="Discord" /></a>
-  <a href="https://mstream.io/"><b>Сайт</b></a>
-</p>
-
-<p align="center">
   <a href="https://demo.mstream.io/">
     <img src="../designs/readme-hero.png" alt="Веб-плеер и мобильное приложение mStream" width="830" />
   </a>
 </p>
 
+<p align="center">
+  <a href="https://demo.mstream.io/"><b>▶ Попробовать демо</b></a> ·
+  <a href="https://discord.gg/AM896Rr">Присоединяйтесь к нашему Discord</a> ·
+  <a href="https://mstream.io/"><b>Сайт</b></a>
+</p>
+
 
 ## Установка сервера mStream
 
-**Docker**
-
-[![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
+#### Docker [![Docker Pulls](https://img.shields.io/docker/pulls/linuxserver/mstream)](https://hub.docker.com/r/linuxserver/mstream)
 
 Попробуйте, выполнив следующую команду.
 
@@ -47,7 +41,7 @@ docker run -d --name=mstream -p 3000:3000 \
 
 [На этой странице описана настройка mStream через Docker Compose](https://github.com/linuxserver/docker-mstream#usage)
 
-**Бинарные сборки для скачивания**
+#### Бинарные сборки для скачивания
 
 Установщики и портативные сборки [доступны для macOS, Windows и Linux](https://mstream.io/server). В бинарных сборках есть несколько дополнительных возможностей, которых нет в версии для Docker:
 
@@ -55,7 +49,7 @@ docker run -d --name=mstream -p 3000:3000 \
 * Воспроизведение звука на стороне сервера
 * Графический интерфейс для настройки
 
-**CLI-скрипты**
+#### CLI-скрипты
 
 Эти скрипты устанавливают бинарные версии mStream из командной строки
 
