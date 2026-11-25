@@ -36,6 +36,10 @@ window.addEventListener("resize", () => {
 });
 
 
+// The last view changeView opened: what an Instant Mix opened over a view
+// that keeps no Back stack of its own goes back to (m.js onBackButton).
+let lastView = null;
+
 function changeView(fn, el){
   const elements = document.querySelectorAll('.side-nav-item'); // or:
   elements.forEach(elm => {
@@ -46,6 +50,11 @@ function changeView(fn, el){
 
   // close nav on mobile
   closeSideMenu();
+  // A new view starts its own Back stack: one that keeps none (Auto DJ,
+  // Sonic Path, Transcode …) leaves no earlier page's under a mix. Its one
+  // entry has no Back branch; the lists that keep a stack replace it.
+  lastView = { fn, el };
+  programState = [{ state: 'view' }];
   fn();
 }
 

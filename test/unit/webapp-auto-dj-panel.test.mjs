@@ -244,7 +244,7 @@ function makeDom() {
 }
 
 const FNS = ['escapeHtml', 'moodLevel', 'moodFilterBody', 'moodPanelHtml', 'autoDjSeedArtUrl', 'autoDjSecToMin',
-  'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
+  'ratingOptionsHtml', 'autoDjChipsHtml', 'autoDjGenresValue', 'autoDjSwitchRowHtml', 'autoDjSubState', 'autoDjSeedsTilesHtml', 'autoDjSubRowsHtml', 'autoDjPanelHtml',
   'autoDjApplySonicDim', 'autoDjRenderTiles', 'autoDjRenderToggle', 'autoDjPanel'];
 
 // One stubbed app around the sliced panel.
