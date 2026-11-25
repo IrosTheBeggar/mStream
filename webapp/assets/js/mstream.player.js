@@ -1246,6 +1246,7 @@ const MSTREAMPLAYER = (() => {
     // If this the first song in the list
     if (mstreamModule.playlist.length === 1) {
       mstreamModule.positionCache.val = 0;
+      shuffleStarted(song);
       const started = goToSong(mstreamModule.positionCache.val, forceAutoPlayOff);
       _emitAutoDj('queue');
       return started;
@@ -1277,6 +1278,7 @@ const MSTREAMPLAYER = (() => {
 
     if (playNow) {
       mstreamModule.positionCache.val = position;
+      shuffleStarted(song);
       goToSong(mstreamModule.positionCache.val);
     }
 
@@ -1306,6 +1308,9 @@ const MSTREAMPLAYER = (() => {
       // Clear Shuffle Cache
       while (shuffleCache.length > 0) { shuffleCache.pop(); }
     }
+    // And the history Previous walks back under shuffle: a song of the old
+    // queue is nothing to go back to.
+    shufflePrevious = [];
 
     _seedsOnClear(userClear, hadRows);
 
@@ -1426,6 +1431,7 @@ const MSTREAMPLAYER = (() => {
     clearEnd();
 
     mstreamModule.positionCache.val = position;
+    shuffleStarted(mstreamModule.playlist[position]);
     return goToSong(mstreamModule.positionCache.val);
   }
 
@@ -1565,8 +1571,13 @@ const MSTREAMPLAYER = (() => {
   function goToNextSong() {
     // If random is set, go to random song
     if (mstreamModule.playerStats.shuffle === true) {
+      // A cycle emptied without a Next (its last song clicked, or removed)
+      // starts over here
+      if (shuffleCache.length === 0) { newShuffle(); }
       // Chose a random value
       var nextSong = shuffleCache.pop();
+      // An empty queue: nothing to go to, and nothing for the history
+      if (!nextSong) { return false; }
 
       // Prevent same song from playing twice after a re-shuffle
       if (nextSong === mstreamModule.getCurrentSong()) {
@@ -2183,18 +2194,33 @@ const MSTREAMPLAYER = (() => {
     if (mstreamModule.playerStats.autoDJ === true) { return; }
 
     mstreamModule.playerStats.shuffle = newValue;
-    mstreamModule.playerStats.shuffle === true ? newShuffle() : turnShuffleOff();
+    mstreamModule.playerStats.shuffle === true ? newShuffle(mstreamModule.getCurrentSong()) : turnShuffleOff();
   }
   
   mstreamModule.toggleShuffle = () => {
     if (mstreamModule.playerStats.autoDJ === true) { return; }
     mstreamModule.playerStats.shuffle = !mstreamModule.playerStats.shuffle;
-    mstreamModule.playerStats.shuffle === true ? newShuffle() : turnShuffleOff();
+    mstreamModule.playerStats.shuffle === true ? newShuffle(mstreamModule.getCurrentSong()) : turnShuffleOff();
     return mstreamModule.playerStats.shuffle;
   }
 
-  function newShuffle() {
-    shuffleCache = shuffle(mstreamModule.playlist.slice(0));
+  // A new cycle: the queue in a random order, which Next pops from the end.
+  // Turning shuffle on leaves out the song playing (`playing`): it is heard
+  // already.
+  function newShuffle(playing) {
+    shuffleCache = shuffle(mstreamModule.playlist.filter((song) => song !== playing));
+  }
+
+  // A song that starts under shuffle without a Next popping it (a queue
+  // row's click, the first row of an empty queue, a Play now) is heard all
+  // the same: it leaves the cycle, so it does not come round again before
+  // the rest have played, and it joins the history, so Previous can go
+  // back to it.
+  function shuffleStarted(song) {
+    if (mstreamModule.playerStats.shuffle !== true || !song) { return; }
+    shuffleCache = shuffleCache.filter((s) => s !== song);
+    shufflePrevious = shufflePrevious.filter((s) => s !== song);
+    shufflePrevious.push(song);
   }
 
   function turnShuffleOff() {
@@ -2274,8 +2300,10 @@ const MSTREAMPLAYER = (() => {
   mstreamModule.toggleAutoDJ = () => {
     mstreamModule.playerStats.autoDJ = !mstreamModule.playerStats.autoDJ;
     if (mstreamModule.playerStats.autoDJ === true) {
-      // Turn off shuffle & loop
+      // Turn off shuffle & loop — shuffle as its own button does, the
+      // cycle and the history forgotten
       mstreamModule.playerStats.shuffle = false;
+      turnShuffleOff();
       mstreamModule.playerStats.shouldLoop = false;
       mstreamModule.playerStats.shouldLoopOne = false;
 

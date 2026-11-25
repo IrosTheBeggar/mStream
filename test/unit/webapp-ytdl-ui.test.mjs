@@ -1120,7 +1120,7 @@ describe('m.js: the gate, the panel, the wiring', () => {
     const g = gateSandbox(OK);
     g.S.ytdlPanel({ link: LINK });
     assert.deepEqual(g.S.state(), [{ state: 'addFromYoutube' }]);
-    assert.deepEqual(g.calls[0], ['setBrowserRootPanel', 'T:panel.addFromYoutube', false]);
+    assert.deepEqual(g.calls[0], ['setBrowserRootPanel', 'panel.addFromYoutube', false], 'its name by its key');
     assert.equal(g.filelist.innerHTML, '<div id="ytdl-panel-mount"></div>');
     assert.equal(g.filelist.scrollTop, 0);
     assert.deepEqual(g.calls[1], ['mountPanel', 'ytdl-panel-mount', { link: LINK }]);
@@ -1172,8 +1172,12 @@ describe('m.js: the gate, the panel, the wiring', () => {
     assert.match(M_SRC, /\n {2}addFromYoutube: \(\) => ytdlPanel\(programState\[0\] && programState\[0\]\.state === 'addFromYoutube' \? programState\[0\]\.open : undefined\),\n/);
     const peerCapable = M_SRC.slice(M_SRC.indexOf('const PEER_CAPABLE_STATES'), M_SRC.indexOf(']);', M_SRC.indexOf('const PEER_CAPABLE_STATES')));
     assert.ok(!peerCapable.includes('addFromYoutube'));
+    // its title comes back after a language change: setBrowserRootPanel
+    // writes every panel's name under its key, which translatePage() names
+    // again (webapp-panel-title.test.mjs) — m.js's listener writes none
+    assert.match(findFn('setBrowserRootPanel'), /\n {2}const name = `<span data-i18n="\$\{panelKey\}">\$\{t\(panelKey\)\}<\/span>`;\n/);
     const lang = M_SRC.slice(M_SRC.lastIndexOf('I18N.onChange(() => {'));
-    assert.match(lang, /programState\[0\]\.state === 'addFromYoutube'\) \{\n\s*\(\[\.\.\.document\.getElementsByClassName\('panel_one_name'\)\]\)\.forEach\(\(el\) => \{ el\.textContent = t\('panel\.addFromYoutube'\); \}\);/);
+    assert.ok(!lang.includes('panel_one_name') && !lang.includes("'addFromYoutube'"));
     const section = M_SRC.slice(M_SRC.indexOf('///////////////// Add from YouTube'), M_SRC.indexOf('///////////////// Discover page'));
     assert.ok(section.includes('function ytdlPanel('), 'the m.js half sits in its own section');
   });
@@ -1617,7 +1621,7 @@ function explorerSandbox(o = {}) {
     rows = [...res.directories.map((d) => row('.dirz', 'data-directory', d.name)), ...res.files.map((f) => row('.filez', 'data-file_location', f.path || res.path + f.name))];
   };
   const fns = ['ytdlServerAllows', 'ytdlAllowed', 'ytdlOpenPanel', 'ytdlExplorerFolder', 'ytdlRefreshExplorer', 'ytdlShownNames', 'ytdlOpenWindow',
-    'ytdlSettled', 'ytdlRing', 'ytdlToast', 'ytdlOnPaste', 'getFileExplorerPath'];
+    'ytdlSettled', 'ytdlRing', 'ytdlToast', 'ytdlOnPaste', 'getFileExplorerPath', 'dropzoneOnExplorer'];
   const body = `let peerContext = null; let programState = []; let fileExplorerArray = []; let currentBrowsingList = []; let browseGeneration = 0;
     ${fns.map(findFn).join('\n')}
     return { ${fns.join(', ')},
@@ -1672,8 +1676,35 @@ describe('m.js: the explorer\'s side', () => {
     x.S.set({ state: [{ state: 'fileExplorer' }, { state: 'fileExplorer' }, { state: 'fileExplorer' }], dirs: ['Music', 'Daft Punk'] });
     assert.equal(x.S.ytdlExplorerFolder(), '/Music/Daft Punk/');
     const open = findFn('onFilePlaylistClick');
-    assert.match(open, /programState\.push\(\{\n\s*state: 'fileExplorer',\n\s*m3u: true,/);
+    assert.match(open, /programState\.push\((?:entry \|\| )?\{\n\s*state: 'fileExplorer',\n\s*m3u: true,/);
     assert.ok(open.indexOf('ytdlRefreshExplorer();') > open.indexOf('m3u: true') && open.indexOf('ytdlRefreshExplorer();') < open.indexOf('await MSTREAMAPI.loadFileplaylist'), 'the button goes before the playlist lists');
+  });
+
+  test('a page opened over the folder (an album from the now-playing card, an artist) shows no folder: no button, no strip, no window, no listing drawn over it', async () => {
+    const paste = { target: { tagName: 'BODY', closest: () => null }, clipboardData: { getData: () => LINK } };
+    const listing = { path: '/Music/Daft Punk/', directories: [], files: [{ type: 'mp3', name: 'One_More_Time.mp3' }] };
+    for (const page of [{ state: 'album', name: 'Discovery' }, { state: 'artist', name: 'Daft Punk' }]) {
+      const x = explorerSandbox({ listing: () => Promise.resolve(listing) });
+      // over the folder, its bar up as the folder left it
+      x.S.set({ state: [{ state: 'fileExplorer' }, { state: 'fileExplorer' }, { state: 'fileExplorer' }, page] });
+      assert.equal(x.S.ytdlExplorerFolder(), null, page.state);
+      x.els.ytdl_btn.classes.delete('super-hide');
+      x.S.ytdlRefreshExplorer();
+      assert.equal(x.els.ytdl_btn.classes.has('super-hide'), true, `${page.state}: Add from YouTube here goes`);
+      assert.deepEqual(x.calls.pop(), ['renderStrip', null], page.state);
+      x.S.ytdlOpenWindow();
+      x.S.ytdlOnPaste(paste);
+      assert.ok(!x.calls.some((c) => c[0] === 'openHere'), `${page.state}: never the window for the folder under it`);
+      assert.deepEqual(x.calls.slice(-3), [['changeView', 'nav-ytdl'], ['ytdlPanel', { link: LINK }], ['toggleThing', 'tab', true]], `${page.state}: a paste opens the panel instead`);
+      x.calls.length = 0;
+      await x.S.ytdlSettled({ state: 'added', directory: '/Music/Daft Punk/', filePath: 'Music/Daft Punk/One_More_Time.mp3' });
+      assert.deepEqual(x.calls, [], `${page.state}: an add into that folder settles with nothing listed or drawn over the page`);
+    }
+    // The album page keeps the bar it found, button and all: it asks as it
+    // goes on the stack, as an .m3u does (the artist's page draws the
+    // column's chrome again, setBrowserRootPanel).
+    const open = findFn('getAlbumSongs');
+    assert.ok(open.indexOf('ytdlRefreshExplorer();') > open.indexOf('programState.push(page);'), 'the album page asks once it is on the stack');
   });
 
   test('the bar\'s button shows only for a writable folder on screen, by the gate; the strip is drawn for the folder', () => {
@@ -2004,8 +2035,10 @@ describe('what Add from YouTube retired', () => {
     const doc = { getElementById: (id) => (ids.has(id) ? el(id) : null) };
     const opened = [];
     let preflights = 0;
-    const S = new Function('document', 'getFileExplorerPath', 'myModal', 'runTorrentPreflight', `${findFn('switchUploadTab')}\n${findFn('openUploadModal')}\nreturn { switchUploadTab, openUploadModal };`)(
-      doc, () => 'Music/Daft Punk/', { open: (s) => opened.push(s) }, () => { preflights++; },
+    // (opened over the folder on screen, where the bar's Upload shows:
+    // dropzoneOnExplorer)
+    const S = new Function('document', 'getFileExplorerPath', 'myModal', 'runTorrentPreflight', 'dropzoneOnExplorer', `${findFn('switchUploadTab')}\n${findFn('openUploadModal')}\nreturn { switchUploadTab, openUploadModal };`)(
+      doc, () => 'Music/Daft Punk/', { open: (s) => opened.push(s) }, () => { preflights++; }, () => true,
     );
     S.openUploadModal();
     assert.deepEqual(opened, ['#uploadModal']);

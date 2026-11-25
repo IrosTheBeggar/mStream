@@ -6,10 +6,28 @@ const myDropzone = new Dropzone(document.body, {
   maxFilesize: null
 });
 
+// A drop goes into this server's folder at the explorer's path, so it is
+// taken only while the column shows that folder: the explorer at the
+// stack's root, a folder on top (no page opened over it, as an album from
+// the now-playing card, and no open .m3u, a playlist's songs), the bar up
+// (Auto DJ, Transcode and the other views that keep the stack they found
+// hide it) and this server's (a connected server's folder is not, and
+// takes no writes). An upload that ends anywhere else draws no folder
+// there either.
+function dropzoneOnExplorer() {
+  const top = programState[programState.length - 1];
+  return !peerContext && programState[0].state === 'fileExplorer' && top.state === 'fileExplorer' && top.m3u !== true
+    && document.getElementById('directory_bar').style.display !== 'none';
+}
+
 myDropzone.on("addedfile", (file) => {
-  if (programState[0].state !== 'fileExplorer') {
+  if (!dropzoneOnExplorer()) {
+    const top = programState[programState.length - 1];
+    const m3uShown = top.m3u === true && document.getElementById('directory_bar').style.display !== 'none';
     iziToast.error({
-      title: t('toast.filesExplorerOnly'),
+      // a connected server takes none; an open .m3u on screen is in the
+      // explorer, but shows no folder
+      title: t(peerContext ? 'toast.cannotUploadHere' : m3uShown ? 'toast.filesFolderOnly' : 'toast.filesExplorerOnly'),
       position: 'topCenter',
       timeout: 3500
     });
@@ -56,7 +74,7 @@ myDropzone.on('queuecomplete', (file, xhr, formData) => {
       position: 'topCenter',
       timeout: 3500
     });
-    if (programState[0].state === 'fileExplorer') {
+    if (dropzoneOnExplorer()) {
       senddir();
     }
   } else if (successCount === 0) {
@@ -68,7 +86,7 @@ myDropzone.on('queuecomplete', (file, xhr, formData) => {
       timeout: 3500
     });
 
-    if (programState[0].state === 'fileExplorer') {
+    if (dropzoneOnExplorer()) {
       senddir();
     }
   }
@@ -413,7 +431,13 @@ function getLoadingSvg() {
   return '<svg class="spinner" width="65px" height="65px" viewBox="0 0 66 66" xmlns="http://www.w3.org/2000/svg"><circle class="spinner-path" fill="none" stroke-width="6" stroke-linecap="round" cx="33" cy="33" r="30"></circle></svg>';
 }
 
-function setBrowserRootPanel(panelName, showBar) {
+// `panelKey`: the panel's name as its locale key ('panel.albums'), or
+// words of its own ('Add Torrent'). The column's title (its h5, and the
+// phone's tab) holds the name under that key (data-i18n), so every
+// language that loads names it again (translatePage): the first one too,
+// which can land after the first panel drew (loadFileExplorer runs as
+// m.js loads).
+function setBrowserRootPanel(panelKey, showBar) {
   // A connected server's page header goes (the panel's own answer draws
   // it again) — the page it tops held first, as it stands, in case the
   // panel's load fails (browseKeepBack).
@@ -457,7 +481,8 @@ function setBrowserRootPanel(panelName, showBar) {
   hideMoodFilters();
 
   // Inside a peer view every panel says whose library it is showing.
-  const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${panelName}` : panelName;
+  const name = `<span data-i18n="${panelKey}">${t(panelKey)}</span>`;
+  const label = peerContext ? `${escapeHtml(peerContext.name)} &middot; ${name}` : name;
   ([...document.getElementsByClassName('panel_one_name')]).forEach(el => {
     el.innerHTML = label;
   });
@@ -467,7 +492,7 @@ function setBrowserRootPanel(panelName, showBar) {
 
 ///////////////// File Explorer
 function loadFileExplorer() {
-  setBrowserRootPanel(t('panel.fileExplorer'));
+  setBrowserRootPanel('panel.fileExplorer');
   programState = [{ state: 'fileExplorer' }];
 
   // Reset file explorer vars
@@ -686,12 +711,14 @@ async function recursiveAddDir(el) {
   }
 }
 
-async function onFilePlaylistClick(el) {
+// `entry`: the .m3u's programState entry, put back as it was (Back, from
+// a page opened over its songs) — the explorer's path still ends with it.
+async function onFilePlaylistClick(el, entry) {
   try {
-    fileExplorerArray.push(el.getAttribute("data-directory"));
+    if (!entry) { fileExplorerArray.push(el.getAttribute("data-directory")); }
     // `m3u`: the explorer shows a playlist's songs, no folder to add into
     // (ytdlExplorerFolder) — Add from YouTube here and its strip go
-    programState.push({
+    programState.push(entry || {
       state: 'fileExplorer',
       m3u: true,
       previousScroll: document.getElementById('filelist').scrollTop,
@@ -950,17 +977,20 @@ function createPopper3(el) {
     onFirstUpdate: function (data) {
       document.getElementById("pop-f").style.visibility = "visible";
     },
+    // Inside the column (#browser), which ends where the player bar
+    // starts: a row near its foot opens the menu above it. Popper 2 reads
+    // `boundary` (1's `boundariesElement` it ignores).
     modifiers: [
       {
         name: 'flip',
         options: {
-          boundariesElement: 'scrollParent',
+          boundary: document.getElementById('browser'),
         },
       },
       {
         name: 'preventOverflow',
         options: {
-          boundariesElement: 'scrollParent',
+          boundary: document.getElementById('browser'),
         },
       },
     ]
@@ -1167,7 +1197,11 @@ function handleFileUpload(files) {
   myModal.close();
 }
 
+// Upload and Create Folder write into the explorer's folder: only while
+// the column shows it, as a drop (dropzoneOnExplorer) — a page opened over
+// it (an album, an open .m3u) hides their buttons (ytdlRefreshExplorer).
 function openUploadModal() {
+  if (!dropzoneOnExplorer()) { return; }
   document.getElementById('upload_filepath').textContent = getFileExplorerPath();
 
   // Reset upload tab
@@ -1189,12 +1223,25 @@ function openUploadModal() {
 }
 
 function openMkdirModal() {
+  if (!dropzoneOnExplorer()) { return; }
   document.getElementById('mkdir_filepath').textContent = getFileExplorerPath();
   document.getElementById('mkdir_name').value = '';
   myModal.open('#mkdirModal');
 }
 
 async function submitMkdir() {
+  // Its window can outlast the folder on screen (a toast's Details takes
+  // the column under it): then nothing is made, nor drawn over the page,
+  // and the window closes and says so — its Create is never a dead button.
+  if (!dropzoneOnExplorer()) {
+    myModal.close();
+    iziToast.error({
+      title: t('toast.folderCreateFailed'),
+      position: 'topCenter',
+      timeout: 3500
+    });
+    return;
+  }
   const folderName = document.getElementById('mkdir_name').value.trim();
   if (!folderName) { return; }
 
@@ -2740,8 +2787,31 @@ async function onBackButton() {
   } else if (backState.state === 'genre') {
     await getGenreSongs(backState.name, backState.source);
   } else if (backState.state === 'fileExplorer') {
-    fileExplorerArray.pop();
-    await senddir();
+    // Only a folder or an .m3u left takes its name off the explorer's
+    // path: a page opened over one (an album from the now-playing card or
+    // the song window, an artist) put none on it, and the folder under it
+    // is listed again, not its parent.
+    if (thisState.state === 'fileExplorer') { fileExplorerArray.pop(); }
+    if (backState.m3u === true) {
+      // An .m3u's songs under it: the playlist read again, its entry put
+      // back as it was (a folder listing of the file is a 404) — on this
+      // server, whose file it is (printdir lists no .m3u on a connected
+      // server). A page that followed a song onto a connected server (the
+      // now-playing card's album or artist, the song window's View album
+      // or View artist) comes home first, as Discover's page does: the
+      // switcher, the column's title and the page's Keep a copy header
+      // this server's again, and the songs never drawn as that server's.
+      if (peerContext) {
+        peerContext = null;
+        browseGeneration++;
+        applyServerContext();
+        setBrowserRootPanel('panel.fileExplorer');
+      }
+      programState.pop();
+      await onFilePlaylistClick(null, backState);
+    } else {
+      await senddir();
+    }
   } else if (backState.state === 'searchPanel') {
     setupSearchPanel(backState.searchTerm, undefined);
   } else if (backState.state === 'album') {
@@ -2768,7 +2838,7 @@ async function onBackButton() {
 
 ///////////////////// Playlists
 async function getAllPlaylists() {
-  setBrowserRootPanel(t('panel.playlists'));
+  setBrowserRootPanel('panel.playlists');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `<input class="newPlaylistButton btn green" style="height:24px;" value="${t('label.newPlaylist')}" type="button" onclick="openNewPlaylistModal();">`;
   programState = [ {state: 'allPlaylists' }];
@@ -2980,6 +3050,9 @@ async function setLivePlaylist() {
 
     if (VUEPLAYERCORE.livePlaylist.name !== false) {
       VUEPLAYERCORE.livePlaylist.name = false;
+      // off until it is turned on again: the next visit's init() starts
+      // the one this key names
+      localStorage.removeItem('live-playlist-auto-start');
       document.getElementById('set_live_playlist').classList.remove('blue');
       document.getElementById('set_live_playlist').classList.add('green');
       document.getElementById('set_live_playlist').value = 'Enable Live Playlist';
@@ -3136,7 +3209,7 @@ function albumSongsBody(album, artist, year, albumArtist) {
 
 async function getAllArtists(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.artists')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.artists'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allArtists' }];
 
@@ -3178,7 +3251,7 @@ function getArtistz(el) {
 }
 
 async function getArtistsAlbums(artist) {
-  setBrowserRootPanel(t('panel.albums'));
+  setBrowserRootPanel('panel.albums');
   document.getElementById('directoryName').innerHTML = t('label.artist') + ' ' + escapeHtml(artist);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -3498,7 +3571,7 @@ function showGenreSourceSwitch(active) {
 }
 
 async function getAllGenres() {
-  setBrowserRootPanel(t('panel.genres'));
+  setBrowserRootPanel('panel.genres');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allGenres' }];
 
@@ -3560,7 +3633,7 @@ function getGenreSongsList(el) {
 // `source` narrows the songs to the list's kind of genre; absent, every
 // song with the genre (and what a server without the filter answers).
 async function getGenreSongs(genre, source) {
-  setBrowserRootPanel(t('panel.songs'));
+  setBrowserRootPanel('panel.songs');
   document.getElementById('directoryName').innerHTML = t('label.genre') + ' ' + escapeHtml(genre);
   document.getElementById('filelist').innerHTML = getLoadingSvg();
 
@@ -3593,7 +3666,7 @@ async function getGenreSongs(genre, source) {
 /////////////// Albums
 async function getAllAlbums(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.albums')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.albums'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   
   programState = [{ state: 'allAlbums' }];
@@ -3677,6 +3750,9 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
     previousSearch: document.getElementById('localSearchBar').value
   };
   programState.push(page);
+  // Opened over a folder, the page keeps the bar it found: Add from
+  // YouTube here and its strip go (no folder on screen), as for an .m3u.
+  if (typeof ytdlRefreshExplorer === 'function') { ytdlRefreshExplorer(); }
 
   //clear the list
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -3716,7 +3792,7 @@ async function getAlbumSongs(album, artist, year, albumArtist, entry, compilatio
 ////////////// Rated Songs
 async function getRatedSongs(opts) {
   // A mood-filter change asks again in place: the bar and its open panel stay.
-  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel(t('panel.starred')); }
+  if (opts?.refresh) { currentBrowsingList = []; } else { setBrowserRootPanel('panel.starred'); }
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   programState = [{ state: 'allRated' }];
 
@@ -3765,7 +3841,7 @@ async function getRatedSongs(opts) {
 
 ///////////////// Recently Played
 function getRecentlyPlayed() {
-  setBrowserRootPanel(t('panel.recentlyPlayed'));
+  setBrowserRootPanel('panel.recentlyPlayed');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyPlayed();" onfocusout="redoRecentlyPlayed();" id="recently-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3820,7 +3896,7 @@ function submitRecentlyPlayed() {
 
 ///////////////// Most Played
 function getMostPlayed() {
-  setBrowserRootPanel(t('panel.mostPlayed'));
+  setBrowserRootPanel('panel.mostPlayed');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitMostPlayed();" onfocusout="redoMostPlayed();" id="most-played-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3875,7 +3951,7 @@ function submitMostPlayed() {
 
 ///////////////// Recently Added
 function getRecentlyAdded() {
-  setBrowserRootPanel(t('panel.recentlyAdded'));
+  setBrowserRootPanel('panel.recentlyAdded');
   document.getElementById('filelist').innerHTML = getLoadingSvg();
   document.getElementById('directoryName').innerHTML = `Get last &nbsp;&nbsp;<input onkeydown="submitRecentlyAdded();" onfocusout="redoRecentlyAdded();" id="recently-added-limit" class="recently-added-input" type="number" min="1" step="1" value="100">&nbsp;&nbsp; ${t('label.getLastSongs', { count: 2 })}`;
 
@@ -3949,7 +4025,7 @@ function submitRecentlyAdded() {
 const discoverDownloadsView = { all: false, removed: false, list: [], plugins: null };
 
 function discoverDownloadsPanel() {
-  setBrowserRootPanel(t('panel.downloads'), false);
+  setBrowserRootPanel('panel.downloads', false);
   programState = [{ state: 'discoverDownloads' }];
   currentBrowsingList = [];
   document.getElementById('filelist').innerHTML = getLoadingSvg();
@@ -4101,7 +4177,7 @@ function openFileExplorerAt(parts) {
   document.querySelectorAll('.side-nav-item').forEach((item) => item.classList.remove('select'));
   const nav = document.querySelector('.side-nav-item[data-panel="fileExplorer"]');
   if (nav) { nav.classList.add('select'); }
-  setBrowserRootPanel(t('panel.fileExplorer'));
+  setBrowserRootPanel('panel.fileExplorer');
   programState = [{ state: 'fileExplorer' }];
   fileExplorerArray = [];
   for (const part of parts) {
@@ -4263,7 +4339,7 @@ function ytdlPanel(opts) {
     return;
   }
   programState = [{ state: 'addFromYoutube' }];
-  setBrowserRootPanel(t('panel.addFromYoutube'), false);
+  setBrowserRootPanel('panel.addFromYoutube', false);
   currentBrowsingList = [];
   const list = document.getElementById('filelist');
   list.innerHTML = '<div id="ytdl-panel-mount"></div>';
@@ -4283,23 +4359,26 @@ function ytdlOpenPanel(opts) {
 }
 
 // The folder the explorer shows, when it is on screen and this server's:
-// '/Music/Daft Punk/', else null. programState alone can't say: Auto DJ,
-// Transcode, Apps, Sonic Path, Jukebox and Config leave it on the explorer
-// with the folder they left — but every one of them hides the bar. An
-// open .m3u (onFilePlaylistClick) is a playlist's songs, no folder.
+// '/Music/Daft Punk/', else null. It is the folder a drop goes into
+// (dropzoneOnExplorer), below the root. The stack's root alone can't say:
+// a page opened over a folder (an album from the now-playing card), an
+// open .m3u (onFilePlaylistClick, a playlist's songs) and the views that
+// keep the stack they found (Auto DJ, Transcode, Apps, Sonic Path, Jukebox
+// and Config, which hide the bar) all leave a folder under them.
 function ytdlExplorerFolder() {
-  if (peerContext || !programState[0] || programState[0].state !== 'fileExplorer' || fileExplorerArray.length === 0) { return null; }
-  if (programState[programState.length - 1].m3u === true) { return null; }
-  const bar = document.getElementById('directory_bar');
-  if (!bar || bar.style.display === 'none') { return null; }
+  if (!programState[0] || fileExplorerArray.length === 0 || !dropzoneOnExplorer()) { return null; }
   return '/' + getFileExplorerPath();
 }
 
-// The bar's Add from YouTube here and the strip under it, for what the
-// column shows now: from the ping, the tracker (a job started, settled)
-// and every explorer listing.
+// The bar's ways into the folder on screen (Upload, Create Folder, Add
+// from YouTube here) and the strip under it, for what the column shows
+// now: from the ping, the tracker (a job started, settled), every
+// explorer listing, and a page opened over a folder (an album, an open
+// .m3u), which keeps the bar the folder left.
 function ytdlRefreshExplorer() {
   const folder = ytdlExplorerFolder();
+  document.getElementById('upload_btn')?.classList.toggle('super-hide', !folder);
+  document.getElementById('mkdir_btn')?.classList.toggle('super-hide', !folder || MSTREAMAPI.currentServer.noMkdir === true);
   document.getElementById('ytdl_btn')?.classList.toggle('super-hide', !(folder && ytdlServerAllows()));
   if (typeof YTDLUI !== 'undefined') { YTDLUI.renderStrip(folder); }
 }
@@ -4657,7 +4736,7 @@ function discoveryPanel(opts) {
     applyServerContext();
     highlightNavPanel(state);
   }
-  setBrowserRootPanel(t(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover'), false);
+  setBrowserRootPanel(page === 'peerRecs' ? 'panel.peerRecs' : 'panel.discover', false);
   currentBrowsingList = [];
   sonicPathHideBanner();
   // The banner goes: its pick too, when it was this page's or the Auto DJ
@@ -5537,6 +5616,10 @@ function discoveryAction(act, el) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, MSTREAMPLAYER.positionCache.val + 1);
   } else if (act === 'queue' && track) {
     VUEPLAYERCORE.addSongWizard(track.filepath, track.metadata || {}, false, undefined, false, true);
+    // A live playlist gets it: one save of the whole queue (none without
+    // one). The add stays off it — an add-song too could land after the
+    // save and write the row twice.
+    VUEPLAYERCORE.saveLiveQueue();
     queued();
   } else if (act === 'more' && track) {
     createPopper3(el);
@@ -5746,6 +5829,8 @@ function discoveryQueueAll(shuffle) {
   for (const r of list) {
     VUEPLAYERCORE.addSongWizard(r.filepath, r.metadata || {}, false, undefined, false, true);
   }
+  // a live playlist: the whole queue once, as a row's add
+  VUEPLAYERCORE.saveLiveQueue();
   iziToast.success({ title: t('discover.modal.queued'), position: 'topCenter', timeout: 1800 });
 }
 
@@ -6872,7 +6957,7 @@ function peerRecsBandClick(ev) {
 
 ///////////////// Transcode
 function setupTranscodePanel(){
-  setBrowserRootPanel(t('panel.transcode'), false);
+  setBrowserRootPanel('panel.transcode', false);
 
   if (!MSTREAMPLAYER.transcodeOptions.serverEnabled) {
     document.getElementById('filelist').innerHTML = '<div class="pad-6"><b>Transcoding is disabled on this server</b></div>';
@@ -6956,7 +7041,7 @@ function toggleTranscoding(el, manual){
 
 ///////////////////////////// Mobile Stuff
 async function getMobilePanel(){
-  setBrowserRootPanel(t('panel.mobileApps'), false);
+  setBrowserRootPanel('panel.mobileApps', false);
 
   const html = `
     <div class="mobile-links pad-6">
@@ -7304,6 +7389,9 @@ function sonicPathPlay(replaceQueue) {
   for (const row of SONICPATH.rows) {
     VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
   }
+  // a live playlist: the whole queue once (after Play, the path alone), as
+  // Discover's adds
+  VUEPLAYERCORE.saveLiveQueue();
 }
 
 // The name-a-playlist modal (#savePlaylistModal) shared by the Sonic Path
@@ -7344,7 +7432,7 @@ function sonicPathStartOver() {
 }
 
 function sonicPathPanel() {
-  setBrowserRootPanel(t('sonicPath.title'), false);
+  setBrowserRootPanel('sonicPath.title', false);
   sonicPathHideBanner();
   // The banner goes: an Auto DJ Seeds pick with it (no armed pick without
   // its banner).
@@ -7463,7 +7551,9 @@ function sonicPathPanel() {
   root.querySelectorAll('[data-spath-row]').forEach((el) => {
     el.addEventListener('click', () => {
       const row = SONICPATH.rows[Number(el.getAttribute('data-spath-row'))];
-      if (row) { VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true); }
+      if (!row) { return; }
+      VUEPLAYERCORE.addSongWizard(row.filepath, row.metadata || {}, false, undefined, false, true);
+      VUEPLAYERCORE.saveLiveQueue();
     });
   });
 }
@@ -9060,7 +9150,7 @@ async function autoDjPanel(opts) {
   _autoDjPanelAbortController = new AbortController();
   const _autoDjPanelSignal = _autoDjPanelAbortController.signal;
 
-  setBrowserRootPanel(t('panel.autoDJ'), false);
+  setBrowserRootPanel('panel.autoDJ', false);
 
   // First-render side-effect: pull legacy keys onto the new namespace.
   // Safe to call repeatedly — guarded against double-migrate.
@@ -9420,7 +9510,7 @@ async function autoDjPanel(opts) {
 
 ////////////// Jukebox
 function setupJukeboxPanel() {
-  setBrowserRootPanel(t('panel.jukeboxMode'), false);
+  setBrowserRootPanel('panel.jukeboxMode', false);
 
   let newHtml;
   if (JUKEBOX.stats.live !== false && JUKEBOX.connection !== false) {
@@ -9566,7 +9656,7 @@ const searchMap = {
 };
 
 function setupSearchPanel(searchTerm) {
-  setBrowserRootPanel(t('panel.searchDB'));
+  setBrowserRootPanel('panel.searchDB');
   document.getElementById('local_search_btn').style.display = 'none';
   programState = [{ state: 'searchPanel' }];
 
@@ -11164,7 +11254,7 @@ browseKeepListen();
 
 ///////////////// Config
 function advancedConfig() {
-  setBrowserRootPanel(t('panel.config'), false);
+  setBrowserRootPanel('panel.config', false);
 
   let newHtml = `<div class="pad-6">
     <h5>${t('autoDJ.useFolders')}</h5>
@@ -11189,7 +11279,7 @@ function advancedConfig() {
 
 ////////////////// Layout
 function setupLayoutPanel() {
-  setBrowserRootPanel(t('panel.layout'), false);
+  setBrowserRootPanel('panel.layout', false);
   programState = [{ state: 'layout' }];
 
   const newHtml = `
@@ -11366,11 +11456,9 @@ I18N.onChange(() => {
   if (programState[0] && programState[0].state === 'layout') {
     setupLayoutPanel();
   }
-  // Add from YouTube's panel redraws its own words (alpha/ytdl-ui.js);
-  // its title is the column's, which translatePage() just reset.
-  if (programState[0] && programState[0].state === 'addFromYoutube') {
-    ([...document.getElementsByClassName('panel_one_name')]).forEach((el) => { el.textContent = t('panel.addFromYoutube'); });
-  }
+  // Add from YouTube's panel redraws its own words (alpha/ytdl-ui.js); the
+  // column's title, every panel's, translatePage() just named again
+  // (setBrowserRootPanel).
 });
 
 

@@ -825,7 +825,9 @@ body.top-bar-hidden #content {
   border-radius: 6px;
   border: 1px solid #444;
   color: #ddd;
-  z-index: 100;
+  /* over the player bar (#mstream-player, 1000), for a menu with room on
+     neither side of its row */
+  z-index: 1001;
   box-shadow: 0 4px 16px rgba(0,0,0,.5);
   overflow: hidden;
 }
